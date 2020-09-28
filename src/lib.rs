@@ -6,6 +6,8 @@ pub mod os;
 pub mod page;
 pub mod node;
 pub mod db;
+pub mod free_list;
+pub mod tx;
 
 #[allow(dead_code)]
 #[inline]
