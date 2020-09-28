@@ -1,5 +1,7 @@
 use std::fmt::{self, Display, Formatter};
 use crate::must_align;
+use std::fs::Metadata;
+use std::slice::Iter;
 
 const MIN_KEYS_PER_PAGE: u64 = 2;
 
@@ -13,7 +15,7 @@ const FREE_LIST_PAGE_FLAG: u16 = 0x10;
 const BUCKET_LEAF_FLAG: u16 = 0x10;
 
 
-type PgId = u64;
+pub type PgId = u64;
 
 pub struct Page {
     pub id: PgId,
@@ -23,10 +25,13 @@ pub struct Page {
 }
 
 
-impl Page {}
+impl Page {
+    // `meta` returns a pointer to the metadata section of the `page`
+    // pub(crate) fn meta(&self) -> &Metadata {}
+}
 
 impl Display for Page {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> ::std::fmt::Result {
         if self.flags & BRANCH_PAGE_FLAG != 0 {
             writeln!(f, "branch")
         } else if self.flags & LEAF_PAGE_FLAG != 0 {
@@ -36,17 +41,29 @@ impl Display for Page {
         } else if self.flags & FREE_LIST_PAGE_FLAG != 0 {
             writeln!(f, "freelist")
         } else {
-            writeln!(f, "unknown<{:0x}>", self.flags)
+            writeln!(f, "unknown<{}>", self.flags)
         }
     }
 }
 
-
 // represents a node on a branch page.
+#[derive(Debug)]
+#[repr(C)]
 struct BranchPageElement {
     pos: u32,
-    ksize: u32,
+    k_size: u32,
     pgid: PgId,
+}
+
+impl BranchPageElement {
+    pub(crate) fn key(&self) -> &[u8] {
+        must_align(self);
+        unsafe {
+            let optr = self as *const Self as *const u8;
+            let ptr = optr.add(self.pos as usize);
+            ::std::slice::from_raw_parts(ptr, self.k_size as usize)
+        }
+    }
 }
 
 // represents a node on a leaf page.
@@ -55,17 +72,26 @@ struct BranchPageElement {
 struct LeafPageElement {
     flags: u32,
     pos: u32,
-    ksize: u32,
-    vsize: u32,
+    k_size: u32,
+    v_size: u32,
 }
 
 impl LeafPageElement {
-    fn value(&self) -> &[u8] {
+    pub(crate) fn key(&self) -> &[u8] {
         must_align(self);
         unsafe {
             let optr = self as *const Self as *const u8;
             let ptr = optr.add(self.pos as usize);
-            ::std::slice::from_raw_parts(ptr, self.ksize as usize)
+            ::std::slice::from_raw_parts(ptr, self.k_size as usize)
+        }
+    }
+
+    pub(crate) fn value(&self) -> &[u8] {
+        must_align(self);
+        unsafe {
+            let optr = self as *const Self as *const u8;
+            let ptr = optr.add((self.pos + self.k_size) as usize);
+            ::std::slice::from_raw_parts(ptr, self.v_size as usize)
         }
     }
 }
@@ -83,15 +109,51 @@ pub struct PgIds {
     inner: Vec<PgId>,
 }
 
+impl From<Vec<PgId>> for PgIds {
+    fn from(v: Vec<u64>) -> Self {
+        PgIds { inner: v }
+    }
+}
+
 impl PgIds {
-    // Returns the sorted union of a and b.
-    // pub fn merge(&mut self, b: PgIds) -> PgIds {
-    //     if self.inner.is_empty() {
-    //         return PgIds { inner: b.inner.clone() };
-    //     }
-    //     if b.inner.is_empty() {
-    //         return PgIds { inner: self.inner.clone() };
-    //     }
-    //
-    // }
+    pub fn new() -> PgIds {
+        PgIds { inner: Vec::new() }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    #[inline]
+    pub fn iter(&self) -> Iter<'_, u64> {
+        self.inner.iter()
+    }
+
+    #[inline]
+    pub fn as_slice(&self) -> &Vec<PgId> {
+        &self.inner
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    #[inline]
+    pub fn push(&mut self, pgid: PgId) {
+        self.inner.push(pgid);
+    }
+}
+
+#[test]
+fn t_leaf_page_element() {
+    let leaf = LeafPageElement {
+        flags: 0x10,
+        pos: 10,
+        k_size: 200,
+        v_size: 300,
+    };
+    assert_eq!(200, leaf.key().len());
+    assert_eq!(300, leaf.value().len());
 }
