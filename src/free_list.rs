@@ -1,6 +1,6 @@
-use crate::page::{PgIds, PgId, Page};
-use std::collections::{HashMap, HashSet};
+use crate::page::{Page, PgId, PgIds};
 use crate::tx::TxId;
+use std::collections::{HashMap, HashSet};
 
 // free_list represents a list of all pages that are available for allocation.
 // It also tracks pages that have freed but are still in use by open transaction.
@@ -45,16 +45,22 @@ impl FreeList {
 
     /// Returns `count` of `pending pages`
     pub fn pending_count(&self) -> usize {
-        self.pending.iter().fold(0, |acc, (_, pg_ids)| {
-            acc + pg_ids.len()
-        })
+        self.pending
+            .iter()
+            .fold(0, |acc, (_, pg_ids)| acc + pg_ids.len())
     }
 
     /// Copy into `dst` a list of all `free ids` and all `pending ids` in one sorted list.
     /// f.count returns the minimum length required for dst.
     #[inline]
     pub fn to_pg_ids(&self) -> PgIds {
-        let mut m = self.pending.values().map(|pgid| pgid.as_slice()).flatten().map(|key| *key).collect::<Vec<_>>();
+        let mut m = self
+            .pending
+            .values()
+            .map(|pgid| pgid.as_slice())
+            .flatten()
+            .map(|key| *key)
+            .collect::<Vec<_>>();
         m.extend(self.ids.iter());
         m.sort_by_key(|key| *key);
         m.into()
@@ -94,15 +100,26 @@ impl FreeList {
     // saved to disk since in the event of a program crash, all `pending ids` will become
     // free.
 
-
     fn reload(&mut self, page: &Page) {
         // TODO: FIXME
 
         // Build a cache of only pending pages.
-        let page_cache = self.pending.values().map(|pgids| pgids.as_slice()).flatten().collect::<HashSet<_>>();
+        let page_cache = self
+            .pending
+            .values()
+            .map(|pgids| pgids.as_slice())
+            .flatten()
+            .collect::<HashSet<_>>();
         // Check each page in the free_list and build a new available free_list
         // with any pages not in the pending lists.
-        self.ids = self.ids.iter().collect::<HashSet<_>>().difference(&page_cache).map(|id| **id).collect::<Vec<_>>().into();
+        self.ids = self
+            .ids
+            .iter()
+            .collect::<HashSet<_>>()
+            .difference(&page_cache)
+            .map(|id| **id)
+            .collect::<Vec<_>>()
+            .into();
 
         // Once the available list is rebuilt then rebuild the free cache so that
         // it includes the available and pending free pages.
@@ -117,6 +134,12 @@ impl FreeList {
     /// Rebuilds the `free cache` based on available and `pending free` lists.
     fn reindex(&mut self) {
         self.cache = self.ids.iter().map(|pgid| *pgid).collect();
-        self.cache.extend(self.pending.values().map(|pgids| pgids.as_slice()).flatten().collect::<HashSet<_>>());
+        self.cache.extend(
+            self.pending
+                .values()
+                .map(|pgids| pgids.as_slice())
+                .flatten()
+                .collect::<HashSet<_>>(),
+        );
     }
 }

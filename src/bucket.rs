@@ -7,3 +7,5 @@ const MAX_UINT: u64 = 0;
 const MIN_UINT: u64 = 0;
 const MAX_INT: i64 = 0;
 const MIN_INT: i64 = 0;
+
+pub struct Bucket {}

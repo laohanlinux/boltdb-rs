@@ -1,5 +1,7 @@
-use std::time::Duration;
 use memmap::Mmap;
+use std::time::Duration;
+use std::fs::{File, Permissions};
+use crate::{Bucket, PgId, TxId};
 
 /// The largest step that can be token when remapping the mman.
 const MAX_MMAP_STEP: usize = 1 << 30; //1GB
@@ -25,15 +27,28 @@ pub struct DB {
     /// debugging purpose.
     pub strict_mode: bool,
 
-    path: String,
+    path: &'static str,
     pub(crate) mmap: Option<Mmap>,
     pub(crate) mmap_size: usize,
 }
 
-
 impl DB {
+    pub fn open(path: &'static str, perm: Permissions) {}
+
     /// Return the path to currently open database file.
-    pub fn path(&self) -> &String {
-        &self.path
+    pub fn path(&self) -> &'static str {
+        self.path
     }
+}
+
+struct Meta {
+    magic: u32,
+    version: u32,
+    page_size: u32,
+    flags: u32,
+    root: Bucket,
+    free_list: PgId,
+    pg_id: PgId,
+    tx_id: TxId,
+    check_sum: u64,
 }

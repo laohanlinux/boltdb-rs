@@ -1,7 +1,8 @@
-use std::fmt::{self, Display, Formatter};
 use crate::must_align;
+use std::fmt::{self, Display, Formatter};
 use std::fs::Metadata;
 use std::slice::Iter;
+use std::marker::PhantomData;
 
 const MIN_KEYS_PER_PAGE: u64 = 2;
 
@@ -14,16 +15,16 @@ const FREE_LIST_PAGE_FLAG: u16 = 0x10;
 
 const BUCKET_LEAF_FLAG: u16 = 0x10;
 
-
 pub type PgId = u64;
 
+#[repr(C)]
 pub struct Page {
-    pub id: PgId,
-    pub flags: u16,
-    pub count: u16,
-    pub over_flow: u16,
+    id: PgId,
+    flags: u16,
+    count: u16,
+    over_flow: u16,
+    ptr: PhantomData<u8>,
 }
-
 
 impl Page {
     // `meta` returns a pointer to the metadata section of the `page`
@@ -95,7 +96,6 @@ impl LeafPageElement {
         }
     }
 }
-
 
 // represents human readable information about a page.
 pub struct PageInfo {
