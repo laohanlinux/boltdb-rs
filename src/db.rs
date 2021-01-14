@@ -41,7 +41,7 @@ impl DB {
     }
 }
 
-struct Meta {
+pub(crate) struct Meta {
     magic: u32,
     version: u32,
     page_size: u32,

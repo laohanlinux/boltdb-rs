@@ -2,7 +2,7 @@ use crate::page::{Page, PgId, PgIds};
 use crate::tx::TxId;
 use std::collections::{HashMap, HashSet};
 
-// free_list represents a list of all pages that are available for allocation.
+// Represents a list of all pages that are available for allocation.
 // It also tracks pages that have freed but are still in use by open transaction.
 struct FreeList {
     ids: PgIds,
