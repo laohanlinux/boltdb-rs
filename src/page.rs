@@ -4,19 +4,18 @@ use std::slice::Iter;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use crate::db::Meta;
-use std::any::Any;
 
-const PAGE_HEADER_SIZE: usize = size_of::<Page>();
-const MIN_KEYS_PER_PAGE: u64 = 2;
-const BRANCH_PAGE_ELEMENT_SIZE: usize = size_of::<BranchPageElement>();
-const LEAF_PAGE_ELEMENT_SIZE: usize = size_of::<LeafPageElement>();
+pub(crate) const PAGE_HEADER_SIZE: usize = size_of::<Page>();
+pub(crate) const MIN_KEYS_PER_PAGE: u64 = 2;
+pub(crate) const BRANCH_PAGE_ELEMENT_SIZE: usize = size_of::<BranchPageElement>();
+pub(crate) const LEAF_PAGE_ELEMENT_SIZE: usize = size_of::<LeafPageElement>();
 
-const BRANCH_PAGE_FLAG: u16 = 0x01;
-const LEAF_PAGE_FLAG: u16 = 0x02;
-const META_PAGE_FLAG: u16 = 0x04;
-const FREE_LIST_PAGE_FLAG: u16 = 0x10;
+pub(crate) const BRANCH_PAGE_FLAG: u16 = 0x01;
+pub(crate) const LEAF_PAGE_FLAG: u16 = 0x02;
+pub(crate) const META_PAGE_FLAG: u16 = 0x04;
+pub(crate) const FREE_LIST_PAGE_FLAG: u16 = 0x10;
 
-const BUCKET_LEAF_FLAG: u16 = 0x10;
+pub(crate) const BUCKET_LEAF_FLAG: u16 = 0x10;
 
 pub type PgId = u64;
 
@@ -25,7 +24,7 @@ pub type PgId = u64;
 pub struct Page {
     id: PgId,
     flags: u16,
-    count: u16,
+    pub(crate) count: u16,
     over_flow: u16,
     ptr: PhantomData<u8>,
 }
@@ -169,6 +168,7 @@ pub struct PageInfo {
     pub over_flow_count: isize,
 }
 
+#[derive(Clone, Debug, Default)]
 pub struct PgIds {
     inner: Vec<PgId>,
 }

@@ -1,10 +1,13 @@
-use crate::page::{Page, PgId, PgIds};
+use crate::page::{Page, PgId, PgIds, PAGE_HEADER_SIZE};
 use crate::tx::TxId;
 use std::collections::{HashMap, HashSet};
+use std::mem::size_of;
 
 // Represents a list of all pages that are available for allocation.
 // It also tracks pages that have freed but are still in use by open transaction.
+#[derive(Debug, Clone, Default)]
 struct FreeList {
+    // all free and available free page ids.
     ids: PgIds,
     // all free and available free page ids.
     pending: HashMap<TxId, PgIds>,
@@ -13,47 +16,52 @@ struct FreeList {
 }
 
 impl FreeList {
-    pub fn new() -> FreeList {
-        FreeList {
-            ids: PgIds::new(),
-            pending: HashMap::new(),
-            cache: HashSet::new(),
+    /// Returns the `size` of the `page` after serialization.
+    #[inline]
+    fn size(&self) -> usize {
+        let mut n = self.count();
+        if n >= 0xFFFF {
+            // The first element will be used to store the count. See free_list.write.
+            n += 1;
+        }
+        unsafe {
+            PAGE_HEADER_SIZE + size_of::<PgId>() * n
         }
     }
 
-    // /// Returns the `size` of the `page` after serialization.
-    // #[inline]
-    // pub fn size(&self) -> usize {
-    //     let n = self.count();
-    //     if n >= 0xFFFF {
-    //         // The first element will be used to store the count. See free_list.write.
-    //         n += 1;
-    //     }
-    //
-    // }
-
-    /// Returns `count` of `pages` on the `freelist`
+    // Returns `count` of `pages` on the `freelist`
     #[inline]
-    pub fn count(&self) -> usize {
+    fn count(&self) -> usize {
         self.free_count() + self.pending_count()
     }
 
-    /// Returns `count` of free pages
-    pub fn free_count(&self) -> usize {
+    // Returns `count` of free pages
+    fn free_count(&self) -> usize {
         self.ids.len()
     }
 
-    /// Returns `count` of `pending pages`
-    pub fn pending_count(&self) -> usize {
+    // Returns `count` of `pending pages`
+    fn pending_count(&self) -> usize {
         self.pending
             .iter()
             .fold(0, |acc, (_, pg_ids)| acc + pg_ids.len())
     }
 
-    /// Copy into `dst` a list of all `free ids` and all `pending ids` in one sorted list.
-    /// f.count returns the minimum length required for dst.
+    // Read initializes the free list from a freelist page.
+    fn read(&mut self, page: &Page) {
+        // If the page.count is at the max uint16 value(64k) then it's considered
+        // an overflow and the size of the free list is stored as the first element.
+        let mut idx = 0;
+        let mut count = page.count;
+        if count == 0xFFFF {
+
+        }
+    }
+
+    // Copy into `dst` a list of all `free ids` and all `pending ids` in one sorted list.
+    // f.count returns the minimum length required for dst.
     #[inline]
-    pub fn to_pg_ids(&self) -> PgIds {
+    fn to_pg_ids(&self) -> PgIds {
         let mut m = self
             .pending
             .values()
@@ -126,12 +134,12 @@ impl FreeList {
         self.reindex()
     }
 
-    /// Returns whether a given `page` is in the `free` list.
+    // Returns whether a given `page` is in the `free` list.
     fn free(&self, pgid: &PgId) -> bool {
         self.cache.contains(pgid)
     }
 
-    /// Rebuilds the `free cache` based on available and `pending free` lists.
+    // Rebuilds the `free cache` based on available and `pending free` lists.
     fn reindex(&mut self) {
         self.cache = self.ids.iter().map(|pgid| *pgid).collect();
         self.cache.extend(
