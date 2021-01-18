@@ -2,6 +2,7 @@ use crate::page::{Page, PgId, PgIds, PAGE_HEADER_SIZE};
 use crate::tx::TxId;
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
+use std::ptr::slice_from_raw_parts;
 
 // Represents a list of all pages that are available for allocation.
 // It also tracks pages that have freed but are still in use by open transaction.
@@ -52,10 +53,25 @@ impl FreeList {
         // If the page.count is at the max uint16 value(64k) then it's considered
         // an overflow and the size of the free list is stored as the first element.
         let mut idx = 0;
-        let mut count = page.count;
+        let mut count = page.count as usize;
         if count == 0xFFFF {
-
+            idx = 1; // FIXME: Why?, discard first
+            count = *page.pgid(0) as usize;
         }
+
+        // Copy the list of page ids from the free list.
+        if count == 0 {
+            self.ids = PgIds::new();
+        } else {
+            unsafe {
+                let ids = page.pg_ids().clone();
+                self.ids = PgIds::from(Vec::from(ids));
+                // make sure they're sorted
+                self.ids.sort();
+            }
+        }
+        // Rebuild the page cache.
+        self.reindex();
     }
 
     // Copy into `dst` a list of all `free ids` and all `pending ids` in one sorted list.

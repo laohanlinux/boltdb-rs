@@ -72,13 +72,21 @@ impl Page {
         unsafe { std::slice::from_raw_parts_mut(self.get_data_mut_ptr() as *mut BranchPageElement, self.count as usize) }
     }
 
+    pub(crate) fn pgid(&self, index: usize) -> &PgId {
+        &self.pg_ids()[index]
+    }
+
+    pub(crate) fn pg_ids(&self) -> &[PgId] {
+        unsafe { std::slice::from_raw_parts(self.get_data_ptr() as *const PgId, self.count as usize) }
+    }
+
     #[inline]
-    fn get_data_mut_ptr(&mut self) -> *mut u8 {
+    pub(crate) fn get_data_mut_ptr(&mut self) -> *mut u8 {
         &mut self.ptr as *mut PhantomData<u8> as *mut u8
     }
 
     #[inline]
-    fn get_data_ptr(&self) -> *const u8 {
+    pub(crate) fn get_data_ptr(&self) -> *const u8 {
         &self.ptr as *const PhantomData<u8> as *const u8
     }
 }
@@ -192,6 +200,11 @@ impl PgIds {
     #[inline]
     pub fn iter(&self) -> Iter<'_, u64> {
         self.inner.iter()
+    }
+
+    #[inline]
+    pub fn sort(&mut self) {
+        self.inner.sort();
     }
 
     #[inline]
