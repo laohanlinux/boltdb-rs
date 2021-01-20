@@ -48,6 +48,30 @@ impl FreeList {
             .fold(0, |acc, (_, pg_ids)| acc + pg_ids.len())
     }
 
+    // Release moves all page ids for a transaction id (or older) to the freelist.
+    fn release(&mut self, tx_id: TxId) {
+        let mut m = self.pending.drain_filter(|key| *key <= tx_id).map(|(_, pg_id)| pg_id).collect::<Vec<_>>();
+        
+    }
+
+    // Removes the `pages` from a given `pending` tx.
+    fn rollback(&mut self, txid: &TxId) {
+        // Remove page ids from cache.
+        if let Some(pids) = self.pending.get(txid) {
+            for id in pids.iter() {
+                self.cache.remove(id);
+            }
+        }
+
+        // Remove pages from pending list.
+        self.pending.remove(txid);
+    }
+
+    // freed returns whether a given page is in the free list.
+    fn freed(&self, pg_id: &PgId) -> bool {
+        self.cache.contains(pg_id)
+    }
+
     // Read initializes the free list from a freelist page.
     fn read(&mut self, page: &Page) {
         // If the page.count is at the max uint16 value(64k) then it's considered
@@ -64,8 +88,7 @@ impl FreeList {
             self.ids = PgIds::new();
         } else {
             unsafe {
-                let ids = page.pg_ids().clone();
-                self.ids = PgIds::from(Vec::from(ids));
+                self.ids = PgIds::from(page.pg_ids()[idx..count].to_vec());
                 // make sure they're sorted
                 self.ids.sort();
             }
@@ -107,18 +130,6 @@ impl FreeList {
     //     }
     // }
 
-    /// Removes the `pages` from a given `pending` tx.
-    fn rollback(&mut self, txid: &TxId) {
-        // Remove page ids from cache.
-        if let Some(pids) = self.pending.get(txid) {
-            for id in pids.iter() {
-                self.cache.remove(id);
-            }
-        }
-
-        // Remove pages from pending list.
-        self.pending.remove(txid);
-    }
 
     // `Writes the `Page ids` onto a `free_list page`. All `free` and `pending ids` are
     // saved to disk since in the event of a program crash, all `pending ids` will become
@@ -148,11 +159,6 @@ impl FreeList {
         // Once the available list is rebuilt then rebuild the free cache so that
         // it includes the available and pending free pages.
         self.reindex()
-    }
-
-    // Returns whether a given `page` is in the `free` list.
-    fn free(&self, pgid: &PgId) -> bool {
-        self.cache.contains(pgid)
     }
 
     // Rebuilds the `free cache` based on available and `pending free` lists.

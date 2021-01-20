@@ -1,3 +1,5 @@
+#![feature(hash_drain_filter)]
+
 use std::mem::align_of;
 
 pub mod bucket;
