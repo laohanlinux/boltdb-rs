@@ -221,6 +221,11 @@ impl PgIds {
     pub fn push(&mut self, pgid: PgId) {
         self.inner.push(pgid);
     }
+
+    #[inline]
+    pub fn to_vec(self) -> Vec<PgId> {
+        self.inner
+    }
 }
 
 #[test]

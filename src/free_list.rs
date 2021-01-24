@@ -50,8 +50,9 @@ impl FreeList {
 
     // Release moves all page ids for a transaction id (or older) to the freelist.
     fn release(&mut self, tx_id: TxId) {
-        let mut m = self.pending.drain_filter(|key| *key <= tx_id).map(|(_, pg_id)| pg_id).collect::<Vec<_>>();
-        
+        let mut m = self.pending.drain_filter(|key, _| *key <= tx_id).map(|(_, pg_id)| pg_id.to_vec()).flatten().collect::<Vec<_>>();
+        m.sort();
+
     }
 
     // Removes the `pages` from a given `pending` tx.
