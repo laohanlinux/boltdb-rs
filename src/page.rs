@@ -22,10 +22,10 @@ pub type PgId = u64;
 #[derive(Debug, Default)]
 #[repr(C)]
 pub struct Page {
-    id: PgId,
+    pub(crate) id: PgId,
     flags: u16,
     pub(crate) count: u16,
-    over_flow: u16,
+    pub(crate) over_flow: u16,
     ptr: PhantomData<u8>,
 }
 
@@ -225,6 +225,14 @@ impl PgIds {
     #[inline]
     pub fn to_vec(self) -> Vec<PgId> {
         self.inner
+    }
+
+    // TODO: Optz
+    #[inline]
+    pub fn extend_from_slice(&mut self, slice: Self) {
+        self.inner.extend_from_slice(&*slice.inner);
+        self.inner.dedup();
+        self.inner.sort();
     }
 }
 

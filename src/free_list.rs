@@ -10,9 +10,9 @@ use std::ptr::slice_from_raw_parts;
 struct FreeList {
     // all free and available free page ids.
     ids: PgIds,
-    // all free and available free page ids.
-    pending: HashMap<TxId, PgIds>,
     // mapping of soon-to-be free page ids by tx.
+    pending: HashMap<TxId, PgIds>,
+    // fast lookup of all free and pending page ids.
     cache: HashSet<PgId>,
 }
 
@@ -48,11 +48,34 @@ impl FreeList {
             .fold(0, |acc, (_, pg_ids)| acc + pg_ids.len())
     }
 
+    // Returns the starting page id of contiguous list of pages of a given size.
+    // If a contiguous block cannot be found then 0 is returned.
+    fn allocation(&mut self, n: usize) -> PgId {
+
+        0
+    }
+
+
+    // Releases a page and its overflow for a given transaction id.
+    // If the page is already free then a panic will occur.
+    fn free(&mut self, tx_id: TxId, page: &Page) {
+        assert!(page.id <= 1, "can't free page 0 or 1: {}", page.id);
+        // free page and all its overflow pages.
+        let mut ids = self.pending.get_mut(&tx_id).unwrap();
+        for id in page.id..=(page.id + page.over_flow as u64) {
+            // verify that page is not already free.
+            assert!(self.cache.contains(&id), "page {} already freed", id);
+            // add to the free list and cache.
+            ids.push(id);
+            self.cache.insert(id);
+        }
+    }
+
     // Release moves all page ids for a transaction id (or older) to the freelist.
     fn release(&mut self, tx_id: TxId) {
         let mut m = self.pending.drain_filter(|key, _| *key <= tx_id).map(|(_, pg_id)| pg_id.to_vec()).flatten().collect::<Vec<_>>();
         m.sort();
-
+        self.ids.extend_from_slice(PgIds::from(m));
     }
 
     // Removes the `pages` from a given `pending` tx.
