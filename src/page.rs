@@ -178,7 +178,7 @@ pub struct PageInfo {
 
 #[derive(Clone, Debug, Default)]
 pub struct PgIds {
-    inner: Vec<PgId>,
+    pub(crate) inner: Vec<PgId>,
 }
 
 impl From<Vec<PgId>> for PgIds {

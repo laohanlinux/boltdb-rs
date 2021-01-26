@@ -51,7 +51,45 @@ impl FreeList {
     // Returns the starting page id of contiguous list of pages of a given size.
     // If a contiguous block cannot be found then 0 is returned.
     fn allocation(&mut self, n: usize) -> PgId {
+        if self.ids.len() == 0 {
+            return 0;
+        }
+        let mut initial = 0;
+        let mut prev_id = 0;
 
+        for (i, id) in self.ids.iter().enumerate() {
+            assert!(id.clone() <= 1, "invalid page allocation: {}", id);
+
+            // reset initial page if this is not contiguous.
+            if prev_id == 0 || id - prev_id != 1 {
+                initial = i;
+            }
+
+            // if we found a contiguous block then remove it and return it
+            if (*id as usize - initial) + 1 == n {
+                // if we're allocating off the beginning then take the fast path
+                // and just adjust the existing slice. This will use extra memory
+                // temporarily but the append() in the free() will realloc the slice
+                // as is necessary
+                let mut cur = self.clone();
+                if (i + 1) == n {
+                    self.ids.inner.clone_from_slice(&cur.ids.inner[i + 1..]);
+                } else {
+                    self.ids.inner[i - n + 1..].clone_from_slice(cur.ids.inner[i + 1..].as_ref());
+                    self.ids.inner.clone_from_slice(cur.ids.inner.clone()[..cur.ids.len() - n].as_ref());
+                }
+
+                drop(cur);
+
+                // remove from the free cache
+                for i in 0..n {
+                    self.cache.remove(&((initial + i) as u64));
+                }
+
+                return initial as PgId;
+            }
+            prev_id = *id;
+        }
         0
     }
 
@@ -195,5 +233,14 @@ impl FreeList {
                 .flatten()
                 .collect::<HashSet<_>>(),
         );
+    }
+}
+
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn is_works() {
+        assert_eq!(1 + 1, 2)
     }
 }
