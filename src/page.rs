@@ -19,13 +19,17 @@ pub(crate) const BUCKET_LEAF_FLAG: u16 = 0x10;
 
 pub type PgId = u64;
 
+// Page Header
+// |PgId(u64)|flags(u16)|count(u16)|over_flow
+// So, Page Size = count + over_flow*sizeof(Page)
 #[derive(Debug, Default)]
 #[repr(C)]
 pub struct Page {
     pub(crate) id: PgId,
-    flags: u16,
+    pub(crate) flags: u16,
     pub(crate) count: u16,
     pub(crate) over_flow: u16,
+    // PhantomData not occupy real memory
     ptr: PhantomData<u8>,
 }
 
@@ -70,6 +74,16 @@ impl Page {
     // Retrieves a mut list of branch nodes
     fn branch_page_elements_mut(&mut self) -> &mut [BranchPageElement] {
         unsafe { std::slice::from_raw_parts_mut(self.get_data_mut_ptr() as *mut BranchPageElement, self.count as usize) }
+    }
+
+    // Returns a slice to the free list section of the page.
+    pub(crate) fn free_list(&self) -> &[PgId] {
+        unsafe { std::slice::from_raw_parts(self.get_data_ptr() as * PgId, self.count as usize) }
+    }
+
+    // Returns a mut slice to the free list section of the page.
+    pub(crate) fn free_list_mut(&mut self) -> &mut [PgId] {
+        unsafe { std::slice::from_raw_parts_mut(self.get_data_mut_ptr() as *mut PgId, self.count as usize) }
     }
 
     pub(crate) fn pgid(&self, index: usize) -> &PgId {
@@ -225,6 +239,11 @@ impl PgIds {
     #[inline]
     pub fn to_vec(self) -> Vec<PgId> {
         self.inner
+    }
+
+    #[inline]
+    pub fn as_ref_vec(&self) -> &Vec<PgId> {
+        &self.inner
     }
 
     // TODO: Optz

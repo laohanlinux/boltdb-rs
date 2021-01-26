@@ -1,4 +1,4 @@
-use crate::page::{Page, PgId, PgIds, PAGE_HEADER_SIZE};
+use crate::page::{Page, PgId, PgIds, PAGE_HEADER_SIZE, FREE_LIST_PAGE_FLAG};
 use crate::tx::TxId;
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
@@ -17,6 +17,11 @@ struct FreeList {
 }
 
 impl FreeList {
+    /// Returns an empty, initialized free list.
+    fn new() -> Self {
+        FreeList::default()
+    }
+
     /// Returns the `size` of the `page` after serialization.
     #[inline]
     fn size(&self) -> usize {
@@ -175,22 +180,34 @@ impl FreeList {
         m.into()
     }
 
-    // /// Returns the starting `page` id of a contiguous list of `pages` of a given `size`.
-    // /// If a contiguous block cannot be found then 0 is returned.
-    // pub fn allocate(&self) -> PgId {
-    //     if self.ids.is_empty() {
-    //         return 0;
-    //     }
-    //     let mut initial = 0;
-    //     let mut previd = 0;
-    //     for (i, id) in self.ids.iter().enumerate() {
-    //         assert!(*id > 1, "invalid page allocation: {}", id);
-    //         // Reset initial page if this is not contiguous
-    //         if previd == 0 || *id - previd != 1 {
-    //             initial = *id;
-    //         }
-    //     }
-    // }
+    // Writes the page ids onto a freelist page. All free and pending ids are
+    // saved to disk since in the event of a program crash, all pending ids will
+    // become free.
+    fn write(&mut self, page: &mut Page) {
+        // Combine the old free PgIds and PgIds waiting on an open transaction.
+
+        // Update the header flag.
+        page.flags |= FREE_LIST_PAGE_FLAG;
+
+        // The page.count can only hold up to 16k elements so if we overflow that
+        // number then we handle it by putting the size in the first element.
+        match self.count() {
+            0 => {
+                page.count = 0;
+            }
+            lends if lends < 0xFFFF => {
+                page.count = lends as u16;
+                let mut m = page.free_list();
+                m.copy_from_slice(self.to_pg_ids().as_ref_vec());
+            }
+            lends => {
+                page.count = 0xFFFF;
+                let mut m = page.free_list_mut();
+                m[0] = lends as u64;
+                m.copy_from_slice(self.to_pg_ids().as_ref_vec());
+            }
+        }
+    }
 
 
     // `Writes the `Page ids` onto a `free_list page`. All `free` and `pending ids` are
