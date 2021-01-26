@@ -30,7 +30,7 @@ pub struct Page {
     pub(crate) count: u16,
     pub(crate) over_flow: u16,
     // PhantomData not occupy real memory
-    ptr: PhantomData<u8>,
+    pub(crate) ptr: PhantomData<u8>,
 }
 
 impl Page {
@@ -78,7 +78,7 @@ impl Page {
 
     // Returns a slice to the free list section of the page.
     pub(crate) fn free_list(&self) -> &[PgId] {
-        unsafe { std::slice::from_raw_parts(self.get_data_ptr() as * PgId, self.count as usize) }
+        unsafe { std::slice::from_raw_parts(self.get_data_ptr() as *const PgId, self.count as usize) }
     }
 
     // Returns a mut slice to the free list section of the page.

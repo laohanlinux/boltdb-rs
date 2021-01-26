@@ -102,15 +102,16 @@ impl FreeList {
     // Releases a page and its overflow for a given transaction id.
     // If the page is already free then a panic will occur.
     fn free(&mut self, tx_id: TxId, page: &Page) {
-        assert!(page.id <= 1, "can't free page 0 or 1: {}", page.id);
+        assert!(page.id > 1, "can't free page 0 or 1: {}", page.id);
         // free page and all its overflow pages.
-        let mut ids = self.pending.get_mut(&tx_id).unwrap();
-        for id in page.id..=(page.id + page.over_flow as u64) {
-            // verify that page is not already free.
-            assert!(self.cache.contains(&id), "page {} already freed", id);
-            // add to the free list and cache.
-            ids.push(id);
-            self.cache.insert(id);
+        if let Some(ids) = self.pending.get_mut(&tx_id) {
+            for id in page.id..=(page.id + page.over_flow as u64) {
+                // verify that page is not already free.
+                assert!(!self.cache.contains(&id), "page {} already freed", id);
+                // add to the free list and cache.
+                ids.push(id);
+                self.cache.insert(id);
+            }
         }
     }
 
@@ -197,7 +198,7 @@ impl FreeList {
             }
             lends if lends < 0xFFFF => {
                 page.count = lends as u16;
-                let mut m = page.free_list();
+                let m = page.free_list_mut();
                 m.copy_from_slice(self.to_pg_ids().as_ref_vec());
             }
             lends => {
@@ -256,8 +257,26 @@ impl FreeList {
 
 #[cfg(test)]
 mod test {
+    use crate::free_list::FreeList;
+    use crate::{Page, PgIds};
+
+    // Ensure that a page is added to a transaction's freelist.
     #[test]
-    fn is_works() {
-        assert_eq!(1 + 1, 2)
+    fn t_free() {
+        let mut free_list = FreeList::new();
+        free_list.pending.insert(100, PgIds::new());
+        free_list.free(100, &Page { id: 12, ..Default::default() });
+        let got = free_list.pending.get(&100).unwrap();
+        assert_eq!(got.as_slice(), &vec![12]);
+    }
+
+    // Ensure that a page and its overflow is added to a transaction's freelist.
+    #[test]
+    fn t_freelist_free_overflow() {
+        let mut free_list = FreeList::new();
+        free_list.pending.insert(100, PgIds::new());
+        free_list.free(100, &Page { id: 12, over_flow: 3, ..Default::default() });
+        let got = free_list.pending.get(&100).unwrap();
+        assert_eq!(got.as_slice(), &vec![12, 13, 14, 15]);
     }
 }
