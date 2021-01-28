@@ -7,7 +7,7 @@ use std::ptr::slice_from_raw_parts;
 // Represents a list of all pages that are available for allocation.
 // It also tracks pages that have freed but are still in use by open transaction.
 #[derive(Debug, Clone, Default)]
-struct FreeList {
+pub(crate) struct FreeList {
     // all free and available free page ids.
     ids: PgIds,
     // mapping of soon-to-be free page ids by tx.
@@ -101,7 +101,7 @@ impl FreeList {
 
     // Releases a page and its overflow for a given transaction id.
     // If the page is already free then a panic will occur.
-    fn free(&mut self, tx_id: TxId, page: &Page) {
+    pub(crate) fn free(&mut self, tx_id: TxId, page: &Page) {
         assert!(page.id > 1, "can't free page 0 or 1: {}", page.id);
         // free page and all its overflow pages.
         if let Some(ids) = self.pending.get_mut(&tx_id) {

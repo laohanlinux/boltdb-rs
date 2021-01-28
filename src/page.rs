@@ -6,7 +6,7 @@ use std::mem::size_of;
 use crate::db::Meta;
 
 pub(crate) const PAGE_HEADER_SIZE: usize = size_of::<Page>();
-pub(crate) const MIN_KEYS_PER_PAGE: u64 = 2;
+pub(crate) const MIN_KEYS_PER_PAGE: usize = 2;
 pub(crate) const BRANCH_PAGE_ELEMENT_SIZE: usize = size_of::<BranchPageElement>();
 pub(crate) const LEAF_PAGE_ELEMENT_SIZE: usize = size_of::<LeafPageElement>();
 
@@ -22,7 +22,7 @@ pub type PgId = u64;
 // Page Header
 // |PgId(u64)|flags(u16)|count(u16)|over_flow
 // So, Page Size = count + over_flow*sizeof(Page)
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 #[repr(C)]
 pub struct Page {
     pub(crate) id: PgId,
@@ -42,7 +42,7 @@ impl Page {
     }
 
     // Retrieves the leaf node by index.
-    fn leaf_page_element(&self, index: usize) -> &LeafPageElement {
+    pub(crate) fn leaf_page_element(&self, index: usize) -> &LeafPageElement {
         &self.leaf_page_elements()[index]
     }
 
@@ -62,7 +62,7 @@ impl Page {
     }
 
     // Retrieves the branch node by index.
-    fn branch_page_element(&self, index: usize) -> &BranchPageElement {
+    pub(crate) fn branch_page_element(&self, index: usize) -> &BranchPageElement {
         &self.branch_page_elements()[index]
     }
 
@@ -124,10 +124,10 @@ impl Display for Page {
 // represents a node on a branch page.
 #[derive(Debug, Default)]
 #[repr(C)]
-struct BranchPageElement {
+pub(crate) struct BranchPageElement {
     pos: u32,
     k_size: u32,
-    pgid: PgId,
+    pub(crate) pgid: PgId,
 }
 
 impl BranchPageElement {
@@ -149,8 +149,8 @@ impl BranchPageElement {
 // represents a node on a leaf page.
 #[derive(Debug, Default)]
 #[repr(C)]
-struct LeafPageElement {
-    flags: u32,
+pub(crate) struct LeafPageElement {
+    pub(crate) flags: u32,
     pos: u32,
     k_size: u32,
     v_size: u32,
