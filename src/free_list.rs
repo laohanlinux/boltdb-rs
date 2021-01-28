@@ -203,7 +203,7 @@ impl FreeList {
             }
             lends => {
                 page.count = 0xFFFF;
-                let mut m = page.free_list_mut();
+                let m = page.free_list_mut();
                 m[0] = lends as u64;
                 m.copy_from_slice(self.to_pg_ids().as_ref_vec());
             }
