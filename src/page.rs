@@ -4,11 +4,14 @@ use std::slice::Iter;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use crate::db::Meta;
+use std::ptr::slice_from_raw_parts;
+use std::sync::atomic::Ordering::Release;
 
 pub(crate) const PAGE_HEADER_SIZE: usize = size_of::<Page>();
 pub(crate) const MIN_KEYS_PER_PAGE: usize = 2;
 pub(crate) const BRANCH_PAGE_ELEMENT_SIZE: usize = size_of::<BranchPageElement>();
 pub(crate) const LEAF_PAGE_ELEMENT_SIZE: usize = size_of::<LeafPageElement>();
+pub(crate) const META_PAGE_SIZE: usize = size_of::<Meta>();
 
 pub(crate) const BRANCH_PAGE_FLAG: u16 = 0x01;
 pub(crate) const LEAF_PAGE_FLAG: u16 = 0x02;
@@ -103,7 +106,44 @@ impl Page {
     pub(crate) fn get_data_ptr(&self) -> *const u8 {
         &self.ptr as *const PhantomData<u8> as *const u8
     }
+
+    fn byte_size(&self) -> usize {
+        let mut size = PAGE_HEADER_SIZE;
+        match self.flags {
+            BRANCH_PAGE_FLAG => {
+                let branch = self.branch_page_elements();
+                let len = branch.len();
+                if len > 0 {
+                    size += (len - 1) * BRANCH_PAGE_ELEMENT_SIZE;
+                    // TODO why?
+                    size += (branch.last().unwrap().pos + branch.last().unwrap().k_size) as usize;
+                }
+            }
+            BUCKET_LEAF_FLAG => {
+                let leaves = self.leaf_page_elements();
+                let len = leaves.len();
+                if len > 0 {
+                    size += (len - 1) * LEAF_PAGE_ELEMENT_SIZE;
+                    size += (leaves.last().unwrap().pos + leaves.last().unwrap().k_size + leaves.last().unwrap().v_size) as usize;
+                }
+            }
+            META_PAGE_FLAG => {
+                size += META_PAGE_SIZE;
+            }
+            FREE_LIST_PAGE_FLAG => {
+                size += self.pg_ids().len() * size_of::<PgId>();
+            }
+            _ => panic!("Unknown page flag: {:0x}", self.flags)
+        }
+        size
+    }
 }
+
+// impl ToOwned for Page {
+//     type Owned = Vec<u8>;
+//
+//     fn to_owned(&self) -> Self::Owned {}
+// }
 
 impl Display for Page {
     fn fmt(&self, f: &mut Formatter<'_>) -> ::std::fmt::Result {
@@ -190,7 +230,7 @@ pub struct PageInfo {
     pub over_flow_count: isize,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialOrd, PartialEq)]
 pub struct PgIds {
     pub(crate) inner: Vec<PgId>,
 }
