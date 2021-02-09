@@ -3,6 +3,9 @@
 
 use std::mem::align_of;
 
+#[macro_use]
+extern crate memoffset;
+
 pub mod bucket;
 pub mod db;
 pub mod free_list;

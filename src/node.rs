@@ -183,7 +183,7 @@ impl Node {
     /// Initializes the node from a page.
     fn read(&mut self, p: &Page) {
         self.pg_id = p.id;
-        self.is_leaf = (p.flags & LEAF_PAGE_FLAG != 0);
+        self.is_leaf = p.flags & LEAF_PAGE_FLAG != 0;
 
         for i in 0..p.count {
             let i = i as usize;

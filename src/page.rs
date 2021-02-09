@@ -1,6 +1,6 @@
 use crate::must_align;
 use std::fmt::{Display, Formatter};
-use std::slice::Iter;
+use std::slice::{Iter, from_raw_parts};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use crate::db::Meta;
@@ -107,6 +107,14 @@ impl Page {
         &self.ptr as *const PhantomData<u8> as *const u8
     }
 
+    #[inline]
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        let ptr = self as *const Page as *const u8;
+        unsafe {
+            from_raw_parts(ptr, self.byte_size())
+        }
+    }
+
     fn byte_size(&self) -> usize {
         let mut size = PAGE_HEADER_SIZE;
         match self.flags {
@@ -114,20 +122,22 @@ impl Page {
                 let branch = self.branch_page_elements();
                 let len = branch.len();
                 if len > 0 {
+                    let last_branch = branch.last().unwrap();
                     size += (len - 1) * BRANCH_PAGE_ELEMENT_SIZE;
-                    // TODO why?
-                    size += (branch.last().unwrap().pos + branch.last().unwrap().k_size) as usize;
+                    size += (last_branch.pos + last_branch.k_size) as usize;
                 }
             }
             BUCKET_LEAF_FLAG => {
                 let leaves = self.leaf_page_elements();
                 let len = leaves.len();
                 if len > 0 {
+                    let last_leaf = leaves.last().unwrap();
                     size += (len - 1) * LEAF_PAGE_ELEMENT_SIZE;
-                    size += (leaves.last().unwrap().pos + leaves.last().unwrap().k_size + leaves.last().unwrap().v_size) as usize;
+                    size += (last_leaf.pos + last_leaf.k_size + last_leaf.v_size) as usize;
                 }
             }
             META_PAGE_FLAG => {
+                // TODO?
                 size += META_PAGE_SIZE;
             }
             FREE_LIST_PAGE_FLAG => {
@@ -137,12 +147,39 @@ impl Page {
         }
         size
     }
+
+    fn to_vec(self) -> Vec<u8> {
+        let v: Vec<u8> = self.into();
+        v
+    }
 }
 
-// impl ToOwned for Page {
-//     type Owned = Vec<u8>;
+impl Into<Vec<u8>> for Page {
+    fn into(self) -> Vec<u8> {
+        let ptr = &self as *const Page as *const u8;
+        unsafe {
+            from_raw_parts(ptr, self.byte_size()).to_vec()
+        }
+    }
+}
+
+// impl From<&[u8]> for Page {
+//     fn from(buf: &[u8]) -> Self {
+//         // get flag offset
+//         let flag_offset = offset_of!(Page, flags);
+//         let flag = 8 << buf[flag_offset+1]  + buf[flag_offset];
+//         if flag & BRANCH_PAGE_FLAG != 0 {
 //
-//     fn to_owned(&self) -> Self::Owned {}
+//         }else  if flag & LEAF_PAGE_FLAG != 0 {
+//
+//         }else if flag & META_PAGE_FLAG !=0 {
+//
+//         }else if flag & FREE_LIST_PAGE_FLAG != 0 {
+//
+//         } else {
+//             panic!("");
+//         }
+//     }
 // }
 
 impl Display for Page {
@@ -165,6 +202,7 @@ impl Display for Page {
 #[derive(Debug, Default)]
 #[repr(C)]
 pub(crate) struct BranchPageElement {
+    // distinct of the branch page element
     pos: u32,
     k_size: u32,
     pub(crate) pgid: PgId,
@@ -191,6 +229,7 @@ impl BranchPageElement {
 #[repr(C)]
 pub(crate) struct LeafPageElement {
     pub(crate) flags: u32,
+    // distinct of the leaf page element
     pos: u32,
     k_size: u32,
     v_size: u32,
@@ -302,4 +341,12 @@ fn t_page_type() {
     assert_eq!(Page { flags: META_PAGE_FLAG, ..Default::default() }.to_string(), "meta");
     assert_eq!(Page { flags: FREE_LIST_PAGE_FLAG, ..Default::default() }.to_string(), "freelist");
     assert_eq!(Page { flags: 0x4e20, ..Default::default() }.to_string(), "unknown<4e20>");
+}
+
+#[test]
+fn t_page_buffer() {
+    let mut page = Page { id: 2, flags: FREE_LIST_PAGE_FLAG, ..Default::default() };
+    // let v = page.to_vec();
+    println!("{:?}", page.as_slice());
+    // let p1: Page = v.into();
 }
