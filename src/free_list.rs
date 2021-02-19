@@ -104,14 +104,13 @@ impl FreeList {
     pub(crate) fn free(&mut self, tx_id: TxId, page: &Page) {
         assert!(page.id > 1, "can't free page 0 or 1: {}", page.id);
         // free page and all its overflow pages.
-        if let Some(ids) = self.pending.get_mut(&tx_id) {
-            for id in page.id..=(page.id + page.over_flow as u64) {
-                // verify that page is not already free.
-                assert!(!self.cache.contains(&id), "page {} already freed", id);
-                // add to the free list and cache.
-                ids.push(id);
-                self.cache.insert(id);
-            }
+        let ids = self.pending.entry(tx_id).or_insert(PgIds::new());
+        for id in page.id..=(page.id + page.over_flow as u64) {
+            // verify that page is not already free.
+            assert!(!self.cache.contains(&id), "page {} already freed", id);
+            // add to the free list and cache.
+            ids.push(id);
+            self.cache.insert(id);
         }
     }
 
@@ -258,13 +257,14 @@ impl FreeList {
 #[cfg(test)]
 mod test {
     use crate::free_list::FreeList;
-    use crate::{Page, PgIds};
+    use crate::{Page, PgIds, PgId};
+    use std::slice::from_raw_parts_mut;
+    use crate::page::FREE_LIST_PAGE_FLAG;
 
     // Ensure that a page is added to a transaction's freelist.
     #[test]
     fn t_free() {
         let mut free_list = FreeList::new();
-        free_list.pending.insert(100, PgIds::new());
         free_list.free(100, &Page { id: 12, ..Default::default() });
         let got = free_list.pending.get(&100).unwrap();
         assert_eq!(got.as_slice(), &vec![12]);
@@ -274,9 +274,44 @@ mod test {
     #[test]
     fn t_freelist_free_overflow() {
         let mut free_list = FreeList::new();
-        free_list.pending.insert(100, PgIds::new());
         free_list.free(100, &Page { id: 12, over_flow: 3, ..Default::default() });
         let got = free_list.pending.get(&100).unwrap();
         assert_eq!(got.as_slice(), &vec![12, 13, 14, 15]);
+    }
+
+    #[test]
+    fn t_freelist_release() {
+        let mut free_list = FreeList::new();
+        free_list.free(100, &Page { id: 12, over_flow: 1, ..Default::default() });
+        free_list.free(100, &Page { id: 9, ..Default::default() });
+        free_list.free(102, &Page { id: 39, ..Default::default() });
+        free_list.release(100);
+        free_list.release(101);
+        assert_eq!(PgIds::from(vec![9, 12, 13]), free_list.ids);
+        free_list.release(102);
+        assert_eq!(PgIds::from(vec![9, 12, 13, 39]), free_list.ids);
+    }
+
+
+    #[test]
+    fn t_freelist_read() {
+        // Crate a page
+        let buf = &mut [0; 4096];
+        let mut page = Page::from_mut_slice(buf);
+        page.flags = FREE_LIST_PAGE_FLAG;
+        page.count = 2;
+
+        // Insert 2 page ids.
+        let ids = &mut page.pg_ids_mut()[..2];
+        ids[0] = 23;
+        ids[1] = 50;
+
+        // Deserialize page into free_list.
+        let mut free_list = FreeList::new();
+        free_list.read(&page);
+
+        // Ensure that there are two page ids in the free_list.
+        let exp = PgIds::from(vec![23, 50]);
+        assert_eq!(exp, free_list.ids);
     }
 }
