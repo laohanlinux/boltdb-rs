@@ -257,8 +257,9 @@ impl FreeList {
 #[cfg(test)]
 mod test {
     use crate::free_list::FreeList;
-    use crate::{Page, PgIds};
+    use crate::{Page, PgIds, PgId};
     use std::slice::from_raw_parts_mut;
+    use crate::page::FREE_LIST_PAGE_FLAG;
 
     // Ensure that a page is added to a transaction's freelist.
     #[test]
@@ -295,10 +296,22 @@ mod test {
     #[test]
     fn t_freelist_read() {
         // Crate a page
-        let buf = &mut [4096];
-        // let mut page = unsafe {
-        //     from_raw_parts_mut(buf.as_mut_ptr(), 4096) as *mut PgIds
-        // };
+        let buf = &mut [0; 4096];
+        let mut page = Page::from_mut_slice(buf);
+        page.flags = FREE_LIST_PAGE_FLAG;
+        page.count = 2;
 
+        // Insert 2 page ids.
+        let ids = &mut page.pg_ids_mut()[..2];
+        ids[0] = 23;
+        ids[1] = 50;
+
+        // Deserialize page into free_list.
+        let mut free_list = FreeList::new();
+        free_list.read(&page);
+
+        // Ensure that there are two page ids in the free_list.
+        let exp = PgIds::from(vec![23, 50]);
+        assert_eq!(exp, free_list.ids);
     }
 }

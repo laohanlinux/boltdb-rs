@@ -1,6 +1,6 @@
 use crate::must_align;
 use std::fmt::{Display, Formatter};
-use std::slice::{Iter, from_raw_parts};
+use std::slice::{Iter, from_raw_parts, from_raw_parts_mut};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use crate::db::Meta;
@@ -97,6 +97,10 @@ impl Page {
         unsafe { std::slice::from_raw_parts(self.get_data_ptr() as *const PgId, self.count as usize) }
     }
 
+    pub(crate) fn pg_ids_mut(&mut self) -> &mut [PgId] {
+        unsafe { std::slice::from_raw_parts_mut(self.get_data_mut_ptr() as *mut PgId, self.count as usize) }
+    }
+
     #[inline]
     pub(crate) fn get_data_mut_ptr(&mut self) -> *mut u8 {
         &mut self.ptr as *mut PhantomData<u8> as *mut u8
@@ -115,6 +119,23 @@ impl Page {
         }
     }
 
+    #[inline]
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
+        let ptr = self as *mut Page as *mut u8;
+        unsafe { from_raw_parts_mut(ptr, self.byte_size()) }
+    }
+
+    #[inline]
+    pub(crate) fn from_slice(buffer: &[u8]) -> &Self {
+        unsafe { &*(buffer.as_ptr() as *const Page) }
+    }
+
+    #[inline]
+    pub(crate) fn from_mut_slice(mut buffer: &mut [u8]) -> &mut Self {
+        unsafe { &mut *(buffer.as_mut_ptr() as *mut Page) }
+    }
+
+    #[inline]
     fn byte_size(&self) -> usize {
         let mut size = PAGE_HEADER_SIZE;
         match self.flags {
@@ -163,24 +184,6 @@ impl Into<Vec<u8>> for Page {
     }
 }
 
-// impl From<&[u8]> for Page {
-//     fn from(buf: &[u8]) -> Self {
-//         // get flag offset
-//         let flag_offset = offset_of!(Page, flags);
-//         let flag = 8 << buf[flag_offset+1]  + buf[flag_offset];
-//         if flag & BRANCH_PAGE_FLAG != 0 {
-//
-//         }else  if flag & LEAF_PAGE_FLAG != 0 {
-//
-//         }else if flag & META_PAGE_FLAG !=0 {
-//
-//         }else if flag & FREE_LIST_PAGE_FLAG != 0 {
-//
-//         } else {
-//             panic!("");
-//         }
-//     }
-// }
 
 impl Display for Page {
     fn fmt(&self, f: &mut Formatter<'_>) -> ::std::fmt::Result {
@@ -346,7 +349,6 @@ fn t_page_type() {
 #[test]
 fn t_page_buffer() {
     let mut page = Page { id: 2, flags: FREE_LIST_PAGE_FLAG, ..Default::default() };
-    // let v = page.to_vec();
-    println!("{:?}", page.as_slice());
-    // let p1: Page = v.into();
+    let new_page = Page::from_slice(page.as_slice());
+    assert_eq!(page.as_slice(), new_page.as_slice());
 }
