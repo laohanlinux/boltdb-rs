@@ -120,7 +120,7 @@ impl Page {
     }
 
     #[inline]
-    pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
+    pub(crate) fn as_slice_mut(&mut self) -> &mut [u8] {
         let ptr = self as *mut Page as *mut u8;
         unsafe { from_raw_parts_mut(ptr, self.byte_size()) }
     }
@@ -131,7 +131,7 @@ impl Page {
     }
 
     #[inline]
-    pub(crate) fn from_mut_slice(mut buffer: &mut [u8]) -> &mut Self {
+    pub(crate) fn from_slice_mut(mut buffer: &mut [u8]) -> &mut Self {
         unsafe { &mut *(buffer.as_mut_ptr() as *mut Page) }
     }
 

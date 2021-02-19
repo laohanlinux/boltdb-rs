@@ -255,11 +255,15 @@ impl FreeList {
 
 
 #[cfg(test)]
-mod test {
+mod tests {
     use crate::free_list::FreeList;
     use crate::{Page, PgIds, PgId};
     use std::slice::from_raw_parts_mut;
     use crate::page::FREE_LIST_PAGE_FLAG;
+    use test::Bencher;
+    use rand::Rng;
+    use std::collections::HashMap;
+    use rand::rngs::ThreadRng;
 
     // Ensure that a page is added to a transaction's freelist.
     #[test]
@@ -299,7 +303,7 @@ mod test {
     fn t_freelist_read() {
         // Crate a page
         let buf = &mut [0; 4096];
-        let mut page = Page::from_mut_slice(buf);
+        let mut page = Page::from_slice_mut(buf);
         page.flags = FREE_LIST_PAGE_FLAG;
         page.count = 2;
 
@@ -326,7 +330,7 @@ mod test {
         free_list.ids = PgIds::from(vec![12, 39]);
         free_list.pending.insert(100, PgIds::from(vec![28, 11]));
         free_list.pending.insert(101, PgIds::from(vec![3]));
-        let page = Page::from_mut_slice(buffer);
+        let page = Page::from_slice_mut(buffer);
         free_list.write(page);
 
         // Read the page back out.
@@ -337,5 +341,32 @@ mod test {
         // All pages should be present and in reverse order.
         let exp = PgIds::from(vec![3, 11, 12, 28, 39]);
         assert_eq!(exp, free_list2.ids);
+    }
+
+
+    #[bench]
+    fn b_free_list_release(b: &mut Bencher) {
+        benchmark_free_list_release(b, 1000);
+    }
+
+    fn benchmark_free_list_release(b: &mut Bencher, n: usize) {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let ids = random_pgids(n, &mut rng);
+        b.iter(move || {
+            let mut rng = rng.clone();
+            let ids = ids.clone();
+            let mut free_list = FreeList::new();
+            free_list.ids = ids;
+            free_list.pending.insert(1, random_pgids((free_list.ids.len() / 400) + 1, &mut rng));
+            free_list.release(1);
+        });
+    }
+
+    fn random_pgids(n: usize, rng: &mut ThreadRng) -> PgIds {
+        let num = rng.gen_range(0..n);
+        let mut pids = Vec::with_capacity(num);
+        pids.iter_mut().for_each(|pgid| *pgid = rng.gen());
+        PgIds::from(pids)
     }
 }
