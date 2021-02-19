@@ -279,6 +279,7 @@ mod test {
         assert_eq!(got.as_slice(), &vec![12, 13, 14, 15]);
     }
 
+    // Ensure that a free_list can find contiguous blocks of pages.
     #[test]
     fn t_freelist_release() {
         let mut free_list = FreeList::new();
@@ -293,6 +294,7 @@ mod test {
     }
 
 
+    // Ensure that a free list can deserialize from a free_list page.
     #[test]
     fn t_freelist_read() {
         // Crate a page
@@ -313,5 +315,27 @@ mod test {
         // Ensure that there are two page ids in the free_list.
         let exp = PgIds::from(vec![23, 50]);
         assert_eq!(exp, free_list.ids);
+    }
+
+    // Ensure that a free_list can serialize into a free_list page.
+    #[test]
+    fn t_freelist_write() {
+        // Create a free_list and write it to a page.
+        let buffer = &mut [0; 4096];
+        let mut free_list = FreeList::new();
+        free_list.ids = PgIds::from(vec![12, 39]);
+        free_list.pending.insert(100, PgIds::from(vec![28, 11]));
+        free_list.pending.insert(101, PgIds::from(vec![3]));
+        let page = Page::from_mut_slice(buffer);
+        free_list.write(page);
+
+        // Read the page back out.
+        let mut free_list2 = FreeList::new();
+        free_list2.read(&page);
+
+        // Ensure that the free_list is correct.
+        // All pages should be present and in reverse order.
+        let exp = PgIds::from(vec![3, 11, 12, 28, 39]);
+        assert_eq!(exp, free_list2.ids);
     }
 }
