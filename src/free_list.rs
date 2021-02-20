@@ -55,47 +55,44 @@ impl FreeList {
 
     // Returns the starting page id of contiguous list of pages of a given size.
     // If a contiguous block cannot be found then 0 is returned.
-    fn allocation(&mut self, n: usize) -> PgId {
+    fn allocate(&mut self, n: usize) -> Option<PgId> {
         if self.ids.len() == 0 {
-            return 0;
+            return None;
         }
         let mut initial = 0;
         let mut prev_id = 0;
+        let mut drain: Vec<u64> = vec![];
 
         for (i, id) in self.ids.iter().enumerate() {
-            assert!(id.clone() <= 1, "invalid page allocation: {}", id);
+            assert!(*id >= 1, "invalid page allocation: {}", id);
 
-            // reset initial page if this is not contiguous.
+            // Reset initial page if this is not contiguous.
             if prev_id == 0 || id - prev_id != 1 {
-                initial = i;
+                initial = *id;
             }
 
-            // if we found a contiguous block then remove it and return it
-            if (*id as usize - initial) + 1 == n {
-                // if we're allocating off the beginning then take the fast path
+            // If we found a contiguous block then remove it and return it.
+            if (*id - initial) + 1 == n as PgId {
+                // If we're allocating off the beginning then take the fast path
                 // and just adjust the existing slice. This will use extra memory
                 // temporarily but the append() in the free() will realloc the slice
-                // as is necessary
+                // as is necessary.
                 let mut cur = self.clone();
                 if (i + 1) == n {
-                    self.ids.inner.clone_from_slice(&cur.ids.inner[i + 1..]);
+                    drain = self.ids.drain(..=i);
                 } else {
-                    self.ids.inner[i - n + 1..].clone_from_slice(cur.ids.inner[i + 1..].as_ref());
-                    self.ids.inner.clone_from_slice(cur.ids.inner.clone()[..cur.ids.len() - n].as_ref());
+                    drain = self.ids.drain((*id - initial) as usize..=i);
                 }
 
-                drop(cur);
-
-                // remove from the free cache
-                for i in 0..n {
-                    self.cache.remove(&((initial + i) as u64));
+                // Remove from the free cache
+                for id in drain {
+                    self.cache.remove(&id);
                 }
-
-                return initial as PgId;
+                return Some(initial);
             }
             prev_id = *id;
         }
-        0
+        None
     }
 
 
@@ -283,7 +280,7 @@ mod tests {
         assert_eq!(got.as_slice(), &vec![12, 13, 14, 15]);
     }
 
-    // Ensure that a free_list can find contiguous blocks of pages.
+    // Ensure that a free list can find contiguous blocks of pages.
     #[test]
     fn t_freelist_release() {
         let mut free_list = FreeList::new();
@@ -295,6 +292,23 @@ mod tests {
         assert_eq!(PgIds::from(vec![9, 12, 13]), free_list.ids);
         free_list.release(102);
         assert_eq!(PgIds::from(vec![9, 12, 13, 39]), free_list.ids);
+    }
+
+    // Ensure that a free list cab find contiguous blocks of pages.
+    #[test]
+    fn t_freelist_allocate() {
+        let mut free_list = FreeList::new();
+        free_list.ids = PgIds::from(vec![3, 4, 5, 6, 7, 9, 12, 13, 18]);
+        let tests = vec![(3, 3), (1, 6), (3, 0), (2, 12), (1, 7), (0, 0), (0, 0)];
+        for (input, got) in tests {
+            let exp = free_list.allocate(input);
+            assert_eq!(exp.or(Some(0)).unwrap(), got);
+        }
+
+        assert_eq!(PgIds::from(vec![9, 18]), free_list.ids);
+
+        let tests = vec![(1, 9), (1, 18), (1, 0)];
+        assert_eq!(PgIds::new(), free_list.ids);
     }
 
 
@@ -345,8 +359,23 @@ mod tests {
 
 
     #[bench]
-    fn b_free_list_release(b: &mut Bencher) {
-        benchmark_free_list_release(b, 1000);
+    fn b_free_list_release10k(b: &mut Bencher) {
+        benchmark_free_list_release(b, 10_000);
+    }
+
+    #[bench]
+    fn b_free_list_release100k(b: &mut Bencher) {
+        benchmark_free_list_release(b, 100_000);
+    }
+
+    #[bench]
+    fn benchmark_free_list_release1000k(b: &mut Bencher) {
+        benchmark_free_list_release(b, 1000_000);
+    }
+
+    #[bench]
+    fn benchmark_free_list_release10000k(b: &mut Bencher) {
+        benchmark_free_list_release(b, 10000_000);
     }
 
     fn benchmark_free_list_release(b: &mut Bencher, n: usize) {
