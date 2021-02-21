@@ -6,6 +6,7 @@ use std::mem::size_of;
 use crate::db::Meta;
 use std::ptr::slice_from_raw_parts;
 use std::sync::atomic::Ordering::Release;
+use std::ops::RangeBounds;
 
 pub(crate) const PAGE_HEADER_SIZE: usize = size_of::<Page>();
 pub(crate) const MIN_KEYS_PER_PAGE: usize = 2;
@@ -120,7 +121,7 @@ impl Page {
     }
 
     #[inline]
-    pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
+    pub(crate) fn as_slice_mut(&mut self) -> &mut [u8] {
         let ptr = self as *mut Page as *mut u8;
         unsafe { from_raw_parts_mut(ptr, self.byte_size()) }
     }
@@ -131,7 +132,7 @@ impl Page {
     }
 
     #[inline]
-    pub(crate) fn from_mut_slice(mut buffer: &mut [u8]) -> &mut Self {
+    pub(crate) fn from_slice_mut(mut buffer: &mut [u8]) -> &mut Self {
         unsafe { &mut *(buffer.as_mut_ptr() as *mut Page) }
     }
 
@@ -326,6 +327,13 @@ impl PgIds {
     #[inline]
     pub fn as_ref_vec(&self) -> &Vec<PgId> {
         &self.inner
+    }
+
+    #[inline]
+    pub fn drain<R>(&mut self, range: R) -> Vec<u64>
+        where
+            R: RangeBounds<usize> {
+        self.inner.drain(range).collect::<Vec<_>>()
     }
 
     // TODO: Optz

@@ -55,49 +55,45 @@ impl FreeList {
 
     // Returns the starting page id of contiguous list of pages of a given size.
     // If a contiguous block cannot be found then 0 is returned.
-    fn allocation(&mut self, n: usize) -> PgId {
+    fn allocate(&mut self, n: usize) -> Option<PgId> {
         if self.ids.len() == 0 {
-            return 0;
+            return None;
         }
         let mut initial = 0;
         let mut prev_id = 0;
+        let mut drain: Vec<u64> = vec![];
 
         for (i, id) in self.ids.iter().enumerate() {
-            assert!(id.clone() <= 1, "invalid page allocation: {}", id);
+            assert!(*id >= 1, "invalid page allocation: {}", id);
 
-            // reset initial page if this is not contiguous.
+            // Reset initial page if this is not contiguous.
             if prev_id == 0 || id - prev_id != 1 {
-                initial = i;
+                initial = *id;
             }
 
-            // if we found a contiguous block then remove it and return it
-            if (*id as usize - initial) + 1 == n {
-                // if we're allocating off the beginning then take the fast path
+            // If we found a contiguous block then remove it and return it.
+            if (*id - initial) + 1 == n as PgId {
+                // If we're allocating off the beginning then take the fast path
                 // and just adjust the existing slice. This will use extra memory
                 // temporarily but the append() in the free() will realloc the slice
-                // as is necessary
+                // as is necessary.
                 let mut cur = self.clone();
                 if (i + 1) == n {
-                    self.ids.inner.clone_from_slice(&cur.ids.inner[i + 1..]);
+                    drain = self.ids.drain(..=i);
                 } else {
-                    self.ids.inner[i - n + 1..].clone_from_slice(cur.ids.inner[i + 1..].as_ref());
-                    self.ids.inner.clone_from_slice(cur.ids.inner.clone()[..cur.ids.len() - n].as_ref());
+                    drain = self.ids.drain((*id - initial + 1) as usize..=i);
                 }
 
-                drop(cur);
-
-                // remove from the free cache
-                for i in 0..n {
-                    self.cache.remove(&((initial + i) as u64));
+                // Remove from the free cache
+                for id in drain {
+                    self.cache.remove(&id);
                 }
-
-                return initial as PgId;
+                return Some(initial);
             }
             prev_id = *id;
         }
-        0
+        None
     }
-
 
     // Releases a page and its overflow for a given transaction id.
     // If the page is already free then a panic will occur.
@@ -255,11 +251,15 @@ impl FreeList {
 
 
 #[cfg(test)]
-mod test {
+mod tests {
     use crate::free_list::FreeList;
     use crate::{Page, PgIds, PgId};
     use std::slice::from_raw_parts_mut;
     use crate::page::FREE_LIST_PAGE_FLAG;
+    use test::Bencher;
+    use rand::Rng;
+    use std::collections::HashMap;
+    use rand::rngs::ThreadRng;
 
     // Ensure that a page is added to a transaction's freelist.
     #[test]
@@ -279,6 +279,7 @@ mod test {
         assert_eq!(got.as_slice(), &vec![12, 13, 14, 15]);
     }
 
+    // Ensure that a free list can find contiguous blocks of pages.
     #[test]
     fn t_freelist_release() {
         let mut free_list = FreeList::new();
@@ -292,12 +293,34 @@ mod test {
         assert_eq!(PgIds::from(vec![9, 12, 13, 39]), free_list.ids);
     }
 
+    // Ensure that a free list cab find contiguous blocks of pages.
+    #[test]
+    fn t_freelist_allocate() {
+        let mut free_list = FreeList::new();
+        free_list.ids = PgIds::from(vec![3, 4, 5, 6, 7, 9, 12, 13, 18]);
+        let tests = vec![(3, 3), (1, 6), (3, 0), (2, 12), (1, 7), (0, 0), (0, 0)];
+        for (input, got) in tests {
+            let exp = free_list.allocate(input);
+            assert_eq!(exp.or(Some(0)).unwrap(), got);
+        }
 
+        assert_eq!(PgIds::from(vec![9, 18]), free_list.ids);
+
+        let tests = vec![(1, 9), (1, 18), (1, 0)];
+        for (input, got) in tests {
+            let exp = free_list.allocate(input);
+            assert_eq!(exp.or(Some(0)).unwrap(), got);
+        }
+        assert_eq!(PgIds::new(), free_list.ids);
+    }
+
+
+    // Ensure that a free list can deserialize from a free_list page.
     #[test]
     fn t_freelist_read() {
         // Crate a page
         let buf = &mut [0; 4096];
-        let mut page = Page::from_mut_slice(buf);
+        let mut page = Page::from_slice_mut(buf);
         page.flags = FREE_LIST_PAGE_FLAG;
         page.count = 2;
 
@@ -313,5 +336,69 @@ mod test {
         // Ensure that there are two page ids in the free_list.
         let exp = PgIds::from(vec![23, 50]);
         assert_eq!(exp, free_list.ids);
+    }
+
+    // Ensure that a free_list can serialize into a free_list page.
+    #[test]
+    fn t_freelist_write() {
+        // Create a free_list and write it to a page.
+        let buffer = &mut [0; 4096];
+        let mut free_list = FreeList::new();
+        free_list.ids = PgIds::from(vec![12, 39]);
+        free_list.pending.insert(100, PgIds::from(vec![28, 11]));
+        free_list.pending.insert(101, PgIds::from(vec![3]));
+        let page = Page::from_slice_mut(buffer);
+        free_list.write(page);
+
+        // Read the page back out.
+        let mut free_list2 = FreeList::new();
+        free_list2.read(&page);
+
+        // Ensure that the free_list is correct.
+        // All pages should be present and in reverse order.
+        let exp = PgIds::from(vec![3, 11, 12, 28, 39]);
+        assert_eq!(exp, free_list2.ids);
+    }
+
+
+    #[bench]
+    fn b_free_list_release10k(b: &mut Bencher) {
+        benchmark_free_list_release(b, 10_000);
+    }
+
+    #[bench]
+    fn b_free_list_release100k(b: &mut Bencher) {
+        benchmark_free_list_release(b, 100_000);
+    }
+
+    #[bench]
+    fn benchmark_free_list_release1000k(b: &mut Bencher) {
+        benchmark_free_list_release(b, 1000_000);
+    }
+
+    #[bench]
+    fn benchmark_free_list_release10000k(b: &mut Bencher) {
+        benchmark_free_list_release(b, 10000_000);
+    }
+
+    fn benchmark_free_list_release(b: &mut Bencher, n: usize) {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let ids = random_pgids(n, &mut rng);
+        b.iter(move || {
+            let mut rng = rng.clone();
+            let ids = ids.clone();
+            let mut free_list = FreeList::new();
+            free_list.ids = ids;
+            free_list.pending.insert(1, random_pgids((free_list.ids.len() / 400) + 1, &mut rng));
+            free_list.release(1);
+        });
+    }
+
+    fn random_pgids(n: usize, rng: &mut ThreadRng) -> PgIds {
+        let num = rng.gen_range(0..n);
+        let mut pids = Vec::with_capacity(num);
+        pids.iter_mut().for_each(|pgid| *pgid = rng.gen());
+        PgIds::from(pids)
     }
 }

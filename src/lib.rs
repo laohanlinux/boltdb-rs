@@ -1,10 +1,12 @@
 #![feature(hash_drain_filter)]
 #![feature(drain_filter)]
+#![feature(test)]
 
 use std::mem::align_of;
 
 #[macro_use]
 extern crate memoffset;
+extern crate test;
 
 pub mod bucket;
 pub mod db;
