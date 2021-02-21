@@ -81,7 +81,7 @@ impl FreeList {
                 if (i + 1) == n {
                     drain = self.ids.drain(..=i);
                 } else {
-                    drain = self.ids.drain((*id - initial) as usize..=i);
+                    drain = self.ids.drain((*id - initial + 1) as usize..=i);
                 }
 
                 // Remove from the free cache
@@ -94,7 +94,6 @@ impl FreeList {
         }
         None
     }
-
 
     // Releases a page and its overflow for a given transaction id.
     // If the page is already free then a panic will occur.
@@ -308,6 +307,10 @@ mod tests {
         assert_eq!(PgIds::from(vec![9, 18]), free_list.ids);
 
         let tests = vec![(1, 9), (1, 18), (1, 0)];
+        for (input, got) in tests {
+            let exp = free_list.allocate(input);
+            assert_eq!(exp.or(Some(0)).unwrap(), got);
+        }
         assert_eq!(PgIds::new(), free_list.ids);
     }
 
