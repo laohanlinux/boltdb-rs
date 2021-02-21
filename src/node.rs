@@ -30,15 +30,15 @@ impl Node {
         Node::default()
     }
 
-    /// Returns the top-level node this node is attached to.
+    // Returns the top-level node this node is attached to.
     fn root(&self) -> &Node {
-        if let Some(r) = &self.parent {
-            return r.root();
+        if let Some(parent) = &self.parent {
+            return parent.root();
         }
         self
     }
 
-    /// Returns the minimum number of inodes this node should have.
+    // Returns the minimum number of inodes this node should have.
     fn min_keys(&self) -> usize {
         if self.is_leaf {
             return 1;
@@ -46,7 +46,7 @@ impl Node {
         2
     }
 
-    /// Returns the size of the node after serialization.
+    // Returns the size of the node after serialization.
     fn size(&self) -> usize {
         self.inodes
             .iter()
@@ -55,15 +55,15 @@ impl Node {
             )
     }
 
-    /// Returns the inodes list.
+    // Returns the inodes list.
     #[inline]
     fn inodes(&self) -> &Vec<Inode> {
         &self.inodes.inner
     }
 
-    /// Returns true if the node is less than a given size.
-    /// This is an optimization to avoid calculation a large node when we only need
-    /// to know if it fits inside a certain page size.
+    // Returns true if the node is less than a given size.
+    // This is an optimization to avoid calculation a large node when we only need
+    // to know if it fits inside a certain page size.
     fn size_less_than(&self, v: usize) -> bool {
         for i in 0..self.inodes().len() {
             let node = &self.inodes()[i];
@@ -74,7 +74,7 @@ impl Node {
         true
     }
 
-    /// Returns the size of each page element based on type of node.
+    // Returns the size of each page element based on type of node.
     fn page_element_size(&self) -> usize {
         if self.is_leaf {
             return LEAF_PAGE_ELEMENT_SIZE;
@@ -82,7 +82,7 @@ impl Node {
         BRANCH_PAGE_ELEMENT_SIZE
     }
 
-    /// Returns the child node at a given index.
+    // Returns the child node at a given index.
     fn child_at(&self, index: usize) -> Result<Node> {
         if self.is_leaf {
             return Err(Error::InvalidNode(format!("invalid childAt{} on a leaf node", index)));
@@ -91,19 +91,19 @@ impl Node {
         Ok(self.bucket.node(pg_id, self))
     }
 
-    /// Returns the child node at a given index.
+    // Returns the child node at a given index.
     fn child_index(&self, child: Node) -> usize {
         search(self.inodes.len(), |idx| {
             self.inodes()[idx].key.lt(&child.key)
         })
     }
 
-    /// Returns the number of children.
+    // Returns the number of children.
     fn num_children(&self) -> usize {
         self.inodes().len()
     }
 
-    /// Returns the next node with the same parent.
+    // Returns the next node with the same parent.
     fn next_sibling(&self) -> Option<Node> {
         if let Some(parent) = self.parent.clone() {
             if let index = parent.child_index(self.clone()) {
@@ -116,7 +116,7 @@ impl Node {
         None
     }
 
-    /// Returns the previous node with the same parent.
+    // Returns the previous node with the same parent.
     fn prev_sibling(&self) -> Option<Node> {
         if let Some(parent) = self.parent.clone() {
             if let index = parent.child_index(self.clone()) {
@@ -129,7 +129,7 @@ impl Node {
         None
     }
 
-    /// Inserts a key/value
+    // Inserts a key/value
     fn put(&mut self, old_key: Key, new_key: Key, value: Value, pg_id: PgId, flags: u32) -> Result<()> {
         if pg_id >= self.bucket.tx.meta.pg_id {
             return Err(Error::PutFailed(format!("pgid {:?} above high water mark {:?}", pg_id, self.bucket.tx.meta.pg_id)));
@@ -161,7 +161,7 @@ impl Node {
         Ok(())
     }
 
-    /// Removes a key from the node.
+    // Removes a key from the node.
     fn del(&mut self, key: Key) {
         // Find index of key.
         let index = search(self.inodes.len(), |idx| {
@@ -180,7 +180,7 @@ impl Node {
         self.unbalanced = true;
     }
 
-    /// Initializes the node from a page.
+    // Initializes the node from a page.
     fn read(&mut self, p: &Page) {
         self.pg_id = p.id;
         self.is_leaf = p.flags & LEAF_PAGE_FLAG != 0;
@@ -222,9 +222,9 @@ impl Node {
     // }
 
 
-    /// Finds the position where a page will fill a given threshold.
-    /// It returns the index as well as the size of the first page.
-    /// This is only be called from `split`.
+    // Finds the position where a page will fill a given threshold.
+    // It returns the index as well as the size of the first page.
+    // This is only be called from `split`.
     fn split_index(&mut self, threshold: usize) -> (usize, usize) {
         let mut size = PAGE_HEADER_SIZE;
         let mut index: usize = 0;
@@ -259,11 +259,11 @@ impl Node {
     //     fn rebalance(&mut self) {
     //     }
 
-    /// Removes a node from the list of in-memory children.
-    /// This dose not affect the inodes.
+    // Removes a node from the list of in-memory children.
+    // This dose not affect the inodes.
     fn remove_child(&self, target: &Node) {}
 
-    /// Adds the node's underlying `page` to the freelist.
+    // Adds the node's underlying `page` to the freelist.
     fn free(&mut self) {
         if self.pg_id != 0 {
             self.bucket.tx.db.free_list.free(self.bucket.tx.meta.tx_id, &self.bucket.tx.page(self.pg_id));
