@@ -1,8 +1,7 @@
 use crate::node::Node;
-use crate::{PgId, Page};
-use crate::error::{Result};
-use std::collections::HashMap;
 use crate::tx::TX;
+use crate::{Page, PgId};
+use std::collections::HashMap;
 
 /// The maximum length of a key, in bytes.
 const MAX_KEY_SIZE: u64 = 32768;
@@ -49,7 +48,7 @@ pub(crate) struct Bucket {
 }
 
 impl PartialEq for Bucket {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         unimplemented!()
     }
 }
@@ -82,7 +81,7 @@ impl Bucket {
     }
 
     /// Create a `node` from a `page` and associates it with a given parent.
-    pub(crate) fn node(&self, pg_id: PgId, parent: &Node) -> Node {
+    pub(crate) fn node(&self, _pg_id: PgId, _parent: &Node) -> Node {
         Node::default()
     }
 }

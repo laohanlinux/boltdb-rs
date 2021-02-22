@@ -1,13 +1,12 @@
-use crate::db::{DB, Meta};
+use crate::db::{Meta, DB};
+use crate::{Bucket, Page, PgId};
 use std::collections::HashMap;
-use crate::{PgId, Page, Bucket};
 use std::time::Duration;
 
 /// Represents the internal transaction identifier
 pub type TxId = u64;
 
 pub(crate) type CommitHandler = Box<dyn FnOnce() + Send>;
-
 
 /// Represents a `read-only` or `read-write` transaction on the database.
 /// `Read-Only` transactions can be user for retrieving values for keys and creating cursors.
@@ -45,7 +44,7 @@ impl Clone for TX {
 
 impl TX {
     /// Initializes the transaction
-    fn init(&mut self, db: &DB) {}
+    fn init(&mut self, _db: &DB) {}
 
     /// Returns the transaction id.
     pub(crate) fn id(&self) -> u64 {
@@ -73,11 +72,10 @@ impl TX {
     }
 
     //todo
-    pub(crate) fn page(&self, id: PgId) -> Page {
+    pub(crate) fn page(&self, _id: PgId) -> Page {
         Page::default()
     }
 }
-
 
 /// TxStats represents statistics about the actions performed by the transaction.
 #[derive(Default, Clone)]
@@ -118,7 +116,6 @@ pub struct TxStats {
     // total time spent writing to disk
     pub(crate) write_time: Duration,
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -200,4 +197,3 @@ mod tests {
     // #[test]
     // fn example_tx_copy_file() {}
 }
-

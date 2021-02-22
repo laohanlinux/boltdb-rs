@@ -1,6 +1,5 @@
 use memmap::MmapOptions;
 use std::fs::File;
-use std::io::Write;
 
 use crate::db::DB;
 
@@ -15,7 +14,7 @@ pub fn mmap(mut db: DB, mmap_size: usize) -> ::std::io::Result<DB> {
 #[test]
 fn it_works() {
     let file = File::open("Cargo.toml").unwrap();
-    let mut opt = MmapOptions::new();
+    let mut _opt = MmapOptions::new();
     let mmap = unsafe { MmapOptions::new().map(&file).unwrap() };
     println!("{:#?}", String::from_utf8_lossy(&mmap[0..199]));
 }
