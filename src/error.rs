@@ -1,5 +1,5 @@
-use thiserror::Error;
 use std::io;
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -28,7 +28,6 @@ pub enum Error {
     #[error("{0}")]
     LogRead(String),
 }
-
 
 impl From<io::Error> for Error {
     #[inline]
