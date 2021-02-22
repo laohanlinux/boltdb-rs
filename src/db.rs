@@ -1,7 +1,7 @@
 use crate::free_list::FreeList;
 use crate::{Bucket, PgId, TxId};
 use memmap::Mmap;
-use std::fs::{Permissions};
+use std::fs::Permissions;
 use std::time::Duration;
 
 /// The largest step that can be token when remapping the mman.

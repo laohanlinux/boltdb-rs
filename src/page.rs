@@ -4,6 +4,7 @@ use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ops::RangeBounds;
+use std::ptr::slice_from_raw_parts;
 use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
 
 pub(crate) const PAGE_HEADER_SIZE: usize = size_of::<Page>();
@@ -17,7 +18,7 @@ pub(crate) const LEAF_PAGE_FLAG: u16 = 0x02;
 pub(crate) const META_PAGE_FLAG: u16 = 0x04;
 pub(crate) const FREE_LIST_PAGE_FLAG: u16 = 0x10;
 
-pub(crate) const BUCKET_LEAF_FLAG: u16 = 0x10;
+pub(crate) const BUCKET_LEAF_FLAG: u16 = 0x01;
 
 pub type PgId = u64;
 
@@ -46,9 +47,14 @@ impl Page {
         &self.leaf_page_elements()[index]
     }
 
+    // Retrieves the mut leaf node by index.
+    pub(crate) fn leaf_page_element_mut(&mut self, index: usize) -> &mut LeafPageElement {
+        &mut self.leaf_page_elements_mut()[index]
+    }
+
     // TODO add count == 0 check.
     // Retrieves a list of leaf node.
-    fn leaf_page_elements(&self) -> &[LeafPageElement] {
+    pub(crate) fn leaf_page_elements(&self) -> &[LeafPageElement] {
         unsafe {
             std::slice::from_raw_parts(
                 self.get_data_ptr() as *const LeafPageElement,
@@ -58,7 +64,7 @@ impl Page {
     }
 
     // Retrieves a mut list of leaf node.
-    fn leaf_page_elements_mut(&mut self) -> &mut [LeafPageElement] {
+    pub(crate) fn leaf_page_elements_mut(&mut self) -> &mut [LeafPageElement] {
         unsafe {
             std::slice::from_raw_parts_mut(
                 self.get_data_mut_ptr() as *mut LeafPageElement,
@@ -70,6 +76,11 @@ impl Page {
     // Retrieves the branch node by index.
     pub(crate) fn branch_page_element(&self, index: usize) -> &BranchPageElement {
         &self.branch_page_elements()[index]
+    }
+
+    // Retrieves the branch node by index.
+    pub(crate) fn branch_page_element_mut(&mut self, index: usize) -> &mut BranchPageElement {
+        &mut self.branch_page_elements_mut()[index]
     }
 
     // Retrieves a list of branch nodes.
@@ -156,10 +167,11 @@ impl Page {
     }
 
     #[inline]
-    pub(crate) fn from_slice_mut(buffer: &mut [u8]) -> &mut Self {
+    pub(crate) fn from_slice_mut(mut buffer: &mut [u8]) -> &mut Self {
         unsafe { &mut *(buffer.as_mut_ptr() as *mut Page) }
     }
 
+    // The size of page, including header and elements.
     #[inline]
     fn byte_size(&self) -> usize {
         let mut size = PAGE_HEADER_SIZE;
@@ -173,7 +185,7 @@ impl Page {
                     size += (last_branch.pos + last_branch.k_size) as usize;
                 }
             }
-            BUCKET_LEAF_FLAG => {
+            LEAF_PAGE_FLAG => {
                 let leaves = self.leaf_page_elements();
                 let len = leaves.len();
                 if len > 0 {
@@ -228,8 +240,8 @@ impl Display for Page {
 #[repr(C)]
 pub(crate) struct BranchPageElement {
     // distinct of the branch page element
-    pos: u32,
-    k_size: u32,
+    pub(crate) pos: u32,
+    pub(crate) k_size: u32,
     pub(crate) pgid: PgId,
 }
 
@@ -255,9 +267,9 @@ impl BranchPageElement {
 pub(crate) struct LeafPageElement {
     pub(crate) flags: u32,
     // distinct of the leaf page element
-    pos: u32,
-    k_size: u32,
-    v_size: u32,
+    pub(crate) pos: u32,
+    pub(crate) k_size: u32,
+    pub(crate) v_size: u32,
 }
 
 impl LeafPageElement {
@@ -352,8 +364,8 @@ impl PgIds {
 
     #[inline]
     pub fn drain<R>(&mut self, range: R) -> Vec<u64>
-        where
-            R: RangeBounds<usize>,
+    where
+        R: RangeBounds<usize>,
     {
         self.inner.drain(range).collect::<Vec<_>>()
     }
@@ -374,7 +386,7 @@ fn t_page_type() {
             flags: BRANCH_PAGE_FLAG,
             ..Default::default()
         }
-            .to_string(),
+        .to_string(),
         "branch"
     );
     assert_eq!(
@@ -382,7 +394,7 @@ fn t_page_type() {
             flags: LEAF_PAGE_FLAG,
             ..Default::default()
         }
-            .to_string(),
+        .to_string(),
         "leaf"
     );
     assert_eq!(
@@ -390,7 +402,7 @@ fn t_page_type() {
             flags: META_PAGE_FLAG,
             ..Default::default()
         }
-            .to_string(),
+        .to_string(),
         "meta"
     );
     assert_eq!(
@@ -398,7 +410,7 @@ fn t_page_type() {
             flags: FREE_LIST_PAGE_FLAG,
             ..Default::default()
         }
-            .to_string(),
+        .to_string(),
         "freelist"
     );
     assert_eq!(
@@ -406,7 +418,7 @@ fn t_page_type() {
             flags: 0x4e20,
             ..Default::default()
         }
-            .to_string(),
+        .to_string(),
         "unknown<4e20>"
     );
 }

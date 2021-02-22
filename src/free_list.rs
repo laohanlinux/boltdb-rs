@@ -29,7 +29,7 @@ impl FreeList {
             // The first element will be used to store the count. See free_list.write.
             n += 1;
         }
-        PAGE_HEADER_SIZE + size_of::<PgId>() * n
+        unsafe { PAGE_HEADER_SIZE + size_of::<PgId>() * n }
     }
 
     // Returns `count` of `pages` on the `freelist`
@@ -74,6 +74,7 @@ impl FreeList {
                 // and just adjust the existing slice. This will use extra memory
                 // temporarily but the append() in the free() will realloc the slice
                 // as is necessary.
+                let mut cur = self.clone();
                 if (i + 1) == n {
                     drain = self.ids.drain(..=i);
                 } else {
@@ -151,9 +152,11 @@ impl FreeList {
         if count == 0 {
             self.ids = PgIds::new();
         } else {
-            self.ids = PgIds::from(page.pg_ids()[idx..count].to_vec());
-            // make sure they're sorted
-            self.ids.sort();
+            unsafe {
+                self.ids = PgIds::from(page.pg_ids()[idx..count].to_vec());
+                // make sure they're sorted
+                self.ids.sort();
+            }
         }
         // Rebuild the page cache.
         self.reindex();
@@ -207,7 +210,7 @@ impl FreeList {
     // `Writes the `Page ids` onto a `free_list page`. All `free` and `pending ids` are
     // saved to disk since in the event of a program crash, all `pending ids` will become
     // free.
-    fn reload(&mut self, _page: &Page) {
+    fn reload(&mut self, page: &Page) {
         // TODO: FIXME
 
         // Build a cache of only pending pages.
@@ -250,11 +253,9 @@ impl FreeList {
 mod tests {
     use crate::free_list::FreeList;
     use crate::page::FREE_LIST_PAGE_FLAG;
-    use crate::{Page, PgId, PgIds};
+    use crate::{Page, PgIds};
     use rand::rngs::ThreadRng;
     use rand::Rng;
-    use std::collections::HashMap;
-    use std::slice::from_raw_parts_mut;
     use test::Bencher;
 
     // Ensure that a page is added to a transaction's freelist.
@@ -408,7 +409,6 @@ mod tests {
     }
 
     fn benchmark_free_list_release(b: &mut Bencher, n: usize) {
-        use rand::Rng;
         let mut rng = rand::thread_rng();
         let ids = random_pgids(n, &mut rng);
         b.iter(move || {
