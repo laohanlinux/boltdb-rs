@@ -1,8 +1,8 @@
-use memmap::Mmap;
-use std::time::Duration;
-use std::fs::{File, Permissions};
-use crate::{Bucket, PgId, TxId};
 use crate::free_list::FreeList;
+use crate::{Bucket, PgId, TxId};
+use memmap::Mmap;
+use std::fs::Permissions;
+use std::time::Duration;
 
 /// The largest step that can be token when remapping the mman.
 const MAX_MMAP_STEP: usize = 1 << 30; //1GB
@@ -37,7 +37,7 @@ pub struct DB {
 }
 
 impl DB {
-    pub fn open(path: &'static str, perm: Permissions) {}
+    pub fn open(_path: &'static str, _perm: Permissions) {}
 
     /// Return the path to currently open database file.
     pub fn path(&self) -> &'static str {

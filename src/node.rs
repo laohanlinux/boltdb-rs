@@ -1,17 +1,19 @@
-use crate::{bucket, PgId, Bucket, search, Page};
-use std::slice::Iter;
-use crate::page::{PAGE_HEADER_SIZE, LEAF_PAGE_ELEMENT_SIZE, BRANCH_PAGE_ELEMENT_SIZE, LEAF_PAGE_FLAG, MIN_KEYS_PER_PAGE, BRANCH_PAGE_FLAG, LeafPageElement, BranchPageElement};
-use crate::error::{Result, Error};
-use crate::bucket::{MIN_FILL_PERCENT, MAX_FILL_PERCENT};
-use std::cell::Cell;
-use std::sync::Arc;
-use std::borrow::Borrow;
+use crate::bucket::{MAX_FILL_PERCENT, MIN_FILL_PERCENT};
+use crate::error::{Error, Result};
+use crate::page::{
+    BranchPageElement, LeafPageElement, BRANCH_PAGE_ELEMENT_SIZE, BRANCH_PAGE_FLAG,
+    LEAF_PAGE_ELEMENT_SIZE, LEAF_PAGE_FLAG, MIN_KEYS_PER_PAGE, PAGE_HEADER_SIZE,
+};
+use crate::{bucket, search, Bucket, Page, PgId};
 use memoffset::ptr::copy_nonoverlapping;
+use std::borrow::Borrow;
+use std::cell::Cell;
 use std::ops::RangeBounds;
+use std::slice::Iter;
+use std::sync::Arc;
 
 pub(crate) type Key = Vec<u8>;
 pub(crate) type Value = Vec<u8>;
-
 
 /// Represents an in-memory, deserialized `page`.
 #[derive(Default, Clone)]
@@ -54,11 +56,9 @@ impl Node {
 
     // Returns the size of the node after serialization.
     fn size(&self) -> usize {
-        self.inodes
-            .iter()
-            .fold(PAGE_HEADER_SIZE,
-                  |acc, inode| acc + self.page_element_size() + inode.key.len() + inode.value.len(),
-            )
+        self.inodes.iter().fold(PAGE_HEADER_SIZE, |acc, inode| {
+            acc + self.page_element_size() + inode.key.len() + inode.value.len()
+        })
     }
 
     // Returns the inodes list.
@@ -92,7 +92,10 @@ impl Node {
     // Returns the child node at a given index.
     fn child_at(&self, index: usize) -> Result<Node> {
         if self.is_leaf {
-            return Err(Error::InvalidNode(format!("invalid childAt {} on a leaf node", index)));
+            return Err(Error::InvalidNode(format!(
+                "invalid childAt {} on a leaf node",
+                index
+            )));
         }
         let pg_id = self.inodes()[index].pg_id;
         Ok(self.bucket.node(pg_id, self))
@@ -137,9 +140,19 @@ impl Node {
     }
 
     // Inserts a key/value.
-    fn put(&mut self, old_key: Key, new_key: Key, value: Value, pg_id: PgId, flags: u32) -> Result<()> {
+    fn put(
+        &mut self,
+        old_key: Key,
+        new_key: Key,
+        value: Value,
+        pg_id: PgId,
+        flags: u32,
+    ) -> Result<()> {
         if pg_id >= self.bucket.tx.meta.pg_id {
-            return Err(Error::PutFailed(format!("pgid {:?} above high water mark {:?}", pg_id, self.bucket.tx.meta.pg_id)));
+            return Err(Error::PutFailed(format!(
+                "pgid {:?} above high water mark {:?}",
+                pg_id, self.bucket.tx.meta.pg_id
+            )));
         } else if old_key.len() <= 0 {
             return Err(Error::PutFailed("zero-length old key".to_string()));
         } else if new_key.len() <= 0 {
@@ -147,8 +160,12 @@ impl Node {
         }
 
         // Find insertion index.
-        let (extra, index) = self.inodes.binary_search_by(old_key.as_slice())
-            .map(|index| (true, index)).map_err(|index| (false, index)).unwrap();
+        let (extra, index) = self
+            .inodes
+            .binary_search_by(old_key.as_slice())
+            .map(|index| (true, index))
+            .map_err(|index| (false, index))
+            .unwrap();
 
         // Add capacity and shift nodes if we don't have an exact match and need to insert.
         if !extra {
@@ -173,7 +190,7 @@ impl Node {
                 self.unbalanced = true;
             }
             // Exit if the key isn't found.
-            _ => return
+            _ => return,
         }
     }
 
@@ -305,7 +322,6 @@ impl Node {
     //     return (None, None);
     // }
 
-
     // Finds the position where a page will fill a given threshold.
     // It returns the index as well as the size of the first page.
     // This is only be called from `split`.
@@ -318,7 +334,8 @@ impl Node {
             index = i;
 
             let inode = &self.inodes()[i];
-            let el_size = self.page_element_size() + inode.clone().key.len() + inode.clone().value.len();
+            let el_size =
+                self.page_element_size() + inode.clone().key.len() + inode.clone().value.len();
 
             // If we have at least the minimum number of keys and adding another
             // node would put us over the threshold then exit and return.
@@ -350,20 +367,23 @@ impl Node {
     // Adds the node's underlying `page` to the freelist.
     fn free(&mut self) {
         if self.pg_id != 0 {
-            self.bucket.tx.db.free_list.free(self.bucket.tx.meta.tx_id, &self.bucket.tx.page(self.pg_id));
+            self.bucket
+                .tx
+                .db
+                .free_list
+                .free(self.bucket.tx.meta.tx_id, &self.bucket.tx.page(self.pg_id));
             self.pg_id = 0;
         }
     }
 }
 
 impl PartialEq for Node {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         unimplemented!()
     }
 }
 
 impl Eq for Node {}
-
 
 impl Drop for Node {
     fn drop(&mut self) {
@@ -465,7 +485,8 @@ impl Inodes {
 
     #[inline]
     fn binary_search_by(&self, key: &[u8]) -> std::result::Result<usize, usize> {
-        self.inner.binary_search_by(|node| node.key.as_slice().cmp(key))
+        self.inner
+            .binary_search_by(|node| node.key.as_slice().cmp(key))
     }
 }
 

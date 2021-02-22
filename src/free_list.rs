@@ -1,8 +1,7 @@
-use crate::page::{Page, PgId, PgIds, PAGE_HEADER_SIZE, FREE_LIST_PAGE_FLAG};
+use crate::page::{Page, PgId, PgIds, FREE_LIST_PAGE_FLAG, PAGE_HEADER_SIZE};
 use crate::tx::TxId;
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
-use std::ptr::slice_from_raw_parts;
 
 // Represents a list of all pages that are available for allocation.
 // It also tracks pages that have freed but are still in use by open transaction.
@@ -30,9 +29,7 @@ impl FreeList {
             // The first element will be used to store the count. See free_list.write.
             n += 1;
         }
-        unsafe {
-            PAGE_HEADER_SIZE + size_of::<PgId>() * n
-        }
+        unsafe { PAGE_HEADER_SIZE + size_of::<PgId>() * n }
     }
 
     // Returns `count` of `pages` on the `freelist`
@@ -112,7 +109,12 @@ impl FreeList {
 
     // Release moves all page ids for a transaction id (or older) to the freelist.
     fn release(&mut self, tx_id: TxId) {
-        let mut m = self.pending.drain_filter(|key, _| *key <= tx_id).map(|(_, pg_id)| pg_id.to_vec()).flatten().collect::<Vec<_>>();
+        let mut m = self
+            .pending
+            .drain_filter(|key, _| *key <= tx_id)
+            .map(|(_, pg_id)| pg_id.to_vec())
+            .flatten()
+            .collect::<Vec<_>>();
         m.sort();
         self.ids.extend_from_slice(PgIds::from(m));
     }
@@ -205,11 +207,9 @@ impl FreeList {
         }
     }
 
-
     // `Writes the `Page ids` onto a `free_list page`. All `free` and `pending ids` are
     // saved to disk since in the event of a program crash, all `pending ids` will become
     // free.
-
     fn reload(&mut self, page: &Page) {
         // TODO: FIXME
 
@@ -249,23 +249,26 @@ impl FreeList {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use crate::free_list::FreeList;
-    use crate::{Page, PgIds, PgId};
-    use std::slice::from_raw_parts_mut;
     use crate::page::FREE_LIST_PAGE_FLAG;
-    use test::Bencher;
-    use rand::Rng;
-    use std::collections::HashMap;
+    use crate::{Page, PgIds};
     use rand::rngs::ThreadRng;
+    use rand::Rng;
+    use test::Bencher;
 
     // Ensure that a page is added to a transaction's freelist.
     #[test]
     fn t_free() {
         let mut free_list = FreeList::new();
-        free_list.free(100, &Page { id: 12, ..Default::default() });
+        free_list.free(
+            100,
+            &Page {
+                id: 12,
+                ..Default::default()
+            },
+        );
         let got = free_list.pending.get(&100).unwrap();
         assert_eq!(got.as_slice(), &vec![12]);
     }
@@ -274,7 +277,14 @@ mod tests {
     #[test]
     fn t_freelist_free_overflow() {
         let mut free_list = FreeList::new();
-        free_list.free(100, &Page { id: 12, over_flow: 3, ..Default::default() });
+        free_list.free(
+            100,
+            &Page {
+                id: 12,
+                over_flow: 3,
+                ..Default::default()
+            },
+        );
         let got = free_list.pending.get(&100).unwrap();
         assert_eq!(got.as_slice(), &vec![12, 13, 14, 15]);
     }
@@ -283,9 +293,28 @@ mod tests {
     #[test]
     fn t_freelist_release() {
         let mut free_list = FreeList::new();
-        free_list.free(100, &Page { id: 12, over_flow: 1, ..Default::default() });
-        free_list.free(100, &Page { id: 9, ..Default::default() });
-        free_list.free(102, &Page { id: 39, ..Default::default() });
+        free_list.free(
+            100,
+            &Page {
+                id: 12,
+                over_flow: 1,
+                ..Default::default()
+            },
+        );
+        free_list.free(
+            100,
+            &Page {
+                id: 9,
+                ..Default::default()
+            },
+        );
+        free_list.free(
+            102,
+            &Page {
+                id: 39,
+                ..Default::default()
+            },
+        );
         free_list.release(100);
         free_list.release(101);
         assert_eq!(PgIds::from(vec![9, 12, 13]), free_list.ids);
@@ -313,7 +342,6 @@ mod tests {
         }
         assert_eq!(PgIds::new(), free_list.ids);
     }
-
 
     // Ensure that a free list can deserialize from a free_list page.
     #[test]
@@ -360,7 +388,6 @@ mod tests {
         assert_eq!(exp, free_list2.ids);
     }
 
-
     #[bench]
     fn b_free_list_release10k(b: &mut Bencher) {
         benchmark_free_list_release(b, 10_000);
@@ -382,7 +409,6 @@ mod tests {
     }
 
     fn benchmark_free_list_release(b: &mut Bencher, n: usize) {
-        use rand::Rng;
         let mut rng = rand::thread_rng();
         let ids = random_pgids(n, &mut rng);
         b.iter(move || {
@@ -390,7 +416,9 @@ mod tests {
             let ids = ids.clone();
             let mut free_list = FreeList::new();
             free_list.ids = ids;
-            free_list.pending.insert(1, random_pgids((free_list.ids.len() / 400) + 1, &mut rng));
+            free_list
+                .pending
+                .insert(1, random_pgids((free_list.ids.len() / 400) + 1, &mut rng));
             free_list.release(1);
         });
     }

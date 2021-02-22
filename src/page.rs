@@ -1,11 +1,11 @@
+use crate::db::Meta;
 use crate::must_align;
 use std::fmt::{Display, Formatter};
-use std::slice::{Iter, from_raw_parts, from_raw_parts_mut};
 use std::marker::PhantomData;
 use std::mem::size_of;
-use crate::db::Meta;
-use std::ptr::slice_from_raw_parts;
 use std::ops::RangeBounds;
+use std::ptr::slice_from_raw_parts;
+use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
 
 pub(crate) const PAGE_HEADER_SIZE: usize = size_of::<Page>();
 pub(crate) const MIN_KEYS_PER_PAGE: usize = 2;
@@ -39,9 +39,7 @@ pub struct Page {
 impl Page {
     // `meta` returns a pointer to the metadata section of the `page`
     pub(crate) fn meta(&mut self) -> &mut Meta {
-        unsafe {
-            &mut *(self.get_data_mut_ptr() as *mut Meta)
-        }
+        unsafe { &mut *(self.get_data_mut_ptr() as *mut Meta) }
     }
 
     // Retrieves the leaf node by index.
@@ -58,14 +56,20 @@ impl Page {
     // Retrieves a list of leaf node.
     pub(crate) fn leaf_page_elements(&self) -> &[LeafPageElement] {
         unsafe {
-            std::slice::from_raw_parts(self.get_data_ptr() as *const LeafPageElement, self.count as usize)
+            std::slice::from_raw_parts(
+                self.get_data_ptr() as *const LeafPageElement,
+                self.count as usize,
+            )
         }
     }
 
     // Retrieves a mut list of leaf node.
     pub(crate) fn leaf_page_elements_mut(&mut self) -> &mut [LeafPageElement] {
         unsafe {
-            std::slice::from_raw_parts_mut(self.get_data_mut_ptr() as *mut LeafPageElement, self.count as usize)
+            std::slice::from_raw_parts_mut(
+                self.get_data_mut_ptr() as *mut LeafPageElement,
+                self.count as usize,
+            )
         }
     }
 
@@ -81,22 +85,39 @@ impl Page {
 
     // Retrieves a list of branch nodes.
     fn branch_page_elements(&self) -> &[BranchPageElement] {
-        unsafe { std::slice::from_raw_parts(self.get_data_ptr() as *const BranchPageElement, self.count as usize) }
+        unsafe {
+            std::slice::from_raw_parts(
+                self.get_data_ptr() as *const BranchPageElement,
+                self.count as usize,
+            )
+        }
     }
 
     // Retrieves a mut list of branch nodes
     fn branch_page_elements_mut(&mut self) -> &mut [BranchPageElement] {
-        unsafe { std::slice::from_raw_parts_mut(self.get_data_mut_ptr() as *mut BranchPageElement, self.count as usize) }
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.get_data_mut_ptr() as *mut BranchPageElement,
+                self.count as usize,
+            )
+        }
     }
 
     // Returns a slice to the free list section of the page.
     pub(crate) fn free_list(&self) -> &[PgId] {
-        unsafe { std::slice::from_raw_parts(self.get_data_ptr() as *const PgId, self.count as usize) }
+        unsafe {
+            std::slice::from_raw_parts(self.get_data_ptr() as *const PgId, self.count as usize)
+        }
     }
 
     // Returns a mut slice to the free list section of the page.
     pub(crate) fn free_list_mut(&mut self) -> &mut [PgId] {
-        unsafe { std::slice::from_raw_parts_mut(self.get_data_mut_ptr() as *mut PgId, self.count as usize) }
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.get_data_mut_ptr() as *mut PgId,
+                self.count as usize,
+            )
+        }
     }
 
     pub(crate) fn pgid(&self, index: usize) -> &PgId {
@@ -104,11 +125,18 @@ impl Page {
     }
 
     pub(crate) fn pg_ids(&self) -> &[PgId] {
-        unsafe { std::slice::from_raw_parts(self.get_data_ptr() as *const PgId, self.count as usize) }
+        unsafe {
+            std::slice::from_raw_parts(self.get_data_ptr() as *const PgId, self.count as usize)
+        }
     }
 
     pub(crate) fn pg_ids_mut(&mut self) -> &mut [PgId] {
-        unsafe { std::slice::from_raw_parts_mut(self.get_data_mut_ptr() as *mut PgId, self.count as usize) }
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.get_data_mut_ptr() as *mut PgId,
+                self.count as usize,
+            )
+        }
     }
 
     #[inline]
@@ -124,9 +152,7 @@ impl Page {
     #[inline]
     pub(crate) fn as_slice(&self) -> &[u8] {
         let ptr = self as *const Page as *const u8;
-        unsafe {
-            from_raw_parts(ptr, self.byte_size())
-        }
+        unsafe { from_raw_parts(ptr, self.byte_size()) }
     }
 
     #[inline]
@@ -175,7 +201,7 @@ impl Page {
             FREE_LIST_PAGE_FLAG => {
                 size += self.pg_ids().len() * size_of::<PgId>();
             }
-            _ => panic!("Unknown page flag: {:0x}", self.flags)
+            _ => panic!("Unknown page flag: {:0x}", self.flags),
         }
         size
     }
@@ -189,12 +215,9 @@ impl Page {
 impl Into<Vec<u8>> for Page {
     fn into(self) -> Vec<u8> {
         let ptr = &self as *const Page as *const u8;
-        unsafe {
-            from_raw_parts(ptr, self.byte_size()).to_vec()
-        }
+        unsafe { from_raw_parts(ptr, self.byte_size()).to_vec() }
     }
 }
-
 
 impl Display for Page {
     fn fmt(&self, f: &mut Formatter<'_>) -> ::std::fmt::Result {
@@ -341,8 +364,9 @@ impl PgIds {
 
     #[inline]
     pub fn drain<R>(&mut self, range: R) -> Vec<u64>
-        where
-            R: RangeBounds<usize> {
+    where
+        R: RangeBounds<usize>,
+    {
         self.inner.drain(range).collect::<Vec<_>>()
     }
 
@@ -357,16 +381,55 @@ impl PgIds {
 
 #[test]
 fn t_page_type() {
-    assert_eq!(Page { flags: BRANCH_PAGE_FLAG, ..Default::default() }.to_string(), "branch");
-    assert_eq!(Page { flags: LEAF_PAGE_FLAG, ..Default::default() }.to_string(), "leaf");
-    assert_eq!(Page { flags: META_PAGE_FLAG, ..Default::default() }.to_string(), "meta");
-    assert_eq!(Page { flags: FREE_LIST_PAGE_FLAG, ..Default::default() }.to_string(), "freelist");
-    assert_eq!(Page { flags: 0x4e20, ..Default::default() }.to_string(), "unknown<4e20>");
+    assert_eq!(
+        Page {
+            flags: BRANCH_PAGE_FLAG,
+            ..Default::default()
+        }
+        .to_string(),
+        "branch"
+    );
+    assert_eq!(
+        Page {
+            flags: LEAF_PAGE_FLAG,
+            ..Default::default()
+        }
+        .to_string(),
+        "leaf"
+    );
+    assert_eq!(
+        Page {
+            flags: META_PAGE_FLAG,
+            ..Default::default()
+        }
+        .to_string(),
+        "meta"
+    );
+    assert_eq!(
+        Page {
+            flags: FREE_LIST_PAGE_FLAG,
+            ..Default::default()
+        }
+        .to_string(),
+        "freelist"
+    );
+    assert_eq!(
+        Page {
+            flags: 0x4e20,
+            ..Default::default()
+        }
+        .to_string(),
+        "unknown<4e20>"
+    );
 }
 
 #[test]
 fn t_page_buffer() {
-    let mut page = Page { id: 2, flags: FREE_LIST_PAGE_FLAG, ..Default::default() };
+    let mut page = Page {
+        id: 2,
+        flags: FREE_LIST_PAGE_FLAG,
+        ..Default::default()
+    };
     let new_page = Page::from_slice(page.as_slice());
     assert_eq!(page.as_slice(), new_page.as_slice());
 }
