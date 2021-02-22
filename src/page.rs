@@ -18,7 +18,7 @@ pub(crate) const LEAF_PAGE_FLAG: u16 = 0x02;
 pub(crate) const META_PAGE_FLAG: u16 = 0x04;
 pub(crate) const FREE_LIST_PAGE_FLAG: u16 = 0x10;
 
-pub(crate) const BUCKET_LEAF_FLAG: u16 = 0x10;
+pub(crate) const BUCKET_LEAF_FLAG: u16 = 0x01;
 
 pub type PgId = u64;
 
@@ -49,16 +49,21 @@ impl Page {
         &self.leaf_page_elements()[index]
     }
 
+    // Retrieves the mut leaf node by index.
+    pub(crate) fn leaf_page_element_mut(&mut self, index: usize) -> &mut LeafPageElement {
+        &mut self.leaf_page_elements_mut()[index]
+    }
+
     // TODO add count == 0 check.
     // Retrieves a list of leaf node.
-    fn leaf_page_elements(&self) -> &[LeafPageElement] {
+    pub(crate) fn leaf_page_elements(&self) -> &[LeafPageElement] {
         unsafe {
             std::slice::from_raw_parts(self.get_data_ptr() as *const LeafPageElement, self.count as usize)
         }
     }
 
     // Retrieves a mut list of leaf node.
-    fn leaf_page_elements_mut(&mut self) -> &mut [LeafPageElement] {
+    pub(crate) fn leaf_page_elements_mut(&mut self) -> &mut [LeafPageElement] {
         unsafe {
             std::slice::from_raw_parts_mut(self.get_data_mut_ptr() as *mut LeafPageElement, self.count as usize)
         }
@@ -67,6 +72,11 @@ impl Page {
     // Retrieves the branch node by index.
     pub(crate) fn branch_page_element(&self, index: usize) -> &BranchPageElement {
         &self.branch_page_elements()[index]
+    }
+
+    // Retrieves the branch node by index.
+    pub(crate) fn branch_page_element_mut(&mut self, index: usize) -> &mut BranchPageElement {
+        &mut self.branch_page_elements_mut()[index]
     }
 
     // Retrieves a list of branch nodes.
@@ -135,6 +145,7 @@ impl Page {
         unsafe { &mut *(buffer.as_mut_ptr() as *mut Page) }
     }
 
+    // The size of page, including header and elements.
     #[inline]
     fn byte_size(&self) -> usize {
         let mut size = PAGE_HEADER_SIZE;
@@ -148,7 +159,7 @@ impl Page {
                     size += (last_branch.pos + last_branch.k_size) as usize;
                 }
             }
-            BUCKET_LEAF_FLAG => {
+            LEAF_PAGE_FLAG => {
                 let leaves = self.leaf_page_elements();
                 let len = leaves.len();
                 if len > 0 {
@@ -206,8 +217,8 @@ impl Display for Page {
 #[repr(C)]
 pub(crate) struct BranchPageElement {
     // distinct of the branch page element
-    pos: u32,
-    k_size: u32,
+    pub(crate) pos: u32,
+    pub(crate) k_size: u32,
     pub(crate) pgid: PgId,
 }
 
@@ -233,9 +244,9 @@ impl BranchPageElement {
 pub(crate) struct LeafPageElement {
     pub(crate) flags: u32,
     // distinct of the leaf page element
-    pos: u32,
-    k_size: u32,
-    v_size: u32,
+    pub(crate) pos: u32,
+    pub(crate) k_size: u32,
+    pub(crate) v_size: u32,
 }
 
 impl LeafPageElement {
