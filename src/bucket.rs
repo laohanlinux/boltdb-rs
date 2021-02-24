@@ -1,4 +1,4 @@
-use crate::node::Node;
+use crate::node::{Node, WeakNode};
 use crate::tx::TX;
 use crate::{Page, PgId};
 use std::collections::HashMap;
@@ -36,7 +36,7 @@ pub(crate) struct Bucket {
     // inline page reference
     pub(crate) page: Page,
     // materialized node for the root page
-    pub(crate) root_node: Box<Node>,
+    pub(crate) root_node: Option<Node>,
     // node cache
     pub(crate) nodes: HashMap<PgId, Node>,
     // Sets the threshold for filling nodes when they split. By default,
@@ -81,7 +81,7 @@ impl Bucket {
     }
 
     /// Create a `node` from a `page` and associates it with a given parent.
-    pub(crate) fn node(&self, _pg_id: PgId, _parent: &Node) -> Node {
-        Node::default()
+    pub(crate) fn node(&self, _pg_id: PgId, _parent: WeakNode) -> Node {
+        Node::new()
     }
 }

@@ -27,6 +27,8 @@ pub enum Error {
     DBClosed,
     #[error("{0}")]
     LogRead(String),
+    #[error("Bucket Empty")]
+    BucketEmpty,
 }
 
 impl From<io::Error> for Error {
