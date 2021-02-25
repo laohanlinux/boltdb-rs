@@ -16,6 +16,7 @@ pub mod node;
 pub mod os;
 pub mod page;
 pub mod tx;
+pub mod cursor;
 
 pub(crate) use bucket::Bucket;
 pub use page::{Page, PageInfo, PgId, PgIds};

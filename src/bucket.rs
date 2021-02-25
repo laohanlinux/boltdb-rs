@@ -66,8 +66,8 @@ impl Bucket {
     }
 
     /// Returns the tx of the bucket.
-    pub fn tx(&self) -> &TX {
-        &self.tx
+    pub fn tx(&mut self) -> &mut TX {
+        &mut self.tx
     }
 
     /// Returns the root of the bucket.

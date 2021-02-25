@@ -347,6 +347,63 @@ impl Node {
         }
     }
 
+    // Writes the nodes to dirty pages and splits nodes as it goes.
+    // Returns an error if dirty pages cannot be allocated.
+    fn spill(&mut self) -> Result<()> {
+        // if self.0.spilled.load(Ordering::Acquire) {
+        //     return Ok(());
+        // }
+        //
+        // let page_size = self.bucket().unwrap().tx().db().page_size;
+        // {
+        //     // Why?
+        //     let mut children = self.0.children.borrow_mut().clone();
+        //     children.sort_by_key(|node| node.0.key);
+        //     for child in &mut *children {
+        //         // child.split()?;
+        //     }
+        //     self.0.children.borrow_mut().clear();
+        // }
+        Ok(())
+    }
+
+    // Breaks up a node into multiple smaller nodes, if appropriate.
+    // This should only be called from the spill() function.
+    fn split(&mut self, page_size: usize) -> Result<Option<Node>> {
+        let mut nodes = vec![self.clone()];
+        while let Some(n) = nodes.last().unwrap().clone().split_two(page_size)? {
+            nodes.push(n);
+        }
+
+        if nodes.len() == 1 {
+            return Ok(None);
+        }
+
+        match self.parent() {
+            Some(p) => {
+                let mut children = p.0.children.borrow_mut();
+                let index = children.iter().position(|ch| Rc::ptr_eq(&self.0, &ch.0));
+                assert!(index.is_some());
+                children.remove(index.unwrap());
+                for node in nodes {
+                    *node.0.parent.borrow_mut() = WeakNode::from(&p);
+                    children.push(node);
+                }
+                // hard work: 🤣🤣🤣
+                drop(children);
+
+                Ok(Some(p))
+            }
+            None => {
+                let parent = NodeBuilder::new(self.0.bucket).children(nodes).build();
+                for ch in &mut *parent.0.children.borrow_mut() {
+                    *ch.0.parent.borrow_mut() = WeakNode::from(&parent);
+                }
+                Ok(Some(parent))
+            }
+        }
+    }
+
     // Breaks up a node into two smaller nodes, if appropriate.
     // This should only be called from the `split` function.
     fn split_two(&mut self, page_size: usize) -> Result<Option<Node>> {
@@ -357,7 +414,11 @@ impl Node {
             return Ok(None);
         }
         // Determine the threshold before starting a new node.
-        let fill_parent = self.bucket().ok_or_else(|| BucketEmpty)?.fill_percent.min(MIN_FILL_PERCENT).min(MAX_FILL_PERCENT);
+        let fill_parent = self.bucket()
+            .ok_or_else(|| BucketEmpty)?
+            .fill_percent
+            .min(MIN_FILL_PERCENT)
+            .max(MAX_FILL_PERCENT);
         let threshold = page_size as f64 * fill_parent;
 
         // Determine split position and sizes of the two pages.
@@ -370,8 +431,8 @@ impl Node {
             .build();
         let nodes = self.0.inodes.borrow_mut().drain(split_index..).collect::<Vec<_>>();
         *next.0.inodes.borrow_mut() = nodes;
-        // FIXME:
-        // self.bucket_mut().ok_or_else(|| BucketEmpty)?.tx()?.0
+        // FIXME: add statistics
+        self.bucket_mut().ok_or_else(|| BucketEmpty)?.tx().stats.split += 1;
         Ok(Some(next))
     }
 
