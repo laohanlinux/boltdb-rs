@@ -29,6 +29,8 @@ pub enum Error {
     LogRead(String),
     #[error("Bucket Empty")]
     BucketEmpty,
+    #[error("Tx Closed")]
+    TxClosed,
 }
 
 impl From<io::Error> for Error {

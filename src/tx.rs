@@ -1,5 +1,5 @@
 use crate::db::{Meta, DB};
-use crate::{Bucket, Page, PgId};
+use crate::{error::Error, error::Result, Bucket, Page, PgId};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -57,8 +57,8 @@ impl TX {
     }
 
     /// Return a reference to the database that created the transaction
-    pub(crate) fn db(&self) -> &DB {
-        &self.db
+    pub(crate) fn db(&self) -> Option<&DB> {
+        Some(&self.db)
     }
 
     /// Return a mut reference to the database that created that transaction
@@ -71,9 +71,17 @@ impl TX {
         self.writable
     }
 
-    //todo
-    pub(crate) fn page(&self, _id: PgId) -> Page {
-        Page::default()
+    // Returns page information for a given page number.
+    // This is only safe for concurrent use when by a writable transaction.
+    pub(crate) fn page(&self, id: PgId) -> Result<Option<Page>> {
+        let db = self.db();
+        if db.is_none() {
+            return Err(Error::TxClosed);
+        } else if id >= self.meta.pg_id {
+            return Ok(None);
+        }
+
+        // Build the page info.
     }
 }
 

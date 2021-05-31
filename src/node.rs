@@ -1,4 +1,5 @@
 use crate::bucket::{MAX_FILL_PERCENT, MIN_FILL_PERCENT};
+use crate::error::Error::BucketEmpty;
 use crate::error::{Error, Result};
 use crate::page::{
     BranchPageElement, LeafPageElement, BRANCH_PAGE_ELEMENT_SIZE, BRANCH_PAGE_FLAG,
@@ -7,14 +8,13 @@ use crate::page::{
 use crate::{bucket, search, Bucket, Page, PgId};
 use memoffset::ptr::copy_nonoverlapping;
 use std::borrow::{Borrow, BorrowMut};
-use std::cell::{Cell, RefCell, Ref, RefMut};
-use std::ops::{RangeBounds, Deref};
-use std::slice::Iter;
-use std::sync::Arc;
-use std::rc::{Weak, Rc};
-use std::sync::atomic::{AtomicBool, Ordering};
-use crate::error::Error::BucketEmpty;
+use std::cell::{Cell, Ref, RefCell, RefMut};
+use std::ops::{Deref, RangeBounds};
 use std::process::id;
+use std::rc::{Rc, Weak};
+use std::slice::Iter;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 pub(crate) type Key = Vec<u8>;
 pub(crate) type Value = Vec<u8>;
@@ -91,9 +91,13 @@ impl Node {
 
     // Returns the size of the node after serialization.
     fn size(&self) -> usize {
-        self.0.inodes.borrow().iter().fold(PAGE_HEADER_SIZE, |acc, inode| {
-            acc + self.page_element_size() + inode.key.len() + inode.value.len()
-        })
+        self.0
+            .inodes
+            .borrow()
+            .iter()
+            .fold(PAGE_HEADER_SIZE, |acc, inode| {
+                acc + self.page_element_size() + inode.key.len() + inode.value.len()
+            })
     }
 
     // Returns true if the node is less than a given size.
@@ -128,7 +132,10 @@ impl Node {
         }
         let pg_id = self.0.inodes.borrow()[index].pg_id;
         // todo: Why?
-        Ok(self.bucket_mut().unwrap().node(pg_id, &WeakNode::from(self)))
+        Ok(self
+            .bucket_mut()
+            .unwrap()
+            .node(pg_id, &WeakNode::from(self)))
     }
 
     // todo: unwrap
@@ -136,7 +143,11 @@ impl Node {
     fn child_index(&self, child: &Node) -> isize {
         // FIXME
         let key = child.0.key.borrow();
-        self.0.inodes.borrow().binary_search_by(|inode| inode.key.cmp(&key)).unwrap() as isize
+        self.0
+            .inodes
+            .borrow()
+            .binary_search_by(|inode| inode.key.cmp(&key))
+            .unwrap() as isize
     }
 
     pub(crate) fn child_mut(&self) -> RefMut<'_, Vec<Node>> {
@@ -174,7 +185,7 @@ impl Node {
                 }
                 parent.child_at((index + 1) as usize).ok()
             }
-            None => None
+            None => None,
         }
     }
 
@@ -194,7 +205,12 @@ impl Node {
     // Removes a key from the node.
     fn del(&mut self, key: Key) {
         // Find index of key.
-        match self.0.inodes.borrow().binary_search_by(|inode| inode.key.cmp(key.as_ref())) {
+        match self
+            .0
+            .inodes
+            .borrow()
+            .binary_search_by(|inode| inode.key.cmp(key.as_ref()))
+        {
             Ok(index) => {
                 // Delete inode from the node.
                 self.0.inodes.borrow_mut().remove(index);
@@ -207,14 +223,7 @@ impl Node {
     }
 
     // Inserts a key/value.
-    fn put(
-        &self,
-        old_key: Key,
-        new_key: Key,
-        value: Value,
-        pg_id: PgId,
-        flags: u32,
-    ) -> Result<()> {
+    fn put(&self, old_key: Key, new_key: Key, value: Value, pg_id: PgId, flags: u32) -> Result<()> {
         let bucket = self.bucket().unwrap();
         if pg_id >= bucket.tx.meta.pg_id {
             return Err(Error::PutFailed(format!(
@@ -229,7 +238,9 @@ impl Node {
 
         // Find insertion index.
         let mut inodes = self.0.inodes.borrow_mut();
-        let (extra, index) = inodes.binary_search_by(|inode| inode.key.cmp(&old_key)).map(|index| (true, index))
+        let (extra, index) = inodes
+            .binary_search_by(|inode| inode.key.cmp(&old_key))
+            .map(|index| (true, index))
             .map_err(|index| (false, index))
             .unwrap();
         // Add capacity and shift nodes if we don't have an exact match and need to insert.
@@ -248,7 +259,8 @@ impl Node {
     pub(crate) fn read(&mut self, p: &Page) {
         let mut node = self.0.borrow_mut();
         *node.pgid.borrow_mut() = p.id;
-        node.is_leaf.store(p.flags & LEAF_PAGE_FLAG != 0, Ordering::Release);
+        node.is_leaf
+            .store(p.flags & LEAF_PAGE_FLAG != 0, Ordering::Release);
 
         for i in 0..(p.count as usize) {
             let mut inode = &mut node.inodes.borrow_mut()[i];
@@ -286,7 +298,11 @@ impl Node {
 
         // TODO: Why?
         if self.0.inodes.borrow().len() >= 0xFFFF {
-            panic!("inode overflow: {} (pg_id={})", self.0.inodes.borrow().len(), page.id);
+            panic!(
+                "inode overflow: {} (pg_id={})",
+                self.0.inodes.borrow().len(),
+                page.id
+            );
         }
 
         page.count = self.0.inodes.borrow().len() as u16;
@@ -347,16 +363,6 @@ impl Node {
             .iter()
             .position(|c| Rc::ptr_eq(&target.0, &c.0))
             .map(|idx| self.0.children.borrow_mut().remove(idx));
-    }
-
-    // Adds the node's underlying `page` to the freelist.
-    fn free(&mut self) {
-        let pgid = self.0.pgid.borrow().clone();
-        if pgid != 0 {
-            let mut bucket = self.bucket_mut().unwrap();
-            bucket.tx.db.free_list.free(bucket.tx.meta.tx_id, &bucket.tx.page(pgid));
-            self.0.pgid.replace(0);
-        }
     }
 
     // Writes the nodes to dirty pages and splits nodes as it goes.
@@ -426,7 +432,8 @@ impl Node {
             return Ok(None);
         }
         // Determine the threshold before starting a new node.
-        let fill_parent = self.bucket()
+        let fill_parent = self
+            .bucket()
             .ok_or_else(|| BucketEmpty)?
             .fill_percent
             .min(MIN_FILL_PERCENT)
@@ -441,13 +448,21 @@ impl Node {
         let next = NodeBuilder::new(self.0.bucket)
             .is_leaf(self.is_leaf())
             .build();
-        let nodes = self.0.inodes.borrow_mut().drain(split_index..).collect::<Vec<_>>();
+        let nodes = self
+            .0
+            .inodes
+            .borrow_mut()
+            .drain(split_index..)
+            .collect::<Vec<_>>();
         *next.0.inodes.borrow_mut() = nodes;
         // FIXME: add statistics
-        self.bucket_mut().ok_or_else(|| BucketEmpty)?.tx().stats.split += 1;
+        self.bucket_mut()
+            .ok_or_else(|| BucketEmpty)?
+            .tx()
+            .stats
+            .split += 1;
         Ok(Some(next))
     }
-
 
     // Finds the position where a page will fill a given threshold.
     // It returns the index as well as the size of the first page.
@@ -461,8 +476,7 @@ impl Node {
         for i in 0..inodes.len() - MIN_KEYS_PER_PAGE {
             index = i;
             let inode = &inodes[i];
-            let el_size =
-                self.page_element_size() + inode.key.len() + inode.value.len();
+            let el_size = self.page_element_size() + inode.key.len() + inode.value.len();
 
             // If we have at least the minimum number of keys and adding another
             // node would put us over the threshold then exit and return.
@@ -474,6 +488,20 @@ impl Node {
             size += el_size;
         }
         (index, size)
+    }
+
+    // Adds the node's underlying `page` to the freelist.
+    fn free(&mut self) {
+        let pgid = self.0.pgid.borrow().clone();
+        if pgid != 0 {
+            let mut bucket = self.bucket_mut().unwrap();
+            bucket
+                .tx
+                .db
+                .free_list
+                .free(bucket.tx.meta.tx_id, &bucket.tx.page(pgid));
+            self.0.pgid.replace(0);
+        }
     }
 
     fn node_builder(bucket: *const Bucket) {}

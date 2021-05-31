@@ -1,4 +1,4 @@
-use crate::node::{Node, WeakNode, NodeBuilder};
+use crate::node::{Node, NodeBuilder, WeakNode};
 use crate::tx::TX;
 use crate::{Page, PgId};
 use std::collections::HashMap;
@@ -88,20 +88,22 @@ impl Bucket {
             return node.clone();
         }
         // Otherwise create a node and cache it.
-        let mut node = NodeBuilder::new(self as *const Bucket).parent(parent.clone()).build();
+        let mut node = NodeBuilder::new(self as *const Bucket)
+            .parent(parent.clone())
+            .build();
         if let Some(parent) = parent.upgrade() {
             parent.child_mut().push(node.clone());
         } else {
             self.root_node.replace(node.clone());
         }
         // Use the page into the node and cache it.
-        let mut p = self.page.as_ref();
-        if p.is_none() {
-            p.replace(&self.tx.page(pg_id));
-        }
-
+        let p = self
+            .page
+            .clone()
+            .or_else(|| Some(self.tx.page(pg_id)))
+            .unwrap();
         // Read the page into the node and cache it.
-        node.read(p.unwrap());
+        node.read(&p);
         self.nodes.insert(pg_id, node.clone());
 
         // Update statistics.
