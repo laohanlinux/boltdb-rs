@@ -7,13 +7,14 @@ use crate::page::{
 use crate::{bucket, search, Bucket, Page, PgId};
 use memoffset::ptr::copy_nonoverlapping;
 use std::borrow::{Borrow, BorrowMut};
-use std::cell::{Cell, RefCell, Ref};
+use std::cell::{Cell, RefCell, Ref, RefMut};
 use std::ops::{RangeBounds, Deref};
 use std::slice::Iter;
 use std::sync::Arc;
 use std::rc::{Weak, Rc};
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::error::Error::BucketEmpty;
+use std::process::id;
 
 pub(crate) type Key = Vec<u8>;
 pub(crate) type Value = Vec<u8>;
@@ -47,7 +48,7 @@ impl WeakNode {
         WeakNode::default()
     }
 
-    fn upgrade(&self) -> Option<Node> {
+    pub(crate) fn upgrade(&self) -> Option<Node> {
         self.0.upgrade().map(Node)
     }
 
@@ -60,7 +61,7 @@ impl WeakNode {
 pub(crate) struct Node(Rc<NodeInner>);
 
 impl Node {
-    pub(crate) fn new() -> Node {
+    pub(crate) fn new(bucket: Bucket, parent: &Node) -> Node {
         unimplemented!()
     }
 
@@ -127,7 +128,7 @@ impl Node {
         }
         let pg_id = self.0.inodes.borrow()[index].pg_id;
         // todo: Why?
-        Ok(self.bucket_mut().unwrap().node(pg_id, WeakNode::from(self)))
+        Ok(self.bucket_mut().unwrap().node(pg_id, &WeakNode::from(self)))
     }
 
     // todo: unwrap
@@ -136,6 +137,10 @@ impl Node {
         // FIXME
         let key = child.0.key.borrow();
         self.0.inodes.borrow().binary_search_by(|inode| inode.key.cmp(&key)).unwrap() as isize
+    }
+
+    pub(crate) fn child_mut(&self) -> RefMut<'_, Vec<Node>> {
+        self.0.children.borrow_mut()
     }
 
     pub(super) fn bucket<'a, 'b: 'a>(&'a self) -> Option<&'b Bucket> {
@@ -240,7 +245,7 @@ impl Node {
     }
 
     // Initializes the node from a page.
-    fn read(&mut self, p: &Page) {
+    pub(crate) fn read(&mut self, p: &Page) {
         let mut node = self.0.borrow_mut();
         *node.pgid.borrow_mut() = p.id;
         node.is_leaf.store(p.flags & LEAF_PAGE_FLAG != 0, Ordering::Release);
@@ -335,7 +340,14 @@ impl Node {
 
     // Removes a node from the list of in-memory children.
     // This dose not affect the inodes.
-    fn remove_child(&self, target: &Node) {}
+    fn remove_child(&self, target: &Node) {
+        self.0
+            .children
+            .borrow()
+            .iter()
+            .position(|c| Rc::ptr_eq(&target.0, &c.0))
+            .map(|idx| self.0.children.borrow_mut().remove(idx));
+    }
 
     // Adds the node's underlying `page` to the freelist.
     fn free(&mut self) {
@@ -467,7 +479,7 @@ impl Node {
     fn node_builder(bucket: *const Bucket) {}
 }
 
-struct NodeBuilder {
+pub(crate) struct NodeBuilder {
     bucket: Option<*const Bucket>,
     is_leaf: bool,
     pg_id: PgId,
@@ -476,7 +488,7 @@ struct NodeBuilder {
 }
 
 impl NodeBuilder {
-    fn new(bucket: *const Bucket) -> Self {
+    pub(crate) fn new(bucket: *const Bucket) -> Self {
         NodeBuilder {
             bucket: Some(bucket),
             is_leaf: false,
@@ -486,17 +498,17 @@ impl NodeBuilder {
         }
     }
 
-    fn is_leaf(mut self, value: bool) -> Self {
+    pub(crate) fn is_leaf(mut self, value: bool) -> Self {
         self.is_leaf = value;
         self
     }
 
-    fn parent(mut self, value: WeakNode) -> Self {
+    pub(crate) fn parent(mut self, value: WeakNode) -> Self {
         self.parent = value;
         self
     }
 
-    fn children(mut self, value: Vec<Node>) -> Self {
+    pub(crate) fn children(mut self, value: Vec<Node>) -> Self {
         self.children = value;
         self
     }
@@ -506,7 +518,7 @@ impl NodeBuilder {
         self
     }
 
-    fn build(self) -> Node {
+    pub(crate) fn build(self) -> Node {
         Node(Rc::new(NodeInner {
             bucket: self.bucket.unwrap(),
             is_leaf: AtomicBool::new(self.is_leaf),

@@ -1,4 +1,4 @@
-use crate::node::{Node, WeakNode};
+use crate::node::{Node, WeakNode, NodeBuilder};
 use crate::tx::TX;
 use crate::{Page, PgId};
 use std::collections::HashMap;
@@ -34,7 +34,7 @@ pub(crate) struct Bucket {
     // subbucket cache
     pub(crate) buckets: HashMap<String, Box<Bucket>>,
     // inline page reference
-    pub(crate) page: Page,
+    pub(crate) page: Option<Page>,
     // materialized node for the root page
     pub(crate) root_node: Option<Node>,
     // node cache
@@ -81,7 +81,31 @@ impl Bucket {
     }
 
     /// Create a `node` from a `page` and associates it with a given parent.
-    pub(crate) fn node(&self, _pg_id: PgId, _parent: WeakNode) -> Node {
-        Node::new()
+    pub(crate) fn node(&mut self, pg_id: PgId, parent: &WeakNode) -> Node {
+        assert!(!self.nodes.is_empty(), "nodes map expected");
+        // Retrieve node if it's already been created.
+        if let Some(node) = self.nodes.get(&pg_id) {
+            return node.clone();
+        }
+        // Otherwise create a node and cache it.
+        let mut node = NodeBuilder::new(self as *const Bucket).parent(parent.clone()).build();
+        if let Some(parent) = parent.upgrade() {
+            parent.child_mut().push(node.clone());
+        } else {
+            self.root_node.replace(node.clone());
+        }
+        // Use the page into the node and cache it.
+        let mut p = self.page.as_ref();
+        if p.is_none() {
+            p.replace(&self.tx.page(pg_id));
+        }
+
+        // Read the page into the node and cache it.
+        node.read(p.unwrap());
+        self.nodes.insert(pg_id, node.clone());
+
+        // Update statistics.
+        self.tx.stats.node_count += 1;
+        node
     }
 }
