@@ -82,6 +82,7 @@ impl TX {
         }
 
         // Build the page info.
+        let p = self.db.path()
     }
 }
 
