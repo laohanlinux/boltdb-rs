@@ -2,6 +2,8 @@ use crate::db::{Meta, DB};
 use crate::{error::Error, error::Result, Bucket, Page, PgId};
 use std::collections::HashMap;
 use std::time::Duration;
+use std::sync::RwLock;
+use std::sync::atomic::AtomicBool;
 
 /// Represents the internal transaction identifier
 pub type TxId = u64;
@@ -18,12 +20,16 @@ pub(crate) type CommitHandler = Box<dyn FnOnce() + Send>;
 /// quickly grow.
 #[derive(Default)]
 pub(crate) struct TX {
+    /// is transaction writable
     pub(crate) writable: bool,
-    pub(crate) managed: bool,
+    /// declares that transaction is in use.
+    pub(crate) managed: AtomicBool,
+    /// ref of DB.
+    /// if transaction closed then ref points to null
     pub(crate) db: DB,
     pub(crate) meta: Box<Meta>,
     pub(crate) root: Box<Bucket>,
-    pub(crate) pages: HashMap<PgId, Page>,
+    pub(crate) pages: RwLock<HashMap<PgId, Page>>,
     pub(crate) stats: TxStats,
     pub(crate) commit_handler: Vec<CommitHandler>,
 
@@ -53,7 +59,7 @@ impl TX {
 
     /// Return a reference to a database that created the transaction.
     pub(crate) fn size(&self) -> u64 {
-        self.meta.pg_id * self.db.page_size as u64
+        self.meta.pg_id * self.db.0.page_size as u64
     }
 
     /// Return a reference to the database that created the transaction
@@ -74,15 +80,16 @@ impl TX {
     // Returns page information for a given page number.
     // This is only safe for concurrent use when by a writable transaction.
     pub(crate) fn page(&self, id: PgId) -> Result<Option<Page>> {
-        let db = self.db();
-        if db.is_none() {
-            return Err(Error::TxClosed);
-        } else if id >= self.meta.pg_id {
-            return Ok(None);
-        }
-
-        // Build the page info.
-        let p = self.db.path()
+        // let db = self.db();
+        // if db.is_none() {
+        //     return Err(Error::TxClosed);
+        // } else if id >= self.meta.pg_id {
+        //     return Ok(None);
+        // }
+        //
+        // // Build the page info.
+        // let p = self.db.path()
+        Ok(None)
     }
 }
 

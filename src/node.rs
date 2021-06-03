@@ -495,11 +495,15 @@ impl Node {
         let pgid = self.0.pgid.borrow().clone();
         if pgid != 0 {
             let mut bucket = self.bucket_mut().unwrap();
-            bucket
-                .tx
-                .db
-                .free_list
-                .free(bucket.tx.meta.tx_id, &bucket.tx.page(pgid));
+            let tx = bucket.tx();
+            let tx_id = tx.id();
+            let page = unsafe {&*tx.page(pgid).unwrap().unwrap()};
+            // bucket
+            //     .tx
+            //     .db
+            //     .0
+            //     .free_list
+            //     .free(bucket.tx.meta.tx_id, &bucket.tx.page(pgid));
             self.0.pgid.replace(0);
         }
     }

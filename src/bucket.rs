@@ -100,7 +100,7 @@ impl Bucket {
         let p = self
             .page
             .clone()
-            .or_else(|| Some(self.tx.page(pg_id)))
+            .or_else(|| Some(self.tx.page(pg_id).unwrap().unwrap()))
             .unwrap();
         // Read the page into the node and cache it.
         node.read(&p);

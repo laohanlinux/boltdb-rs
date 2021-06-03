@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
-use test::stats::Stats;
 
 /// The largest step that can be token when remapping the mman.
 const MAX_MMAP_STEP: usize = 1 << 30; //1GB
@@ -25,11 +24,7 @@ const DEFAULT_MAX_BATCH_SIZE: isize = 1000;
 const DEFAULT_MAX_BATCH_DELAY: Duration = Duration::from_millis(10);
 const DEFAULT_ALLOC_SIZE: isize = 16 * 1024 * 1024;
 
-bitflags! {
-    pub struct CheckMode: u8 {
-
-    }
-}
+enum CheckMode {}
 
 pub(crate) struct DBInner {
     pub(crate) check_mode: CheckMode,
@@ -39,12 +34,12 @@ pub(crate) struct DBInner {
     pub(crate) max_batch_delay: Duration,
     pub(crate) auto_remove: bool,
     pub(crate) alloc_size: u64,
-    pub(crate) path: Option<PathBuf>,
+    pub(crate) path: &'static str,
     pub(crate) file: RwLock<BufWriter<File>>,
     pub(crate) mmap_size: Mutex<usize>,
     pub(crate) mmap: RwLock<memmap::Mmap>,
     pub(crate) file_size: RwLock<u64>,
-    page_size: usize,
+    pub(crate) page_size: usize,
     opened: AtomicBool,
     pub(crate) rw_lock: Mutex<()>,
     pub(crate) rw_tx: RwLock<Option<Tx>>,
@@ -76,10 +71,23 @@ pub(crate) struct DBInner {
 #[derive(Clone)]
 pub struct DB(pub(crate) Arc<DBInner>);
 
+impl Default for DB {
+    fn default() -> Self {
+        todo!()
+    }
+}
+
 impl<'a> DB {
     pub fn open(_path: &'static str, _perm: Permissions) {}
 
-    fn cleanup(&mut self) -> Result<(), Error> {}
+    /// Return the path to currently open database file.
+    pub fn path(&self) -> &'static str {
+        self.0.path
+    }
+
+    fn cleanup(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
 }
 // impl DB {
 //     pub fn open(_path: &'static str, _perm: Permissions) {}
@@ -115,4 +123,23 @@ pub(crate) struct Meta {
     pub(crate) pg_id: PgId,
     pub(crate) tx_id: TxId,
     check_sum: u64,
+}
+
+// Represents statistics about the database.
+pub struct Stats {
+    // FreeList stats.
+    // total number of free pages on the freelist.
+    pending_page_n: u64,
+    // total number of pending pages on the freelist.
+    free_alloc: u64,
+    // total bytes allocated in free pages.
+    free_list_inuse: u64,
+    // total bytes used by the freelist.
+    free_page_n: u64,
+    // Transaction stats
+    // total number of started read transactions.
+    tx_n: u64,
+    // number of currently open read transactions.
+    open_tx_n: u64,
+
 }
