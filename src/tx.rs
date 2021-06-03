@@ -1,9 +1,9 @@
 use crate::db::{Meta, DB};
 use crate::{error::Error, error::Result, Bucket, Page, PgId};
 use std::collections::HashMap;
-use std::time::Duration;
-use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::RwLock;
+use std::time::Duration;
 
 /// Represents the internal transaction identifier
 pub type TxId = u64;
@@ -80,15 +80,10 @@ impl TX {
     // Returns page information for a given page number.
     // This is only safe for concurrent use when by a writable transaction.
     pub(crate) fn page(&self, id: PgId) -> Result<Option<Page>> {
-        // let db = self.db();
-        // if db.is_none() {
-        //     return Err(Error::TxClosed);
-        // } else if id >= self.meta.pg_id {
-        //     return Ok(None);
+        // Check the dirty pages first.
+        // {
+        //     let pages = self.0.
         // }
-        //
-        // // Build the page info.
-        // let p = self.db.path()
         Ok(None)
     }
 }

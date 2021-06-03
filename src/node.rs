@@ -492,20 +492,20 @@ impl Node {
 
     // Adds the node's underlying `page` to the freelist.
     fn free(&mut self) {
-        let pgid = self.0.pgid.borrow().clone();
-        if pgid != 0 {
-            let mut bucket = self.bucket_mut().unwrap();
-            let tx = bucket.tx();
-            let tx_id = tx.id();
-            let page = unsafe {&*tx.page(pgid).unwrap().unwrap()};
-            // bucket
-            //     .tx
-            //     .db
-            //     .0
-            //     .free_list
-            //     .free(bucket.tx.meta.tx_id, &bucket.tx.page(pgid));
-            self.0.pgid.replace(0);
-        }
+        // let pgid = self.0.pgid.borrow().clone();
+        // if pgid != 0 {
+        //     let mut bucket = self.bucket_mut().unwrap();
+        //     let tx = bucket.tx();
+        //     let tx_id = tx.id();
+        //     let page = unsafe {&*tx.page(pgid).unwrap().unwrap()};
+        //     // bucket
+        //     //     .tx
+        //     //     .db
+        //     //     .0
+        //     //     .free_list
+        //     //     .free(bucket.tx.meta.tx_id, &bucket.tx.page(pgid));
+        //     self.0.pgid.replace(0);
+        // }
     }
 
     fn node_builder(bucket: *const Bucket) {}

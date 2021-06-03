@@ -7,7 +7,9 @@ use std::fs::{File, Permissions};
 use std::io::BufWriter;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::Ordering::SeqCst;
+use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::thread::{sleep, spawn};
 use std::time::Duration;
 
 /// The largest step that can be token when remapping the mman.
@@ -42,7 +44,7 @@ pub(crate) struct DBInner {
     pub(crate) page_size: usize,
     opened: AtomicBool,
     pub(crate) rw_lock: Mutex<()>,
-    pub(crate) rw_tx: RwLock<Option<Tx>>,
+    pub(crate) rw_tx: RwLock<Option<TX>>,
     pub(crate) txs: RwLock<Vec<TX>>,
     pub(crate) free_list: RwLock<FreeList>,
     pub(crate) stats: RwLock<Stats>,
@@ -112,6 +114,23 @@ impl Drop for DB {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct WeakDB(Weak<DBInner>);
+
+impl WeakDB {
+    pub(crate) fn new() -> WeakDB {
+        WeakDB(Weak::new())
+    }
+
+    pub(crate) fn upgrade(&self) -> Option<DB> {
+        self.0.upgrade().map(DB)
+    }
+
+    pub(crate) fn from(db: &DB) -> WeakDB {
+        WeakDB(Arc::downgrade(&db.0))
+    }
+}
+
 #[derive(Default, Clone)]
 pub(crate) struct Meta {
     magic: u32,
@@ -141,5 +160,46 @@ pub struct Stats {
     tx_n: u64,
     // number of currently open read transactions.
     open_tx_n: u64,
-
 }
+
+struct BatchInner {
+    db: WeakDB,
+    calls_len: usize,
+    ran: AtomicBool,
+    pub(super) calls: Mutex<Vec<Call>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct Batch(Arc<BatchInner>);
+
+unsafe impl Send for Batch {}
+unsafe impl Sync for Batch {}
+
+impl Batch {
+    pub(super) fn new(db: WeakDB, calls_len: usize, delay: Duration) -> Self {
+        let batch = Batch(Arc::new(BatchInner {
+            db,
+            calls_len,
+            ran: AtomicBool::new(false),
+            calls: Mutex::new(Vec::new()),
+        }));
+        let mut bc = batch.clone();
+        spawn(move || {
+            sleep(delay);
+        });
+        bc
+    }
+
+    /// trigger runs the batch if it has not already been run.
+    pub(super) fn trigger(&mut self) {
+        if let Ok(false) = self.0.ran.compare_exchange(false, true, SeqCst, SeqCst) {
+            self.run();
+        }
+    }
+
+    /// run performs the transactions in the batch and communicates results.
+    /// back to DB.Batch
+    fn run(&mut self) {}
+}
+
+pub(super) struct Call {}
