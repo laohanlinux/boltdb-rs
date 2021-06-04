@@ -6,6 +6,7 @@ use std::mem::align_of;
 
 extern crate memoffset;
 extern crate test;
+extern crate bitflags;
 
 pub mod bucket;
 pub mod db;

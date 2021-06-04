@@ -11,6 +11,7 @@ use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::thread::{sleep, spawn};
 use std::time::Duration;
+use bitflags::bitflags;
 
 /// The largest step that can be token when remapping the mman.
 const MAX_MMAP_STEP: usize = 1 << 30; //1GB
@@ -26,7 +27,27 @@ const DEFAULT_MAX_BATCH_SIZE: isize = 1000;
 const DEFAULT_MAX_BATCH_DELAY: Duration = Duration::from_millis(10);
 const DEFAULT_ALLOC_SIZE: isize = 16 * 1024 * 1024;
 
-enum CheckMode {}
+
+bitflags! {
+    /// Defines when db check will occur
+    pub struct CheckMode: u8 {
+        /// no check
+        const NO = 0b0000;
+        /// check on database close
+        const CLOSE = 0b0001;
+        /// check on end of read transaction
+        ///
+        /// If there is parallel write transaction going on
+        /// check may fail because of old freelist metadata
+        const READ = 0b0010;
+        /// check on end of write transaction
+        conset WRITE = 0b0100;
+        /// check on close, and end of every transaction
+        const ALL = 0b01111;
+        /// defines whether result of the check will result
+        /// in error or just
+    }
+}
 
 pub(crate) struct DBInner {
     pub(crate) check_mode: CheckMode,
@@ -173,6 +194,7 @@ struct BatchInner {
 pub(crate) struct Batch(Arc<BatchInner>);
 
 unsafe impl Send for Batch {}
+
 unsafe impl Sync for Batch {}
 
 impl Batch {
