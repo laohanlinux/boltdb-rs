@@ -8,6 +8,7 @@ use crate::tx::TX;
 use crate::{Bucket, Page, PgId, TxId};
 use bitflags::bitflags;
 use fnv::FnvHasher;
+use fs2::FileExt;
 use memmap::Mmap;
 use parking_lot::{MappedMutexGuard, MappedRwLockReadGuard};
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
@@ -321,14 +322,41 @@ impl<'a> DB {
         Ok(size)
     }
 
-    pub(crate) fn grow(&mut self, mut size: usize) -> Result<()> {
+    pub(crate) fn grow(&mut self, mut size: u64) -> Result<()> {
         if self.0.read_only {
             return Err(Error::DatabaseOnlyRead);
         }
         let file = self.0.file.try_write().unwrap();
-        if file.get_ref().metadata().unwrap().len() >= size {
+        if file.get_ref().metadata().unwrap().len() >= size as u64 {
             return Ok(());
         }
+
+        // If the data is smaller than the alloc size then only allocate what's needed.
+        // Once it goes over the allocation size then allocate in chunks.
+        {
+            let mmapsize = self.0.mmap.try_read().unwrap().as_ref().len() as u64;
+            if mmapsize < self.0.alloc_size {
+                size = mmapsize;
+            } else {
+                size += self.0.alloc_size;
+            }
+        }
+
+        file.get_ref()
+            .allocate(size)
+            .map_err(|_e| Error::ResizeFail)?;
+
+        if !self.0.no_grow_sync {
+            file.get_ref()
+                .sync_all()
+                .map_err(|_| Error::Unknown("can't flush file".to_owned()))?;
+        }
+        *self.0.file_size.write() = file
+            .get_ref()
+            .metadata()
+            .map_err(Error::Unknown("can't get metadata file".to_owned()))?
+            .len();
+        Ok(())
     }
 
     fn cleanup(&mut self) -> Result<()> {

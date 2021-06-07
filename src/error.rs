@@ -21,6 +21,8 @@ pub enum Error {
     InvalidChecksum(String),
     #[error("{0}")]
     InvalidNode(String),
+    #[error("ResizeFail")]
+    ResizeFail,
     #[error("Invalid filename")]
     InvalidFilename(String),
     #[error("Database Closed")]
