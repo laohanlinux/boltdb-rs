@@ -6,6 +6,7 @@ use std::mem::size_of;
 use std::ops::RangeBounds;
 use std::ptr::slice_from_raw_parts;
 use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
+use crate::free_list::FreeList;
 
 pub(crate) const PAGE_HEADER_SIZE: usize = size_of::<Page>();
 pub(crate) const MIN_KEYS_PER_PAGE: usize = 2;
@@ -31,15 +32,15 @@ pub struct Page {
     pub(crate) id: PgId,
     pub(crate) flags: u16,
     pub(crate) count: u16,
-    pub(crate) over_flow: u16,
+    pub(crate) over_flow: u32,
     // PhantomData not occupy real memory
     pub(crate) ptr: PhantomData<u8>,
 }
 
 impl Page {
     // `meta` returns a pointer to the metadata section of the `page`
-    pub(crate) fn meta(&mut self) -> &mut Meta {
-        unsafe { &mut *(self.get_data_mut_ptr() as *mut Meta) }
+    pub fn meta(&self) -> &Meta {
+        unsafe { &*(self.get_data_ptr() as *const Meta) }
     }
 
     // Retrieves the leaf node by index.
@@ -169,6 +170,18 @@ impl Page {
     #[inline]
     pub(crate) fn from_slice_mut(mut buffer: &mut [u8]) -> &mut Self {
         unsafe { &mut *(buffer.as_mut_ptr() as *mut Page) }
+    }
+
+    #[inline]
+    pub(crate) fn copy_from_meta(&mut self, meta: &Meta) {
+        self.count = 0;
+        self.flags = BRANCH_PAGE_FLAG;
+    }
+
+    #[inline]
+    pub(crate) fn copy_from_free_list(&mut self, free_list: &FreeList) {
+        self.count = free_list.count() as u16;
+        self.flags = FREE_LIST_PAGE_FLAG;
     }
 
     // The size of page, including header and elements.
@@ -364,8 +377,8 @@ impl PgIds {
 
     #[inline]
     pub fn drain<R>(&mut self, range: R) -> Vec<u64>
-    where
-        R: RangeBounds<usize>,
+        where
+            R: RangeBounds<usize>,
     {
         self.inner.drain(range).collect::<Vec<_>>()
     }
@@ -386,7 +399,7 @@ fn t_page_type() {
             flags: BRANCH_PAGE_FLAG,
             ..Default::default()
         }
-        .to_string(),
+            .to_string(),
         "branch"
     );
     assert_eq!(
@@ -394,7 +407,7 @@ fn t_page_type() {
             flags: LEAF_PAGE_FLAG,
             ..Default::default()
         }
-        .to_string(),
+            .to_string(),
         "leaf"
     );
     assert_eq!(
@@ -402,7 +415,7 @@ fn t_page_type() {
             flags: META_PAGE_FLAG,
             ..Default::default()
         }
-        .to_string(),
+            .to_string(),
         "meta"
     );
     assert_eq!(
@@ -410,7 +423,7 @@ fn t_page_type() {
             flags: FREE_LIST_PAGE_FLAG,
             ..Default::default()
         }
-        .to_string(),
+            .to_string(),
         "freelist"
     );
     assert_eq!(
@@ -418,7 +431,7 @@ fn t_page_type() {
             flags: 0x4e20,
             ..Default::default()
         }
-        .to_string(),
+            .to_string(),
         "unknown<4e20>"
     );
 }

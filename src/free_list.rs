@@ -34,7 +34,7 @@ impl FreeList {
 
     // Returns `count` of `pages` on the `freelist`
     #[inline]
-    fn count(&self) -> usize {
+    pub(crate) fn count(&self) -> usize {
         self.free_count() + self.pending_count()
     }
 
@@ -52,7 +52,7 @@ impl FreeList {
 
     // Returns the starting page id of contiguous list of pages of a given size.
     // If a contiguous block cannot be found then 0 is returned.
-    fn allocate(&mut self, n: usize) -> Option<PgId> {
+    pub(crate) fn allocate(&mut self, n: usize) -> Option<PgId> {
         if self.ids.len() == 0 {
             return None;
         }

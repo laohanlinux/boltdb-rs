@@ -31,6 +31,31 @@ pub enum Error {
     BucketEmpty,
     #[error("Tx Closed")]
     TxClosed,
+    #[error("{0}")]
+    DBOpFailed(String),
+    #[error("{0}")]
+    Unknown(String),
+    #[error("database only read")]
+    DatabaseOnlyRead,
+    // Returned when a DB instance is accessed before it
+    // is opened or after it is closed.
+    #[error("database not open")]
+    DatabaseNotOpen,
+    // Returned when opening a database that is already open.
+    #[error("database already open")]
+    DatabaseOpen,
+    // Returned when both meta pages on a database are invalid.
+    // This typically occurs when a file is not a bolt database.
+    #[error("invalid database")]
+    Invalid,
+    // Returned when the data file was created with a different
+    // version of Bolt.
+    #[error("version mismatch")]
+    VersionMismatch,
+    // Returned when a database cannot obtain an exclusive lock
+    // on the data file after the timeout passed to Open()
+    #[error("timeout")]
+    Timeout,
 }
 
 impl From<io::Error> for Error {
