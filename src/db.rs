@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::thread::{sleep, spawn};
 use std::time::Duration;
 use bitflags::bitflags;
+use std::ops::AddAssign;
 
 /// The largest step that can be token when remapping the mman.
 const MAX_MMAP_STEP: usize = 1 << 30; //1GB
@@ -41,11 +42,16 @@ bitflags! {
         /// check may fail because of old freelist metadata
         const READ = 0b0010;
         /// check on end of write transaction
-        conset WRITE = 0b0100;
+        const WRITE = 0b0100;
         /// check on close, and end of every transaction
         const ALL = 0b01111;
         /// defines whether result of the check will result
-        /// in error or just
+        /// in error or just be spewed in stdout
+        const STRICT = 0b1000;
+        /// check on close and writes and panic on error
+        const STRONG = 0b1101;
+        /// check everything and panic on error
+        const PARANOID = 0b1111;
     }
 }
 
@@ -71,6 +77,7 @@ pub(crate) struct DBInner {
     pub(crate) stats: RwLock<Stats>,
     pub(crate) batch: Mutex<Option<Batch>>,
     pub(crate) page_pool: Mutex<Vec<Page>>,
+    read_only: bool,
 }
 //
 // /// `DB` represents a collection of buckets persisted to a file on disk.
@@ -181,6 +188,83 @@ pub struct Stats {
     tx_n: u64,
     // number of currently open read transactions.
     open_tx_n: u64,
+}
+
+/// Transaction statistics
+#[derive(Clone, Debug, Default)]
+pub struct TxStats {
+    // Page statistics
+    /// number of page allocations
+    pub page_count: usize,
+    /// total bytes allocated
+    pub page_alloc: usize,
+
+    // Cursor statistics
+    /// number of cursor created
+    pub cursor_count: usize,
+
+    // Node statistics
+    /// number of node allocations
+    pub node_count: usize,
+    /// number of node dereferences.
+    pub node_deref: usize,
+
+    // Rebalance statistics
+    /// number of node rebalances
+    pub rebalance: usize,
+    /// total time spent rebalancing
+    pub rebalance_time: Duration,
+
+    // Split/Spill statistics
+    /// number of nodes split
+    pub split: usize,
+    /// number of nodes spilled
+    pub spill: usize,
+    /// total time spent spilling
+    pub spill_time: Duration,
+
+    // Write statistics
+    /// number of writes performed
+    pub write: usize,
+    /// total time spent write to disk
+    pub write_time: Duration,
+}
+
+impl TxStats {
+    /// returns diff stats
+    pub fn sub(&self, other: &TxStats) -> TxStats {
+        TxStats {
+            page_count: self.page_count - other.page_count,
+            page_alloc: self.page_alloc - other.page_alloc,
+            cursor_count: self.cursor_count - other.cursor_count,
+            node_count: self.node_count - other.node_count,
+            node_deref: self.node_deref - other.node_deref,
+            rebalance: self.rebalance - other.rebalance,
+            rebalance_time: self.rebalance_time - other.rebalance_time,
+            split: self.split - other.split,
+            spill: self.spill - other.spill,
+            spill_time: self.spill_time - other.spill_time,
+            write: self.write - other.write,
+            write_time: self.write_time - other.write_time,
+        }
+    }
+}
+
+impl AddAssign for TxStats {
+    fn add_assign(&mut self, rhs: Self) {
+        self.page_count += rhs.page_count;
+        self.page_alloc += rhs.page_alloc;
+        self.cursor_count += rhs.cursor_count;
+        self.node_count += rhs.node_count;
+        self.node_deref += rhs.node_deref;
+        self.rebalance += rhs.rebalance;
+        self.rebalance_time += rhs.rebalance_time;
+        self.split += rhs.split;
+        self.spill += rhs.spill;
+        self.spill_time += rhs.spill_time;
+        self.write += rhs.write;
+        self.write_time += rhs.write_time;
+    }
 }
 
 struct BatchInner {

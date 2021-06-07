@@ -5,10 +5,11 @@ use crate::db::DB;
 use std::sync::{RwLock, Mutex};
 
 pub fn mmap(mut db: DB, mmap_size: usize) -> ::std::io::Result<DB> {
-    let file = File::open(db.path())?;
-    let mut opt = MmapOptions::new();
-    db.0.mmap = RwLock::new(unsafe { opt.map_exec(&file) }?);
-    db.0.mmap_size = Mutex::new(mmap_size);
+    // let file = File::open(db.path())?;
+    // let mut opt = MmapOptions::new();
+    // db.0.mmap = RwLock::new(unsafe { opt.map_exec(&file) }?);
+    // db.0.mmap_size = Mutex::new(mmap_size);
+    // Ok(db)
     Ok(db)
 }
 
