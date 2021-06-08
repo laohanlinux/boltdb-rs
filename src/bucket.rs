@@ -2,6 +2,7 @@ use crate::node::{Node, NodeBuilder, WeakNode};
 use crate::tx::TX;
 use crate::{Page, PgId};
 use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
 
 /// The maximum length of a key, in bytes.
 const MAX_KEY_SIZE: u64 = 32768;
@@ -24,7 +25,7 @@ const DEFAULT_FILL_PERCENT: f64 = 0.5;
 /// This is stored as the "value" of a bucket key. If the bucket is small enough,
 /// then its root page can be stored inline in the "value", after the bucket
 /// header. In the case of inline buckets, the "root" will be 0.
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 #[repr(C)]
 pub struct SubBucket {
     /// page id of the bucket's root-level page
@@ -43,7 +44,6 @@ impl SubBucket {
     }
 }
 
-#[derive(Default, Clone)]
 pub(crate) struct Bucket {
     sub_bucket: SubBucket,
     // the associated transaction
@@ -64,6 +64,21 @@ pub(crate) struct Bucket {
     pub(crate) fill_percent: f64,
 }
 
+impl Debug for Bucket {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        // let tx = self.tx();
+        f.debug_struct("Bucket")
+            .field("bucket", &self.sub_bucket)
+            // .field("tx", &tx)
+            .field("buckets", &self.buckets)
+            .field("page", &self.page.as_ref())
+            .field("root_node", &self.root_node)
+            .field("nodes", &self.nodes)
+            .field("fill_percent", &self.fill_percent)
+            .finish()
+    }
+}
+
 impl PartialEq for Bucket {
     fn eq(&self, _other: &Self) -> bool {
         unimplemented!()
@@ -73,15 +88,6 @@ impl PartialEq for Bucket {
 impl Eq for Bucket {}
 
 impl Bucket {
-    /// Returns a new `bucket` associated with a transaction.
-    pub fn new(tx: TX) -> Self {
-        Self {
-            tx: Box::new(tx),
-            fill_percent: DEFAULT_FILL_PERCENT,
-            ..Bucket::default()
-        }
-    }
-
     /// Returns the tx of the bucket.
     pub fn tx(&mut self) -> &mut TX {
         &mut self.tx
@@ -94,7 +100,7 @@ impl Bucket {
 
     /// Returns whether the bucket is writable.
     pub fn writeable(&self) -> bool {
-        self.tx.writable
+        self.tx.writable()
     }
 
     /// Create a `node` from a `page` and associates it with a given parent.
@@ -124,7 +130,7 @@ impl Bucket {
         self.nodes.insert(pg_id, node.clone());
 
         // Update statistics.
-        self.tx.stats.node_count += 1;
+        self.tx.stats().node_count += 1;
         node
     }
 }

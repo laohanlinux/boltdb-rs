@@ -225,10 +225,11 @@ impl Node {
     // Inserts a key/value.
     fn put(&self, old_key: Key, new_key: Key, value: Value, pg_id: PgId, flags: u32) -> Result<()> {
         let bucket = self.bucket().unwrap();
-        if pg_id >= bucket.tx.meta.pg_id {
+        if pg_id >= bucket.tx.meta_mut().pg_id {
             return Err(Error::PutFailed(format!(
                 "pgid {:?} above high water mark {:?}",
-                pg_id, bucket.tx.meta.pg_id
+                pg_id,
+                bucket.tx.meta_mut().pg_id
             )));
         } else if old_key.len() <= 0 {
             return Err(Error::PutFailed("zero-length old key".to_string()));
@@ -459,7 +460,7 @@ impl Node {
         self.bucket_mut()
             .ok_or_else(|| BucketEmpty)?
             .tx()
-            .stats
+            .stats()
             .split += 1;
         Ok(Some(next))
     }

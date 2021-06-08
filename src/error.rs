@@ -35,6 +35,8 @@ pub enum Error {
     TxClosed,
     #[error("{0}")]
     DBOpFailed(String),
+    #[error("database gone")]
+    DatabaseGone,
     #[error("{0}")]
     Unknown(String),
     #[error("database only read")]

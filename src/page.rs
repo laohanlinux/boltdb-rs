@@ -1,12 +1,13 @@
 use crate::db::Meta;
+use crate::free_list::FreeList;
 use crate::must_align;
+use std::borrow::Borrow;
 use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ops::RangeBounds;
 use std::ptr::slice_from_raw_parts;
 use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
-use crate::free_list::FreeList;
 
 pub(crate) const PAGE_HEADER_SIZE: usize = size_of::<Page>();
 pub(crate) const MIN_KEYS_PER_PAGE: usize = 2;
@@ -223,6 +224,10 @@ impl Page {
         let v: Vec<u8> = self.into();
         v
     }
+
+    pub(crate) fn to_owned(&self) -> Self {
+        self.clone()
+    }
 }
 
 impl Into<Vec<u8>> for Page {
@@ -377,8 +382,8 @@ impl PgIds {
 
     #[inline]
     pub fn drain<R>(&mut self, range: R) -> Vec<u64>
-        where
-            R: RangeBounds<usize>,
+    where
+        R: RangeBounds<usize>,
     {
         self.inner.drain(range).collect::<Vec<_>>()
     }
@@ -399,7 +404,7 @@ fn t_page_type() {
             flags: BRANCH_PAGE_FLAG,
             ..Default::default()
         }
-            .to_string(),
+        .to_string(),
         "branch"
     );
     assert_eq!(
@@ -407,7 +412,7 @@ fn t_page_type() {
             flags: LEAF_PAGE_FLAG,
             ..Default::default()
         }
-            .to_string(),
+        .to_string(),
         "leaf"
     );
     assert_eq!(
@@ -415,7 +420,7 @@ fn t_page_type() {
             flags: META_PAGE_FLAG,
             ..Default::default()
         }
-            .to_string(),
+        .to_string(),
         "meta"
     );
     assert_eq!(
@@ -423,7 +428,7 @@ fn t_page_type() {
             flags: FREE_LIST_PAGE_FLAG,
             ..Default::default()
         }
-            .to_string(),
+        .to_string(),
         "freelist"
     );
     assert_eq!(
@@ -431,7 +436,7 @@ fn t_page_type() {
             flags: 0x4e20,
             ..Default::default()
         }
-            .to_string(),
+        .to_string(),
         "unknown<4e20>"
     );
 }

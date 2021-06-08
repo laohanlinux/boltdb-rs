@@ -1,14 +1,76 @@
-use crate::db::{Meta, DB};
+use crate::cursor::Cursor;
+use crate::db::{Meta, WeakDB, DB};
 use crate::{error::Error, error::Result, Bucket, Page, PgId};
+use parking_lot::lock_api::MutexGuard;
+use parking_lot::{
+    MappedRwLockReadGuard, MappedRwLockWriteGuard, Mutex, RawMutex, RawRwLock, RwLock,
+    RwLockReadGuard, RwLockWriteGuard,
+};
 use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
 use std::sync::atomic::AtomicBool;
-use std::sync::RwLock;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Represents the internal transaction identifier
 pub type TxId = u64;
 
 pub(crate) type CommitHandler = Box<dyn FnOnce() + Send>;
+
+pub(crate) struct TxInner {
+    /// is transaction writable
+    pub(crate) writeable: bool,
+    /// declares that transaction is in use
+    pub(crate) managed: AtomicBool,
+    /// defines whether transaction will be checked on close
+    pub(crate) check: AtomicBool,
+    /// ref to DB
+    /// if transaction closed then ref points to null
+    pub(crate) db: RwLock<WeakDB>,
+    /// transaction meta
+    pub(crate) meta: RwLock<Meta>,
+    /// root bucket.
+    /// this bucket holds another buckets
+    pub(crate) root: RwLock<Bucket>,
+    /// page cache
+    pub(crate) pages: RwLock<HashMap<PgId, Page>>,
+    /// transactions statistics
+    pub(crate) stats: Mutex<TxStats>,
+    /// List of callbacks that will be called after commit
+    pub(crate) commit_handlers: Mutex<Vec<Box<dyn Fn()>>>,
+    /// WriteFlag specifies the flag to write-related methods like `WriteTo()`.
+    /// Tx Opens the database file with the specified flag to copy the data.
+    ///
+    /// By default, the flag is unset, which works well for mostly in-memory
+    /// workloads. For databases that are much larger than available RAM,
+    /// set the flag to syscall.O_DIRECT to avoid trashing the page cache.
+    pub(super) write_flag: usize,
+}
+
+impl Debug for TxInner {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let db = self
+            .db
+            .try_read()
+            .unwrap()
+            .upgrade()
+            .map(|db| &db as *const DB);
+        f.debug_struct("TxInner")
+            .field("writable", &self.writeable)
+            .field("managed", &self.managed)
+            .field("db", &db)
+            .field("meta", &*self.meta.try_read().unwrap())
+            .field("root", &self.root.try_read().unwrap())
+            .field("pages", &*self.pages.try_read().unwrap())
+            .field("stats", &self.stats.lock())
+            .field(
+                "commit handlers len",
+                &self.commit_handlers.try_lock().unwrap().len(),
+            )
+            .field("write_flag", &self.write_flag)
+            .finish()
+    }
+}
 
 /// Represents a `read-only` or `read-write` transaction on the database.
 /// `Read-Only` transactions can be user for retrieving values for keys and creating cursors.
@@ -18,78 +80,89 @@ pub(crate) type CommitHandler = Box<dyn FnOnce() + Send>;
 /// Them. Pages can not be reclaimed by the writer until no more transactions
 /// are using them. A long running read transaction can cause the database to
 /// quickly grow.
-#[derive(Default)]
-pub(crate) struct TX {
-    /// is transaction writable
-    pub(crate) writable: bool,
-    /// declares that transaction is in use.
-    pub(crate) managed: AtomicBool,
-    /// ref of DB.
-    /// if transaction closed then ref points to null
-    pub(crate) db: DB,
-    pub(crate) meta: Box<Meta>,
-    pub(crate) root: Box<Bucket>,
-    pub(crate) pages: RwLock<HashMap<PgId, Page>>,
-    pub(crate) stats: TxStats,
-    pub(crate) commit_handler: Vec<CommitHandler>,
+#[derive(Clone)]
+pub(crate) struct TX(pub(crate) Arc<TxInner>);
 
-    // write-flag specifies the flag for write-reload methods like write_to().
-    // TX opens the database file with th specified flag to copy the data.
-    //
-    // By default, the flag is unset, which works well for mostly in-memory
-    // workloads. For database that are much larger than available RAM,
-    // set the flag to syscall.O_DIRECT to avoid trashing the page cache.
-    pub(crate) write_flag: isize,
-}
-
-impl Clone for TX {
-    fn clone(&self) -> Self {
-        unimplemented!()
-    }
-}
+unsafe impl Sync for TX {}
+unsafe impl Send for TX {}
 
 impl TX {
-    /// Initializes the transaction
-    fn init(&mut self, _db: &DB) {}
-
-    /// Returns the transaction id.
-    pub(crate) fn id(&self) -> u64 {
-        self.meta.tx_id
+    pub(crate) fn stats(&self) -> MutexGuard<'_, RawMutex, TxStats> {
+        self.0.stats.try_lock().unwrap()
     }
 
-    /// Return a reference to a database that created the transaction.
-    pub(crate) fn size(&self) -> u64 {
-        self.meta.pg_id * self.db.0.page_size as u64
+    pub(crate) fn meta_mut(&self) -> parking_lot::lock_api::RwLockWriteGuard<'_, RawRwLock, Meta> {
+        self.0.meta.try_write().unwrap()
     }
 
-    /// Return a reference to the database that created the transaction
-    pub(crate) fn db(&self) -> Option<&DB> {
-        Some(&self.db)
+    pub(crate) fn set_pgid(&mut self, id: PgId) -> Result<()> {
+        self.0
+            .meta
+            .try_write()
+            .ok_or(Error::Unknown("pgid locked".to_owned()))?
+            .pg_id = id;
+        Ok(())
     }
 
-    /// Return a mut reference to the database that created that transaction
-    pub(crate) fn db_mut(&mut self) -> &mut DB {
-        &mut self.db
+    /// Returns a reference to the page with a given id.
+    /// If page has been written to then a temporary buffered page is returned.
+    pub(crate) fn page(&self, id: PgId) -> Result<*const Page> {
+        // check the dirty pages first.
+        {
+            let pages = self.0.pages.try_read().unwrap();
+            if let Some(p) = pages.get(&id) {
+                return Ok(&**p);
+            }
+        }
+
+        // Otherwise return directly from the mmap.
+        Ok(&*self.0.db.try_read().map(|db| db.upgrade()))
     }
 
-    /// Return whether the transaction can perform write operations
     pub(crate) fn writable(&self) -> bool {
-        self.writable
+        self.0.writeable
     }
 
-    // Returns page information for a given page number.
-    // This is only safe for concurrent use when by a writable transaction.
-    pub(crate) fn page(&self, id: PgId) -> Result<Option<Page>> {
-        // Check the dirty pages first.
-        // {
-        //     let pages = self.0.
-        // }
-        Ok(None)
+    pub(crate) fn db(&self) -> Result<DB> {
+        self.0
+            .db
+            .try_read()
+            .unwrap()
+            .upgrade()
+            .ok_or(Error::DatabaseGone)
+    }
+
+    pub(crate) fn id(&self) -> TxId {
+        self.0.meta.try_read().unwrap().tx_id
+    }
+
+    pub(crate) fn pgid(&self) -> PgId {
+        self.0.meta.try_read().unwrap().pg_id
+    }
+
+    pub(crate) fn on_commit(&mut self, handler: Box<dyn Fn()>) {
+        self.0.commit_handlers.lock().push(handler)
+    }
+
+    pub(crate) fn size(&self) -> i64 {
+        self.pgid() as i64 * self.db().unwrap().page_size()
+    }
+
+    /// Bucket retrieves a bucket by name.
+    /// Returns None if the bucket does not exist.
+    /// The bucket instance is only valid for the lifetime of the transaction.
+    pub fn bucket(&self, key: &[u8]) -> Result<MappedRwLockReadGuard<Bucket>> {
+        let bucket = self
+            .0
+            .root
+            .try_read()
+            .ok_or(Error::Unknown("can't acquire bucket".to_owned()))?;
+        RwLockReadGuard::try_map(bucket, |b| b.buckets.get(key))
     }
 }
 
 /// TxStats represents statistics about the actions performed by the transaction.
-#[derive(Default, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct TxStats {
     // Page statistics
     // number of page allocations.
@@ -130,9 +203,9 @@ pub struct TxStats {
 
 #[cfg(test)]
 mod tests {
-    // #[test]
-    // fn test_tx_commit_err_tx_closed() {}
-    //
+    #[test]
+    fn test_tx_commit_err_tx_closed() {}
+
     // #[test]
     // fn test_tx_rollback_err_tx_closed() {}
     //

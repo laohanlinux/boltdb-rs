@@ -25,7 +25,7 @@ use std::thread::{sleep, spawn};
 use std::time::Duration;
 
 /// The largest step that can be token when remapping the mman.
-const MAX_MMAP_STEP: usize = 1 << 30; //1GB
+const MAX_MMAP_STEP: u64 = 1 << 30; //1GB
 
 /// The data file format version.
 const VERSION: usize = 2;
@@ -136,6 +136,10 @@ impl<'a> DB {
         self.0.stats.read().clone()
     }
 
+    pub(crate) fn page_size(&self) -> usize {
+        self.0.page_size
+    }
+
     pub fn info(&self) -> Info {
         let ptr = self.0.mmap.read().as_ref()[0] as *const u8;
         Info {
@@ -191,10 +195,12 @@ impl<'a> DB {
             let mut page_pool = self.0.page_pool.lock();
             page_pool
                 .pop()
-                .or_else(Some(Vec::with_capacity(self.0.page_size).into()))
+                .or_else(|| {
+                    Some(Page::from_slice(&Vec::with_capacity(self.0.page_size)).to_owned())
+                })
                 .unwrap()
         } else {
-            Vec::with_capacity(self.0.page_size * count).into()
+            Page::from_slice(&Vec::with_capacity(self.0.page_size * count as usize)).to_owned()
         };
 
         p.over_flow = count as u32 - 1;
@@ -212,7 +218,7 @@ impl<'a> DB {
         // Resize mmap() if we're at the end
         let minsz = (p.id + 1 + count) * self.0.page_size as u64;
         let mmap_size = *self.0.mmap_size.lock() as u64;
-        if minz >= mmap_size {
+        if minsz >= mmap_size {
             if let Err(err) = self.mmap(minsz) {
                 return Err(err);
             }
@@ -228,26 +234,26 @@ impl<'a> DB {
             .0
             .file
             .try_read_for(Duration::from_secs(60))
-            .ok_or("can't acquire file lock")?;
+            .ok_or(Error::Unknown("can't acquire file lock".to_owned()))?;
         let mut mmap = self
             .0
             .mmap
             .try_write_for(Duration::from_secs(6000))
-            .ok_or("can't acquire mmap lock")?;
+            .ok_or(Error::Unknown("can't acquire mmap lock".to_owned()))?;
 
         let init_min_size = self.0.page_size as u64 * 4;
         min_size = min_size.max(init_min_size);
         let mut size = self.mmap_size(min_size)?;
 
         if mmap.len() >= size as usize {
-            return OK(());
+            return Ok(());
         }
 
         if self.0.read_only {
             let file_len = file
                 .get_ref()
                 .metadata()
-                .map_err(|_| "can't get file metadata")?
+                .map_err(|_| Error::Unknown("can't get file metadata".to_owned()))?
                 .len();
             size = size.max(file_len);
         }
@@ -255,7 +261,7 @@ impl<'a> DB {
         let mut mmap_size = self.0.mmap_size.lock();
         file.get_ref()
             .allocate(size)
-            .map_err(|_| "can't allocate space")?;
+            .map_err(|_| Error::Unknown("can't allocate space".to_owned()))?;
 
         // TODO: madvise
         let mut mmap_opts = memmap::MmapOptions::new();
@@ -264,7 +270,7 @@ impl<'a> DB {
                 .offset(0)
                 .len(size as usize)
                 .map(&*file.get_ref())
-                .map_err(|e| format!("mmap failed"))?
+                .map_err(|e| Error::Unknown("mmap failed".to_owned()))?
         };
         *mmap_size = nmmap.len();
         *mmap = nmmap;
@@ -281,8 +287,8 @@ impl<'a> DB {
         // properly -- but we can recover using meta_1. And vice-versa.
         if check_0.is_err() && check_1.is_err() {
             return Err(Error::InvalidChecksum(format!(
-                "mmap fail: {}",
-                check_0.unwrap_err().into(),
+                "mmap fail: {:?}",
+                check_0.unwrap_err(),
             )));
         }
 
@@ -298,14 +304,14 @@ impl<'a> DB {
         }
 
         // Verify the requested size is not above the maximum allowed.
-        if size > MAX_MAP_SIZE {
+        if size > MAX_MMAP_STEP {
             return Err(Error::Unknown("mmap too large".to_owned()));
         }
 
         // If larger than the 1GB then grow by 1GB at a time.
-        let remaining = size % MAX_MAP_SIZE;
+        let remaining = size % MAX_MMAP_STEP;
         if remaining > 0 {
-            size += MAX_MAP_SIZE - remainder;
+            size += MAX_MMAP_STEP - remaining;
         }
 
         // Ensure that the mmap size is a multiple of the page size.
@@ -316,8 +322,8 @@ impl<'a> DB {
         }
 
         // If we've exceeded the max size then only grow up to the max size.
-        if size > MAX_MAP_SIZE {
-            size = MAX_MAP_SIZE;
+        if size > MAX_MMAP_STEP {
+            size = MAX_MMAP_STEP;
         }
         Ok(size)
     }
@@ -354,7 +360,7 @@ impl<'a> DB {
         *self.0.file_size.write() = file
             .get_ref()
             .metadata()
-            .map_err(Error::Unknown("can't get metadata file".to_owned()))?
+            .map_err(|_| Error::Unknown("can't get metadata file".to_owned()))?
             .len();
         Ok(())
     }
@@ -363,20 +369,6 @@ impl<'a> DB {
         Ok(())
     }
 }
-// impl DB {
-//     pub fn open(_path: &'static str, _perm: Permissions) {}
-//
-//     /// Return the path to currently open database file.
-//     pub fn path(&self) -> &'static str {
-//         self.path
-//     }
-//
-//     // page retrives a page reference from the mmap based on the current page size.
-//     pub(crate) fn page(&self, pg_id: PgId) -> &Page {
-//         let pos = pg_id * self.page_size;
-//         self.data
-//     }
-// }
 
 impl Drop for DB {
     fn drop(&mut self) {
@@ -403,7 +395,7 @@ impl WeakDB {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct Meta {
     magic: u32,
     version: u32,
@@ -611,4 +603,10 @@ pub struct Info {
     /// pointer to data
     pub data: *const u8,
     pub page_size: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {}
 }
