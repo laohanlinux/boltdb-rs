@@ -106,17 +106,18 @@ impl TX {
 
     /// Returns a reference to the page with a given id.
     /// If page has been written to then a temporary buffered page is returned.
+    /// Use &Page reference to return
     pub(crate) fn page(&self, id: PgId) -> Result<*const Page> {
         // check the dirty pages first.
         {
             let pages = self.0.pages.try_read().unwrap();
             if let Some(p) = pages.get(&id) {
-                return Ok(&**p);
+                return Ok(&*p);
             }
         }
 
         // Otherwise return directly from the mmap.
-        Ok(&*self.0.db.try_read().map(|db| db.upgrade()))
+        Ok(&*self.db()?.page(id))
     }
 
     pub(crate) fn writable(&self) -> bool {
@@ -145,7 +146,7 @@ impl TX {
     }
 
     pub(crate) fn size(&self) -> i64 {
-        self.pgid() as i64 * self.db().unwrap().page_size()
+        self.pgid() as i64 * self.db().unwrap().page_size() as i64
     }
 
     /// Bucket retrieves a bucket by name.
@@ -157,7 +158,56 @@ impl TX {
             .root
             .try_read()
             .ok_or(Error::Unknown("can't acquire bucket".to_owned()))?;
-        RwLockReadGuard::try_map(bucket, |b| b.buckets.get(key))
+        RwLockReadGuard::try_map(bucket, |b| b.bucket(&key.to_vec()))
+            .map_err(|_| Error::Unknown("can't get bucket".to_owned()))
+    }
+
+    pub fn bucket_mut(&self, key: &[u8]) -> Result<MappedRwLockWriteGuard<Bucket>> {
+        let bucket = self
+            .0
+            .root
+            .try_write()
+            .ok_or(Error::Unknown("can't acquire bucket".to_owned()))?;
+        RwLockWriteGuard::try_map(bucket, |b| b.bucket_mut(&key.to_vec()))
+            .map_err(|_| Error::Unknown("can't get mut bucket".to_owned()))
+    }
+
+    /// returns bucket keys for db
+    pub fn buckets(&self) -> Vec<Vec<u8>> {
+        self.0.root.read().buckets()
+    }
+
+    /// Create a new bucket.
+    /// Returns an error if bucket already exists, if the bucket name is blank, or if the bucket name is too long.
+    /// The bucket instance is only valid for the lifetime of the transaction.
+    pub fn create_bucket(&self, key: &[u8]) -> Result<MappedRwLockWriteGuard<Bucket>> {
+        if !self.0.writeable {
+            return Err(Error::TxReadOnly);
+        }
+        let bucket = self
+            .0
+            .root
+            .try_write()
+            .ok_or(Error::Unknown("can't create bucket"))?;
+        RwLockWriteGuard::try_map(bucket, |b| b.create_bucket(key).ok())
+            .map_err(Error::Unknown("can't create bucket"))
+    }
+
+    /// Create a new bucket if it does't already exits
+    /// Returns an error if the bucket name is blank, or if the bucket name is too long.
+    /// The bucket instance is only valid for the lifetime of the transaction.
+    pub fn create_bucket_if_not_exists(
+        &mut self,
+        key: &[u8],
+    ) -> Result<MappedRwLockWriteGuard<Bucket>> {
+        if !self.0.writeable {
+            return Err(Error::TxReadOnly);
+        }
+        let bucket = self
+            .0
+            .root
+            .try_write()
+            .ok_or(Error::Unknown("Can't acquire bucket"))?;
     }
 }
 

@@ -1,4 +1,5 @@
 use std::io;
+use std::os::macos::raw::stat;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -33,12 +34,14 @@ pub enum Error {
     BucketEmpty,
     #[error("Tx Closed")]
     TxClosed,
+    #[error("Tx Read Only")]
+    TxReadOnly,
     #[error("{0}")]
     DBOpFailed(String),
-    #[error("database gone")]
+    #[error("Database Gone")]
     DatabaseGone,
     #[error("{0}")]
-    Unknown(String),
+    Unknown(&'static str),
     #[error("database only read")]
     DatabaseOnlyRead,
     // Returned when a DB instance is accessed before it

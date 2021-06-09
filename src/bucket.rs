@@ -1,6 +1,8 @@
+use crate::error::Result;
 use crate::node::{Node, NodeBuilder, WeakNode};
 use crate::tx::TX;
 use crate::{Page, PgId};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 
@@ -49,7 +51,7 @@ pub(crate) struct Bucket {
     // the associated transaction
     pub(crate) tx: Box<TX>,
     // subbucket cache
-    pub(crate) buckets: HashMap<String, Box<Bucket>>,
+    pub(crate) buckets: RefCell<HashMap<Vec<u8>, Bucket>>,
     // inline page reference
     pub(crate) page: Option<Page>,
     // materialized node for the root page
@@ -120,17 +122,60 @@ impl Bucket {
             self.root_node.replace(node.clone());
         }
         // Use the page into the node and cache it.
-        let p = self
-            .page
-            .clone()
-            .or_else(|| Some(self.tx.page(pg_id).unwrap().unwrap()))
-            .unwrap();
-        // Read the page into the node and cache it.
-        node.read(&p);
-        self.nodes.insert(pg_id, node.clone());
 
+        if let Some(page) = &self.page {
+            node.read(&page);
+        } else {
+            // Read the page into the node and cache it.
+            let page = self.tx.page(pg_id).unwrap();
+            unsafe {
+                node.read(&*page);
+            }
+        }
+        self.nodes.insert(pg_id, node.clone());
         // Update statistics.
         self.tx.stats().node_count += 1;
         node
     }
+
+    pub fn create_bucket(&self, key: &[u8]) -> Result<&mut Bucket> {
+        todo!()
+    }
+
+    pub(crate) fn buckets(&self) -> Vec<Vec<u8>> {
+        self.buckets
+            .borrow()
+            .keys()
+            .map(|key| key.to_owned())
+            .collect()
+    }
+
+    pub fn bucket(&self, key: &[u8]) -> Option<&Bucket> {
+        self.__bucket(key).map(|b| unsafe { &*b })
+    }
+
+    pub fn bucket_mut(&self, key: &[u8]) -> Option<&mut Bucket> {
+        self.__bucket_mut(key).map(|b| unsafe { &mut *b })
+    }
+
+    pub fn __bucket(&self, key: &[u8]) -> Option<*const Bucket> {
+        if let Some(b) = self.buckets.borrow().get(&key.to_vec()) {
+            return Some(b);
+        }
+        None
+    }
+
+    pub(crate) fn __bucket_mut(&self, key: &[u8]) -> Option<*mut Bucket> {
+        if let Some(b) = self.buckets.borrow_mut().get_mut(&key.to_vec()) {
+            return Some(b);
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn it_works() {}
 }

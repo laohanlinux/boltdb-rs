@@ -2,7 +2,6 @@ use memmap::MmapOptions;
 use std::fs::File;
 
 use crate::db::DB;
-use std::sync::{RwLock, Mutex};
 
 pub fn mmap(mut db: DB, mmap_size: usize) -> ::std::io::Result<DB> {
     // let file = File::open(db.path())?;
