@@ -124,6 +124,10 @@ impl<'a> DB {
         self.0.path
     }
 
+    pub(crate) fn remove_tx(&self) -> Result<TX> {
+        todo!()
+    }
+
     pub(crate) fn sync(&mut self) -> Result<()> {
         self.0
             .file
@@ -234,12 +238,12 @@ impl<'a> DB {
             .0
             .file
             .try_read_for(Duration::from_secs(60))
-            .ok_or(Error::Unknown("can't acquire file lock".to_owned()))?;
+            .ok_or(Error::Unknown("can't acquire file lock"))?;
         let mut mmap = self
             .0
             .mmap
             .try_write_for(Duration::from_secs(6000))
-            .ok_or(Error::Unknown("can't acquire mmap lock".to_owned()))?;
+            .ok_or(Error::Unknown("can't acquire mmap lock"))?;
 
         let init_min_size = self.0.page_size as u64 * 4;
         min_size = min_size.max(init_min_size);
@@ -253,7 +257,7 @@ impl<'a> DB {
             let file_len = file
                 .get_ref()
                 .metadata()
-                .map_err(|_| Error::Unknown("can't get file metadata".to_owned()))?
+                .map_err(|_| Error::Unknown("can't get file metadata"))?
                 .len();
             size = size.max(file_len);
         }
@@ -261,7 +265,7 @@ impl<'a> DB {
         let mut mmap_size = self.0.mmap_size.lock();
         file.get_ref()
             .allocate(size)
-            .map_err(|_| Error::Unknown("can't allocate space".to_owned()))?;
+            .map_err(|_| Error::Unknown("can't allocate space"))?;
 
         // TODO: madvise
         let mut mmap_opts = memmap::MmapOptions::new();
@@ -270,7 +274,7 @@ impl<'a> DB {
                 .offset(0)
                 .len(size as usize)
                 .map(&*file.get_ref())
-                .map_err(|e| Error::Unknown("mmap failed".to_owned()))?
+                .map_err(|e| Error::Unknown("mmap failed"))?
         };
         *mmap_size = nmmap.len();
         *mmap = nmmap;
@@ -305,7 +309,7 @@ impl<'a> DB {
 
         // Verify the requested size is not above the maximum allowed.
         if size > MAX_MMAP_STEP {
-            return Err(Error::Unknown("mmap too large".to_owned()));
+            return Err(Error::Unknown("mmap too large"));
         }
 
         // If larger than the 1GB then grow by 1GB at a time.
@@ -355,12 +359,12 @@ impl<'a> DB {
         if !self.0.no_grow_sync {
             file.get_ref()
                 .sync_all()
-                .map_err(|_| Error::Unknown("can't flush file".to_owned()))?;
+                .map_err(|_| Error::Unknown("can't flush file"))?;
         }
         *self.0.file_size.write() = file
             .get_ref()
             .metadata()
-            .map_err(|_| Error::Unknown("can't get metadata file".to_owned()))?
+            .map_err(|_| Error::Unknown("can't get metadata file"))?
             .len();
         Ok(())
     }

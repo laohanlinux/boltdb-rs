@@ -36,6 +36,10 @@ pub enum Error {
     TxClosed,
     #[error("Tx Read Only")]
     TxReadOnly,
+    #[error("Tx Managed")]
+    TxManaged,
+    #[error("Check Failed, {0}")]
+    CheckFailed(String),
     #[error("{0}")]
     DBOpFailed(String),
     #[error("Database Gone")]

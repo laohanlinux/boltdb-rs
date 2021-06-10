@@ -138,7 +138,22 @@ impl Bucket {
         node
     }
 
+    pub fn clear(&mut self) {
+        self.buckets.borrow_mut().clear();
+        self.nodes.clear();
+        self.page = None;
+        self.root_node = None;
+    }
+
     pub fn create_bucket(&self, key: &[u8]) -> Result<&mut Bucket> {
+        todo!()
+    }
+
+    pub fn create_bucket_if_not_exists(&self, key: &[u8]) -> Result<&mut Bucket> {
+        todo!()
+    }
+
+    pub fn delete_bucket(&self, key: &[u8]) -> Result<()> {
         todo!()
     }
 
