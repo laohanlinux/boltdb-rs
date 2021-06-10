@@ -308,7 +308,17 @@ impl TX {
     /// Performs serveral consistency checks on the database for this transaction.
     /// An error is returned if any inconsistency is found.
     ///
-    /// It can be safely
+    /// It can be safely run concurrently on a writable transaction. However, this
+    /// incurs a high  cost for large databases and databases with a lot of subbuckets
+    /// because of caching. This overhead can be removed if  running on a read-only
+    /// transaction, however, it is not saft to execute other writer transactions at
+    /// the same time.
+    pub fn check(&self) -> mpsc::Receiver<String> {
+        let (sender, receiver) = mpsc::channel::<String>();
+        let tx = self.clone();
+        spawn(move || tx.__check(sender));
+        receiver
+    }
 
     fn __check(&self, ch: mpsc::Sender<String>) {
         todo!()
