@@ -133,7 +133,7 @@ impl FreeList {
     }
 
     // freed returns whether a given page is in the free list.
-    fn freed(&self, pg_id: &PgId) -> bool {
+    pub(crate) fn freed(&self, pg_id: &PgId) -> bool {
         self.cache.contains(pg_id)
     }
 

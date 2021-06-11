@@ -318,10 +318,10 @@ impl LeafPageElement {
 // represents human readable information about a page.
 #[derive(Debug, Default)]
 pub struct PageInfo {
-    pub id: isize,
-    pub typ: String,
-    pub count: isize,
-    pub over_flow_count: isize,
+    pub id: u64,
+    pub typ: u16,
+    pub count: usize,
+    pub over_flow_count: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialOrd, PartialEq)]

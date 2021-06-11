@@ -1,6 +1,7 @@
 use crate::cursor::Cursor;
 use crate::db::{Meta, WeakDB, DB};
-use crate::{error::Error, error::Result, Bucket, Page, PgId};
+use crate::page::FREE_LIST_PAGE_FLAG;
+use crate::{error::Error, error::Result, Bucket, Page, PageInfo, PgId};
 use parking_lot::lock_api::MutexGuard;
 use parking_lot::{
     MappedRwLockReadGuard, MappedRwLockWriteGuard, Mutex, RawMutex, RawRwLock, RwLock,
@@ -9,6 +10,7 @@ use parking_lot::{
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::fs::OpenOptions;
+use std::hash::Hash;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
@@ -318,6 +320,54 @@ impl TX {
         let tx = self.clone();
         spawn(move || tx.__check(sender));
         receiver
+    }
+
+    fn check_bucket(
+        &self,
+        b: &Bucket,
+        reachable: &mut HashMap<PgId, bool>,
+        freed: &HashMap<PgId, bool>,
+        ch: &mpsc::Sender<String>,
+    ) -> mpsc::Receiver<String> {
+        todo!()
+    }
+
+    /// Returns page information for a given page number.
+    /// This is only safe for concurrent use when used by a writable transaction.
+    pub fn page_info(&self, id: usize) -> Result<Option<PageInfo>> {
+        if !self.opened() {
+            return Err(Error::TxClosed);
+        }
+        if id > self.pgid() as usize {
+            return Ok(None);
+        }
+
+        let db = self.db()?;
+
+        // Build the page info.
+        let p = db.page(id as u64);
+        let mut info = PageInfo {
+            id: id as u64,
+            typ: FREE_LIST_PAGE_FLAG,
+            count: p.count as usize,
+            over_flow_count: p.over_flow as usize,
+        };
+
+        // Determine the type (or if it's free).
+        if !db.0.free_list.try_read().unwrap().freed(&(id as u64)) {
+            info.typ = p.flags;
+        }
+
+        Ok(Some(info))
+    }
+
+    /// Defines whether transaction is fresh and not been used before
+    /// committing transaction twice must resolve in error
+    pub(crate) fn opened(&self) -> bool {
+        match self.0.db.try_read().unwrap().upgrade() {
+            None => false,
+            Some(db) => db.opened(),
+        }
     }
 
     fn __check(&self, ch: mpsc::Sender<String>) {

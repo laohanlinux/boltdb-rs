@@ -105,6 +105,16 @@ impl Bucket {
         self.tx.writable()
     }
 
+    /// Attempts to balance all nodes
+    pub(crate) fn rebalance(&mut self) {
+        for node in self.nodes.values_mut() {
+            node.rebalance();
+        }
+        for child in self.buckets.borrow_mut().values_mut() {
+            child.rebalance();
+        }
+    }
+
     /// Create a `node` from a `page` and associates it with a given parent.
     pub(crate) fn node(&mut self, pg_id: PgId, parent: &WeakNode) -> Node {
         assert!(!self.nodes.is_empty(), "nodes map expected");

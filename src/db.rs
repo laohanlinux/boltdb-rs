@@ -18,8 +18,8 @@ use std::io::{BufWriter, Write};
 use std::ops::AddAssign;
 use std::path::PathBuf;
 use std::slice::from_raw_parts;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::SeqCst;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::thread::{sleep, spawn};
 use std::time::Duration;
@@ -122,6 +122,11 @@ impl<'a> DB {
     /// Return the path to currently open database file.
     pub fn path(&self) -> &'static str {
         self.0.path
+    }
+
+    #[inline(always)]
+    pub fn opened(&self) -> bool {
+        self.0.opened.load(Ordering::Acquire)
     }
 
     pub(crate) fn remove_tx(&self) -> Result<TX> {

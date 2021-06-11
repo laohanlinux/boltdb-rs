@@ -73,6 +73,42 @@ impl Node {
         }
     }
 
+    /// Attempts to combine the node with sibling nodes if the node fill
+    /// size is below a threshold or if there are not enough keys.
+    pub fn rebalance(&mut self) {
+        {
+            let selfsize = self.size();
+            if !self.0.unbalanced.load(Ordering::Acquire) {
+                return;
+            }
+            self.0.unbalanced.store(false, Ordering::Acquire);
+
+            // updates stats and get threshold
+            let threshold = {
+                let bucket = self.bucket_mut().unwrap();
+                let tx = bucket.tx();
+                tx.0.stats.lock().rebalance += 1;
+                tx.db().unwrap().page_size() / 4
+            };
+
+            if selfsize > threshold && self.0.inodes.borrow().len() > self.min_keys() as usize {
+                return;
+            }
+
+            // Root node has special handling
+            if self.parent().is_none() {
+                let mut inodes = self.0.inodes.borrow_mut();
+                if !self.is_leaf() && inodes.len() == 1 {
+                    let mut child = self
+                        .bucket_mut()
+                        .unwrap()
+                        .node(inodes[0].pg_id, &WeakNode::from(self));
+                    self.0.is_leaf.store(child.is_leaf(), Ordering::Release);
+                }
+            }
+        }
+    }
+
     fn parent(&self) -> Option<Node> {
         self.0.parent.borrow().upgrade()
     }
@@ -566,73 +602,6 @@ impl NodeBuilder {
     }
 }
 
-//     // // Breaks up a node into multiple smaller nodes, if appropriate.
-//     // // This should only be called from the `spill` function.
-//     // fn split(&mut self, page_size: usize) -> &[Node] {}
-//     //
-
-//
-//     // /// Writes the nodes to dirty pages and splits nodes as it goes.
-//     // /// Returns an error if dirty pages cannot be allocated.
-//     // fn spill(&mut self) -> Result<()> {
-//     //
-//     // }
-//
-//     //     /// Attempts to combine the node with sibling nodes if the node fill
-//     //     /// size is below a threshold or if there are not enough keys.
-//     //     fn rebalance(&mut self) {
-//     //     }
-//
-
-// }
-//
-// impl PartialEq for Node {
-//     fn eq(&self, _other: &Self) -> bool {
-//         unimplemented!()
-//     }
-// }
-//
-// impl Eq for Node {}
-//
-// impl Drop for Node {
-//     fn drop(&mut self) {
-//         unimplemented!()
-//     }
-// }
-//
-// /// Adds the node's underlying page to the freelist.
-// #[derive(Default, Clone)]
-// pub(crate) struct Nodes {
-//     inner: Vec<Node>,
-// }
-//
-// impl Nodes {
-//     #[inline]
-//     pub fn len(&self) -> usize {
-//         self.inner.len()
-//     }
-//
-//     #[inline]
-//     pub fn iter(&self) -> Iter<'_, Node> {
-//         self.inner.iter()
-//     }
-//
-//     #[inline]
-//     pub fn as_slice(&self) -> &Vec<Node> {
-//         &self.inner
-//     }
-//
-//     #[inline]
-//     pub fn is_empty(&self) -> bool {
-//         self.inner.is_empty()
-//     }
-//
-//     #[inline]
-//     pub fn push(&mut self, node: Node) {
-//         self.inner.push(node)
-//     }
-// }
-//
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Inode {
     pub(crate) flags: u32,
@@ -698,35 +667,8 @@ impl Inodes {
             .binary_search_by(|node| node.key.as_slice().cmp(key))
     }
 }
-//
-// #[cfg(test)]
-// mod tests {
-//     #[test]
-//     fn is_work() {
-//         assert_eq!(1, 1)
-//     }
-//
-//     // /// Ensure that a node can insert a key/value.
-//     // #[test]
-//     // fn test_node_put() {}
-//     //
-//     // /// Ensure that a node can deserialize from a leaf page.
-//     // #[test]
-//     // fn test_node_read_leaf_page() {}
-//     //
-//     // /// Ensure that a node can serialize into a leaf page.
-//     // #[test]
-//     // fn test_node_write_leaf_page() {}
-//     //
-//     // /// Ensure that a node can split into appropriate subgroups.
-//     // #[test]
-//     // fn test_node_split() {}
-//     //
-//     // /// Ensure that a page with the minimum number of inodes just returns a single node.
-//     // #[test]
-//     // fn test_node_split_min_keys() {}
-//     //
-//     // /// Ensure that a node that has keys that all fit on a page just returns one leaf.
-//     // #[test]
-//     // fn test_node_split_single_page() {}
-// }
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {}
+}
