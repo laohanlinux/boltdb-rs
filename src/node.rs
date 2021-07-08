@@ -31,7 +31,7 @@ struct NodeInner {
     pgid: RefCell<PgId>,
     parent: RefCell<WeakNode>,
     children: RefCell<Vec<Node>>,
-    inodes: RefCell<Vec<Inode>>,
+    pub(crate) inodes: RefCell<Vec<Inode>>,
 }
 
 impl NodeInner {
@@ -58,7 +58,7 @@ impl WeakNode {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Node(Rc<NodeInner>);
+pub(crate) struct Node(pub(crate) Rc<NodeInner>);
 
 impl Node {
     pub(crate) fn new(bucket: Bucket, parent: &Node) -> Node {
@@ -121,7 +121,7 @@ impl Node {
         2
     }
 
-    fn is_leaf(&self) -> bool {
+    pub(crate) fn is_leaf(&self) -> bool {
         self.0.is_leaf()
     }
 
