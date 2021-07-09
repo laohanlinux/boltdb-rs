@@ -13,7 +13,7 @@ use std::fs::OpenOptions;
 use std::hash::Hash;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Weak};
 use std::thread::spawn;
 use std::time::Duration;
 
@@ -413,6 +413,23 @@ pub struct TxStats {
     pub(crate) write: usize,
     // total time spent writing to disk
     pub(crate) write_time: Duration,
+}
+
+#[derive(Clone)]
+pub(crate) struct WeakTx(Weak<TxInner>);
+
+impl WeakTx {
+    pub(crate) fn new() -> Self {
+        Self(Weak::new())
+    }
+
+    pub(crate) fn upgrade(&self) -> Option<TX> {
+        self.0.upgrade().map(TX)
+    }
+
+    pub(crate) fn from(tx: &TX) -> Self {
+        Self(Arc::downgrade(&tx.0))
+    }
 }
 
 #[cfg(test)]

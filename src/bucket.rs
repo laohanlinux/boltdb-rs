@@ -1,10 +1,11 @@
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::node::{Node, NodeBuilder, WeakNode};
-use crate::tx::TX;
+use crate::tx::{WeakTx, TX};
 use crate::{Page, PgId};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
+use std::sync::Weak;
 
 /// The maximum length of a key, in bytes.
 const MAX_KEY_SIZE: u64 = 32768;
@@ -48,8 +49,8 @@ impl SubBucket {
 
 pub(crate) struct Bucket {
     sub_bucket: SubBucket,
-    // the associated transaction
-    pub(crate) tx: Box<TX>,
+    // the associated transaction, WeakTx
+    pub(crate) tx: WeakTx,
     // subbucket cache
     pub(crate) buckets: RefCell<HashMap<Vec<u8>, Bucket>>,
     // inline page reference
@@ -91,8 +92,8 @@ impl Eq for Bucket {}
 
 impl Bucket {
     /// Returns the tx of the bucket.
-    pub fn tx(&mut self) -> &mut TX {
-        &mut self.tx
+    pub fn tx(&mut self) -> Result<TX> {
+        self.tx.upgrade().ok_or(Error::TxGone)
     }
 
     /// Returns the root of the bucket.

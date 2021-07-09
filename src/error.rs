@@ -38,6 +38,12 @@ pub enum Error {
     TxReadOnly,
     #[error("Tx Managed")]
     TxManaged,
+    #[error("Tx Gone")]
+    TxGone,
+    #[error("Incompatible Value")]
+    IncompatibleValue,
+    #[error("Stack Empty")]
+    StackEmpty,
     #[error("Check Failed, {0}")]
     CheckFailed(String),
     #[error("{0}")]

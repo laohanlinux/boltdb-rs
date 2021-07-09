@@ -8,7 +8,7 @@
 // and return unexpected keys and/or values. You must reposition your cursor
 // after mutating data.
 
-use crate::error::Result,
+use crate::error::{Result, Error},
 use crate::node::Node;
 use crate::page::{BUCKET_LEAF_FLAG, LEAF_PAGE_FLAG};
 use crate::{Bucket, Page, PgId};
@@ -46,6 +46,58 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
     /// Recursively performs a binary search against a given page/node until it finds a given key.
     fn search(&self, key: &[u8], pg_id: PgId) -> Result<()> {
         let page_node = self.bucket().page_node(pg_id)?;
+    }
+
+    /// Returns the node that the cursor is currently positioned on.
+    pub(crate) fn node(&mut self) ->Result<Node> {
+        if self.stack.borrow().is_empty() {
+            return Err(Error::StackEmpty);
+        }
+
+        // If the top of the stack is a leaf node then just return it.
+        {
+            let stack = self.stack.borrow();
+            let el = &stack.last().ok_or(Error::StackEmpty)?;
+            if el.is_leaf() && el.el.is_right() {
+                return Ok(el.el.as_ref().right().unwrap().clone());
+            }
+        }
+
+        // Start from root and traverse down the hierarchy.
+        // let mut n = {
+        //     let el_ref = self.stack.borrow()[0].clone();
+        //     match el_ref.unwrap() {
+        //
+        //     }
+        // }
+    }
+
+    /// Returns the key and value of the current leaf element.
+    fn key_value(&self) -> Result<CursorItem<'a>> {
+        let stack = self.stack.borrow();
+        let el_ref = stack.last().ok_or(Error::Unknown("stack is empty"))?;
+        Ok(CursorItem::from(el_ref))
+    }
+
+    /// Removes the current key/value under the cursor from the bucket.
+    /// Delete fails if current key/value is a bucket or if the transaction is not writable.
+    pub fn delete(&mut self) -> Result<()> {
+        if !self.bucket.tx()?.opened() {
+            return Err(Error::TxClosed);
+        }
+        if !self.bucket.tx()?.writable() {
+            return Err(Error::TxReadOnly);
+        }
+
+        let key = {
+            let item = self.key_value()?;
+            // Return an error if current value is a bucket
+            if (item.flags & BUCKET_LEAF_FLAG) != 0 {
+                return Err(Error::IncompatibleValue)
+            }
+            item.key.ok_or(Error::Unknown("key empty"))?.to_vec()
+        };
+        self.node()?.del(&key)
     }
 }
 
