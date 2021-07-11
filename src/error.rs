@@ -26,6 +26,8 @@ pub enum Error {
     ResizeFail,
     #[error("Invalid filename")]
     InvalidFilename(String),
+    #[error("Traverser Failed")]
+    TraverserFailed,
     #[error("Database Closed")]
     DBClosed,
     #[error("{0}")]

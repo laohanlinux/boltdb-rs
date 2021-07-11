@@ -1,6 +1,7 @@
 use crate::db::Meta;
 use crate::free_list::FreeList;
 use crate::must_align;
+use bitflags;
 use std::borrow::Borrow;
 use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;

@@ -44,7 +44,7 @@ impl NodeInner {
 pub(crate) struct WeakNode(Weak<NodeInner>);
 
 impl WeakNode {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         WeakNode::default()
     }
 
@@ -102,7 +102,7 @@ impl Node {
                     let mut child = self
                         .bucket_mut()
                         .unwrap()
-                        .node(inodes[0].pg_id, &WeakNode::from(self));
+                        .node(inodes[0].pg_id, WeakNode::from(self));
                     self.0.is_leaf.store(child.is_leaf(), Ordering::Release);
                 }
             }
@@ -159,7 +159,7 @@ impl Node {
 
     // TODO: why?
     // Returns the child node at a given index.
-    fn child_at(&self, index: usize) -> Result<Node> {
+    pub(crate) fn child_at(&self, index: usize) -> Result<Node> {
         if self.is_leaf() {
             return Err(Error::InvalidNode(format!(
                 "invalid childAt {} on a leaf node",
@@ -168,10 +168,7 @@ impl Node {
         }
         let pg_id = self.0.inodes.borrow()[index].pg_id;
         // todo: Why?
-        Ok(self
-            .bucket_mut()
-            .unwrap()
-            .node(pg_id, &WeakNode::from(self)))
+        Ok(self.bucket_mut().unwrap().node(pg_id, WeakNode::from(self)))
     }
 
     // todo: unwrap

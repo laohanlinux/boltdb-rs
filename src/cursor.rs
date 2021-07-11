@@ -9,7 +9,7 @@
 // after mutating data.
 
 use crate::error::{Result, Error},
-use crate::node::Node;
+use crate::node::{Node, WeakNode};
 use crate::page::{BUCKET_LEAF_FLAG, LEAF_PAGE_FLAG};
 use crate::{Bucket, Page, PgId};
 use either::Either;
@@ -64,12 +64,27 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         }
 
         // Start from root and traverse down the hierarchy.
-        // let mut n = {
-        //     let el_ref = self.stack.borrow()[0].clone();
-        //     match el_ref.unwrap() {
-        //
-        //     }
-        // }
+        let mut n = {
+            let el_ref = self.stack.borrow()[0].clone();
+            match el_ref.upgrade() {
+                Either::Left(p) => {
+                    let id = p.id;
+                    self.mut_bucket().node(id, WeakNode::new())
+                }
+                Either::Right(n) => {
+                    n.clone()
+                }
+            }
+        };
+
+        for refi in self.stack.borrow().iter() {
+            assert!(!n.is_leaf(), "expected branch");
+            let child = n.child_at(refi.index).map_err(|_| Error::TraverserFailed)?;
+            n = child;
+        }
+
+        assert!(n.is_leaf(), "expected leaf");
+        Ok(n)
     }
 
     /// Returns the key and value of the current leaf element.

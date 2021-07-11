@@ -117,7 +117,7 @@ impl Bucket {
     }
 
     /// Create a `node` from a `page` and associates it with a given parent.
-    pub(crate) fn node(&mut self, pg_id: PgId, parent: &WeakNode) -> Node {
+    pub(crate) fn node(&mut self, pg_id: PgId, parent: WeakNode) -> Node {
         assert!(!self.nodes.is_empty(), "nodes map expected");
         // Retrieve node if it's already been created.
         if let Some(node) = self.nodes.get(&pg_id) {
