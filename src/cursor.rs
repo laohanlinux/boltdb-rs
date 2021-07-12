@@ -16,6 +16,7 @@ use either::Either;
 use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::ops::Deref;
+use std::cmp::Ordering;
 
 /// TODO: why use Deref<Target = Bucket>
 pub struct Cursor<'a, B: Deref<Target = Bucket> + 'a> {
@@ -46,6 +47,38 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
     /// Recursively performs a binary search against a given page/node until it finds a given key.
     fn search(&self, key: &[u8], pg_id: PgId) -> Result<()> {
         let page_node = self.bucket().page_node(pg_id)?;
+    }
+
+    fn search_node(&self, key: &[u8], n: &Node) -> Result<()> {
+        match n.0.inodes.borrow().binary_search_by(|inode| inode.key.as_slice().cmp(key)) {
+            Ok(mut value) => {},
+
+        }
+
+        let (exact, mut index ) = match n.0.inodes.borrow().binary_search_by(|inode| inode.key.as_slice().cmp(key)) {
+            Ok(mut value) => {
+
+                let inodes = n.0.inodes.borrow();
+                    match inode.key.as_slice().cmp(key) {
+                        Ordering::Greater => break,
+                        Ordering::Less => break,
+                        Ordering::Equal => v = i,
+                    }
+
+            }
+            Err(v) => (false, v),
+        };
+
+        if !exact && index >0 {
+            index = -1;
+        }
+
+        self.stack.borrow_mut().last_mut().ok_or(Error::Unknown("stack empty")?).index = index;
+
+        // Recursively search to the next page.
+        let pg_id = n.0.inodes.borrow()[index].pg_id;
+        self.search(key, pg_id)?;
+        Ok(())
     }
 
     /// Returns the node that the cursor is currently positioned on.
