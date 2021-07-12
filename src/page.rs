@@ -87,7 +87,7 @@ impl Page {
     }
 
     // Retrieves a list of branch nodes.
-    fn branch_page_elements(&self) -> &[BranchPageElement] {
+    pub(crate) fn branch_page_elements(&self) -> &[BranchPageElement] {
         unsafe {
             std::slice::from_raw_parts(
                 self.get_data_ptr() as *const BranchPageElement,

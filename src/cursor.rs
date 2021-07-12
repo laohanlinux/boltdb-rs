@@ -50,21 +50,17 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
     }
 
     fn search_node(&self, key: &[u8], n: &Node) -> Result<()> {
-        match n.0.inodes.borrow().binary_search_by(|inode| inode.key.as_slice().cmp(key)) {
-            Ok(mut value) => {},
-
-        }
-
         let (exact, mut index ) = match n.0.inodes.borrow().binary_search_by(|inode| inode.key.as_slice().cmp(key)) {
             Ok(mut value) => {
-
                 let inodes = n.0.inodes.borrow();
+                for (i, inode) in inodes.iter().enumerate().skip(value) {
                     match inode.key.as_slice().cmp(key) {
                         Ordering::Greater => break,
                         Ordering::Less => break,
-                        Ordering::Equal => v = i,
+                        Ordering::Equal => value = i,
                     }
-
+                }
+                (true, i)
             }
             Err(v) => (false, v),
         };
@@ -78,6 +74,35 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         // Recursively search to the next page.
         let pg_id = n.0.inodes.borrow()[index].pg_id;
         self.search(key, pg_id)?;
+        Ok(())
+    }
+
+    fn search_page(&self, key: &[u8], p: &Page) -> Result<()> {
+        let inodes = p.branch_page_elements();
+        let (exact, mut index) = match inodes.binary_search_by(|inode| inode.key().cmp(key)) {
+            Ok(mut value) => {
+                for (i, inode) in inodes.iter().enumerate().skip(value) {
+                    match inode.key().cmp(key) {
+                        Ordering::Greater => break,
+                        Ordering::Less => break,
+                        Ordering::Equal => value = i,
+                    }
+                }
+
+                (true, value)
+            }
+            Err(v) => (false, v),
+        };
+        if !exact && index > 0 {
+            index -= 1;
+        }
+
+        self.stack.borrow_mut().last_mut().ok_or_else(|| Error::Unknown("stack empty"))?
+            .index = index;
+
+        // Recursively search to the next page.
+        self.search(key, inodes[index].pgid)?;
+
         Ok(())
     }
 
