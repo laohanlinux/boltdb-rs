@@ -106,6 +106,33 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         Ok(())
     }
 
+    /// Searches the `leaf` node on the top of the stack for a key.
+    pub(crate) fn n_search(&self, key: &[u8]) -> Result<()> {
+        let mut stack = self.stack.borrow_mut();
+        let el_ref = stack.last_mut().unwrap();
+        if let Either::Right(ref n) = el_ref.upgrade() {
+            let index = match n.0.inodes.borrow().binary_search_by(|node| node.key.as_slice().cmp(key))
+            {
+                Ok(v) => v,
+                Err(v) => v,
+            };
+            el_ref.index = index;
+            return Ok(());
+        }
+
+
+        // If we have a page then search its leaf elements.
+        let page = el_ref.el.upgrade().left().ok_or(Error::Unknown("stack empty"))?;
+        let inodes = page.leaf_page_elements(); {}
+        let index = match inodes.binary_search_by(|inode| inode.key.as_slice().cmp(key)) {
+            Ok(v) => v,
+            Err(v) => v,
+        };
+        el_ref.index = index;
+
+        Ok(())
+    }
+
     /// Returns the node that the cursor is currently positioned on.
     pub(crate) fn node(&mut self) ->Result<Node> {
         if self.stack.borrow().is_empty() {
@@ -150,6 +177,24 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         let stack = self.stack.borrow();
         let el_ref = stack.last().ok_or(Error::Unknown("stack is empty"))?;
         Ok(CursorItem::from(el_ref))
+    }
+
+    /// Moves the cursor to the first item in the bucket and returns its key and value.
+    /// If the bucket is empty then a nil key and value are returned.
+    /// The returned key and value are returned.
+    /// The returned key and value are only valid for the life of the transaction
+    pub fn first(&self) -> Result<CursorItem<'a>> {
+        if self.bucket.tx()?.db().is_err() {
+            return Err(Error::TxClosed);
+        }
+
+
+        {
+            let mut stack = self.stack.borrow_mut();
+            stack.clear();
+            let el_ref = self.bucket().page_node(self.bucket.sub_bucket.root)?;
+
+        }
     }
 
     /// Removes the current key/value under the cursor from the bucket.
