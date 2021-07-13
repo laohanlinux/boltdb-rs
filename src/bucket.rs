@@ -1,3 +1,4 @@
+use crate::cursor::PageNode;
 use crate::error::{Error, Result};
 use crate::node::{Node, NodeBuilder, WeakNode};
 use crate::tx::{WeakTx, TX};
@@ -92,7 +93,7 @@ impl Eq for Bucket {}
 
 impl Bucket {
     /// Returns the tx of the bucket.
-    pub fn tx(&mut self) -> Result<TX> {
+    pub fn tx(&self) -> Result<TX> {
         self.tx.upgrade().ok_or(Error::TxGone)
     }
 
@@ -149,6 +150,32 @@ impl Bucket {
         node
     }
 
+    /// Returns the in-memory node, if it exists.
+    /// Otherwise returns the underlying page.
+    pub(crate) fn page_node(&self, id: PgId) -> Result<PageNode> {
+        // Inline buckets have fake page embedded in their value so treat them
+        // differently. We'll return the rootNode (if available) or the fake page.
+        if self.sub_bucket.root == 0 {
+            if id != 0 {
+                return Err(Error::Unknown("inline bucket no-zero page access"));
+            }
+            if let Some(ref node) = self.root_node {
+                return Ok(PageNode::from(node.clone()));
+            }
+            return Ok(PageNode::from(
+                &**self.page.as_ref().ok_or(Error::Unknown("page empty"))? as *const Page,
+            ));
+        }
+
+        // Check the node cache for non-inline buckets.
+        if let Some(node) = self.nodes.get(&id) {
+            return Ok(PageNode::from(node.clone));
+        }
+
+        // TODO Why?
+        // Finally lookup the page from the transaction if no node is materialized.
+        Ok(PageNode::from(self.tx()?.page(id)?))
+    }
     pub fn clear(&mut self) {
         self.buckets.borrow_mut().clear();
         self.nodes.clear();

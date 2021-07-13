@@ -192,7 +192,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         {
             let mut stack = self.stack.borrow_mut();
             stack.clear();
-            let el_ref = self.bucket().page_node(self.bucket.sub_bucket.root)?;
+            let el_ref = self.bucket().node(self.bucket.sub_bucket.root)?;
 
         }
     }
@@ -245,6 +245,7 @@ impl Deref for PageNode {
     }
 }
 
+// TODO why use *const Page instead of &Page
 impl From<*const Page> for PageNode {
     fn from(p: *const Page) -> Self {
         Self(Either::Left(p))
