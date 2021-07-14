@@ -176,6 +176,7 @@ impl Bucket {
         // Finally lookup the page from the transaction if no node is materialized.
         Ok(PageNode::from(self.tx()?.page(id)?))
     }
+
     pub fn clear(&mut self) {
         self.buckets.borrow_mut().clear();
         self.nodes.clear();

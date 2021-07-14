@@ -188,15 +188,82 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             return Err(Error::TxClosed);
         }
 
-
         {
             let mut stack = self.stack.borrow_mut();
             stack.clear();
-            let el_ref = self.bucket().node(self.bucket.sub_bucket.root)?;
-
+            let el_ref = self.bucket().page_node(self.bucket.sub_bucket.root)?;
+            stack.push(ElemRef{
+                el:el_ref,
+                index:0,
+            });
         }
+        self.first_leaf()?;
+
+        let is_empty = {self.stack.borrow().last().ok_or(Error::Unknown("stack empty"))?.count() == 0};
+
+        if is_empty {
+            self.next_leaf()?;
+        }
+
+        let mut item = self.key_value()?;
+        if (item.flags & BUCKET_LEAF_FLAG) != 0 {
+            item.value=None;
+        }
+        Ok(item)
     }
 
+    /// first moves the cursor to the first leaf element under the last page in the stack.
+    pub(crate) fn first_leaf(&self) -> Result<()> {
+        let mut stack = self.stack.borrow_mut();
+        loop {
+            let el_ref = &stack.last().ok_or(Error::Unknown("stack empty"))?;
+            if el_ref.is_leaf() {
+                break;
+            }
+
+            let pgid = match el_ref.upgrade() {
+                Either::Left(p) => p.branch_page_element(el_ref.index).pgid,
+                Either::Right(n) => n.0.inodes.borrow()[el_ref.index].pg_id,
+            };
+            let el_ref = self.bucket.page_node(pgid)?;
+            stack.push(ElemRef{
+                el: el_ref,
+                index: 0,
+            });
+        }
+        Ok(())
+    }
+
+    /// Moves to the next leaf element and returns the key and value.
+    /// If the cursor is at the last leaf element then it stays there and returns nil.
+    pub(crate) fn next_leaf(&self) -> Result<CursorItem<'a>> {
+        loop {
+            let i = {
+            let mut stack = self.stack.borrow_mut();
+                let mut i = stack.len() as isize - 1;
+                while i >= 0 {
+                    let elem = &mut stack[i as usize];
+                    if elem.index + 1 < elem.count() {
+                        elem.index +1;
+                        break;
+                    }
+                    i -=1;
+                }
+                i
+            };
+            if i == -1 {
+                return Ok(CursorItem::new_null(None, None));
+            }
+
+            self.stack.borrow_mut().truncate(i as usize +1);
+            self.first_leaf()?;
+
+            if self.stack.borrow().last().ok_or(Error::Unknown("stack empty"))?.count() == 0 {
+                continue
+            }
+            return self.key_value()
+        }
+    }
     /// Removes the current key/value under the cursor from the bucket.
     /// Delete fails if current key/value is a bucket or if the transaction is not writable.
     pub fn delete(&mut self) -> Result<()> {
