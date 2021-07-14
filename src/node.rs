@@ -86,7 +86,7 @@ impl Node {
             // updates stats and get threshold
             let threshold = {
                 let bucket = self.bucket_mut().unwrap();
-                let tx = bucket.tx();
+                let tx = bucket.tx().unwrap();
                 tx.0.stats.lock().rebalance += 1;
                 tx.db().unwrap().page_size() / 4
             };
@@ -258,11 +258,11 @@ impl Node {
     // Inserts a key/value.
     fn put(&self, old_key: Key, new_key: Key, value: Value, pg_id: PgId, flags: u32) -> Result<()> {
         let bucket = self.bucket().unwrap();
-        if pg_id >= bucket.tx.meta_mut().pg_id {
+        if pg_id >= bucket.tx().unwrap().meta_mut().pg_id {
             return Err(Error::PutFailed(format!(
                 "pgid {:?} above high water mark {:?}",
                 pg_id,
-                bucket.tx.meta_mut().pg_id
+                bucket.tx().unwrap().meta_mut().pg_id
             )));
         } else if old_key.len() <= 0 {
             return Err(Error::PutFailed("zero-length old key".to_string()));
@@ -492,7 +492,7 @@ impl Node {
         // FIXME: add statistics
         self.bucket_mut()
             .ok_or_else(|| BucketEmpty)?
-            .tx()
+            .tx().unwrap()
             .stats()
             .split += 1;
         Ok(Some(next))

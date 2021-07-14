@@ -8,7 +8,7 @@
 // and return unexpected keys and/or values. You must reposition your cursor
 // after mutating data.
 
-use crate::error::{Result, Error},
+use crate::error::{Result, Error};
 use crate::node::{Node, WeakNode};
 use crate::page::{BUCKET_LEAF_FLAG, LEAF_PAGE_FLAG};
 use crate::{Bucket, Page, PgId};
@@ -47,7 +47,9 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
     /// Recursively performs a binary search against a given page/node until it finds a given key.
     fn search(&self, key: &[u8], pg_id: PgId) -> Result<()> {
         let page_node = self.bucket().page_node(pg_id)?;
+        Ok(())
     }
+
 
     fn search_node(&self, key: &[u8], n: &Node) -> Result<()> {
         let (exact, mut index ) = match n.0.inodes.borrow().binary_search_by(|inode| inode.key.as_slice().cmp(key)) {
@@ -60,16 +62,16 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
                         Ordering::Equal => value = i,
                     }
                 }
-                (true, i)
+                (true, value)
             }
             Err(v) => (false, v),
         };
 
         if !exact && index >0 {
-            index = -1;
+            index -= 1;
         }
 
-        self.stack.borrow_mut().last_mut().ok_or(Error::Unknown("stack empty")?).index = index;
+        self.stack.borrow_mut().last_mut().ok_or(Error::Unknown("stack empty"))?.index = index;
 
         // Recursively search to the next page.
         let pg_id = n.0.inodes.borrow()[index].pg_id;
@@ -123,8 +125,8 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
 
         // If we have a page then search its leaf elements.
         let page = el_ref.el.upgrade().left().ok_or(Error::Unknown("stack empty"))?;
-        let inodes = page.leaf_page_elements(); {}
-        let index = match inodes.binary_search_by(|inode| inode.key.as_slice().cmp(key)) {
+        let inodes = page.leaf_page_elements();
+        let index = match inodes.binary_search_by(|node| node.key().cmp(key)) {
             Ok(v) => v,
             Err(v) => v,
         };
@@ -206,7 +208,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         }
 
         let mut item = self.key_value()?;
-        if (item.flags & BUCKET_LEAF_FLAG) != 0 {
+        if (item.flags & BUCKET_LEAF_FLAG as u32) != 0 {
             item.value=None;
         }
         Ok(item)

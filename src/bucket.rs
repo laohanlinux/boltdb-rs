@@ -49,7 +49,7 @@ impl SubBucket {
 }
 
 pub(crate) struct Bucket {
-    sub_bucket: SubBucket,
+    pub(crate) sub_bucket: SubBucket,
     // the associated transaction, WeakTx
     pub(crate) tx: WeakTx,
     // subbucket cache
@@ -104,7 +104,7 @@ impl Bucket {
 
     /// Returns whether the bucket is writable.
     pub fn writeable(&self) -> bool {
-        self.tx.writable()
+        self.tx().unwrap().writable()
     }
 
     /// Attempts to balance all nodes
@@ -139,14 +139,14 @@ impl Bucket {
             node.read(&page);
         } else {
             // Read the page into the node and cache it.
-            let page = self.tx.page(pg_id).unwrap();
+            let page = self.tx().unwrap().page(pg_id).unwrap();
             unsafe {
                 node.read(&*page);
             }
         }
         self.nodes.insert(pg_id, node.clone());
         // Update statistics.
-        self.tx.stats().node_count += 1;
+        self.tx().unwrap().stats().node_count += 1;
         node
     }
 
@@ -163,13 +163,13 @@ impl Bucket {
                 return Ok(PageNode::from(node.clone()));
             }
             return Ok(PageNode::from(
-                &**self.page.as_ref().ok_or(Error::Unknown("page empty"))? as *const Page,
+                &*self.page.as_ref().ok_or(Error::Unknown("page empty"))? as *const Page,
             ));
         }
 
         // Check the node cache for non-inline buckets.
         if let Some(node) = self.nodes.get(&id) {
-            return Ok(PageNode::from(node.clone));
+            return Ok(PageNode::from(node.clone()));
         }
 
         // TODO Why?
