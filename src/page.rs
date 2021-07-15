@@ -23,6 +23,13 @@ pub(crate) const FREE_LIST_PAGE_FLAG: u16 = 0x10;
 
 pub(crate) const BUCKET_LEAF_FLAG: u16 = 0x01;
 
+#[bitflags]
+#[repr(u32)]
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum PageFlag {
+    Branch = 0x01,
+}
+
 pub type PgId = u64;
 
 // Page Header

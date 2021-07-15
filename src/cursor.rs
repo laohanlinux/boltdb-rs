@@ -8,15 +8,15 @@
 // and return unexpected keys and/or values. You must reposition your cursor
 // after mutating data.
 
-use crate::error::{Result, Error};
+use crate::error::{Error, Result};
 use crate::node::{Node, WeakNode};
 use crate::page::{BUCKET_LEAF_FLAG, LEAF_PAGE_FLAG};
 use crate::{Bucket, Page, PgId};
 use either::Either;
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::marker::PhantomData;
 use std::ops::Deref;
-use std::cmp::Ordering;
 
 /// TODO: why use Deref<Target = Bucket>
 pub struct Cursor<'a, B: Deref<Target = Bucket> + 'a> {
@@ -50,9 +50,13 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         Ok(())
     }
 
-
     fn search_node(&self, key: &[u8], n: &Node) -> Result<()> {
-        let (exact, mut index ) = match n.0.inodes.borrow().binary_search_by(|inode| inode.key.as_slice().cmp(key)) {
+        let (exact, mut index) = match n
+            .0
+            .inodes
+            .borrow()
+            .binary_search_by(|inode| inode.key.as_slice().cmp(key))
+        {
             Ok(mut value) => {
                 let inodes = n.0.inodes.borrow();
                 for (i, inode) in inodes.iter().enumerate().skip(value) {
@@ -67,11 +71,15 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             Err(v) => (false, v),
         };
 
-        if !exact && index >0 {
+        if !exact && index > 0 {
             index -= 1;
         }
 
-        self.stack.borrow_mut().last_mut().ok_or(Error::Unknown("stack empty"))?.index = index;
+        self.stack
+            .borrow_mut()
+            .last_mut()
+            .ok_or(Error::Unknown("stack empty"))?
+            .index = index;
 
         // Recursively search to the next page.
         let pg_id = n.0.inodes.borrow()[index].pg_id;
@@ -99,7 +107,10 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             index -= 1;
         }
 
-        self.stack.borrow_mut().last_mut().ok_or_else(|| Error::Unknown("stack empty"))?
+        self.stack
+            .borrow_mut()
+            .last_mut()
+            .ok_or_else(|| Error::Unknown("stack empty"))?
             .index = index;
 
         // Recursively search to the next page.
@@ -113,7 +124,11 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         let mut stack = self.stack.borrow_mut();
         let el_ref = stack.last_mut().unwrap();
         if let Either::Right(ref n) = el_ref.upgrade() {
-            let index = match n.0.inodes.borrow().binary_search_by(|node| node.key.as_slice().cmp(key))
+            let index = match n
+                .0
+                .inodes
+                .borrow()
+                .binary_search_by(|node| node.key.as_slice().cmp(key))
             {
                 Ok(v) => v,
                 Err(v) => v,
@@ -122,9 +137,12 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             return Ok(());
         }
 
-
         // If we have a page then search its leaf elements.
-        let page = el_ref.el.upgrade().left().ok_or(Error::Unknown("stack empty"))?;
+        let page = el_ref
+            .el
+            .upgrade()
+            .left()
+            .ok_or(Error::Unknown("stack empty"))?;
         let inodes = page.leaf_page_elements();
         let index = match inodes.binary_search_by(|node| node.key().cmp(key)) {
             Ok(v) => v,
@@ -136,7 +154,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
     }
 
     /// Returns the node that the cursor is currently positioned on.
-    pub(crate) fn node(&mut self) ->Result<Node> {
+    pub(crate) fn node(&mut self) -> Result<Node> {
         if self.stack.borrow().is_empty() {
             return Err(Error::StackEmpty);
         }
@@ -158,9 +176,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
                     let id = p.id;
                     self.mut_bucket().node(id, WeakNode::new())
                 }
-                Either::Right(n) => {
-                    n.clone()
-                }
+                Either::Right(n) => n.clone(),
             }
         };
 
@@ -194,14 +210,21 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             let mut stack = self.stack.borrow_mut();
             stack.clear();
             let el_ref = self.bucket().page_node(self.bucket.sub_bucket.root)?;
-            stack.push(ElemRef{
-                el:el_ref,
-                index:0,
+            stack.push(ElemRef {
+                el: el_ref,
+                index: 0,
             });
         }
         self.first_leaf()?;
 
-        let is_empty = {self.stack.borrow().last().ok_or(Error::Unknown("stack empty"))?.count() == 0};
+        let is_empty = {
+            self.stack
+                .borrow()
+                .last()
+                .ok_or(Error::Unknown("stack empty"))?
+                .count()
+                == 0
+        };
 
         if is_empty {
             self.next_leaf()?;
@@ -209,7 +232,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
 
         let mut item = self.key_value()?;
         if (item.flags & BUCKET_LEAF_FLAG as u32) != 0 {
-            item.value=None;
+            item.value = None;
         }
         Ok(item)
     }
@@ -228,7 +251,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
                 Either::Right(n) => n.0.inodes.borrow()[el_ref.index].pg_id,
             };
             let el_ref = self.bucket.page_node(pgid)?;
-            stack.push(ElemRef{
+            stack.push(ElemRef {
                 el: el_ref,
                 index: 0,
             });
@@ -241,15 +264,15 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
     pub(crate) fn next_leaf(&self) -> Result<CursorItem<'a>> {
         loop {
             let i = {
-            let mut stack = self.stack.borrow_mut();
+                let mut stack = self.stack.borrow_mut();
                 let mut i = stack.len() as isize - 1;
                 while i >= 0 {
                     let elem = &mut stack[i as usize];
                     if elem.index + 1 < elem.count() {
-                        elem.index +1;
+                        elem.index + 1;
                         break;
                     }
-                    i -=1;
+                    i -= 1;
                 }
                 i
             };
@@ -257,13 +280,20 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
                 return Ok(CursorItem::new_null(None, None));
             }
 
-            self.stack.borrow_mut().truncate(i as usize +1);
+            self.stack.borrow_mut().truncate(i as usize + 1);
             self.first_leaf()?;
 
-            if self.stack.borrow().last().ok_or(Error::Unknown("stack empty"))?.count() == 0 {
-                continue
+            if self
+                .stack
+                .borrow()
+                .last()
+                .ok_or(Error::Unknown("stack empty"))?
+                .count()
+                == 0
+            {
+                continue;
             }
-            return self.key_value()
+            return self.key_value();
         }
     }
     /// Removes the current key/value under the cursor from the bucket.
@@ -279,8 +309,8 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         let key = {
             let item = self.key_value()?;
             // Return an error if current value is a bucket
-            if (item.flags & BUCKET_LEAF_FLAG) != 0 {
-                return Err(Error::IncompatibleValue)
+            if (item.flags & BUCKET_LEAF_FLAG as u32) != 0 {
+                return Err(Error::IncompatibleValue);
             }
             item.key.ok_or(Error::Unknown("key empty"))?.to_vec()
         };
