@@ -47,6 +47,30 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
     /// Recursively performs a binary search against a given page/node until it finds a given key.
     fn search(&self, key: &[u8], pg_id: PgId) -> Result<()> {
         let page_node = self.bucket().page_node(pg_id)?;
+        if let Either::Left(p) = page_node.upgrade() {
+            match p.flags {
+                BRANCH_PAGE_FLAG => (), 
+                LEAF_PAGE_FLAG => (),
+                _ => panic!("invalid page type: {}: {}", p.id, p.flags),
+            };
+        }
+
+        let elem_ref = ElemRef {
+            el: page_node,
+            index: 0,
+        };
+        self.stack.borrow_mut().push(elem_ref.clone());
+        {
+            if elem_ref.is_leaf() {
+                self.n_search(key)?;
+                return Ok(());
+            }
+
+            match elem_ref.upgrade() {
+                Either::Left(p) => self.search_page(key, p)?,
+                Either::Right(n) => self.search_node(key, n)?,
+            }
+        }
         Ok(())
     }
 
@@ -269,7 +293,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
                 while i >= 0 {
                     let elem = &mut stack[i as usize];
                     if elem.index + 1 < elem.count() {
-                        elem.index + 1;
+                        elem.index += 1;
                         break;
                     }
                     i -= 1;
@@ -296,6 +320,42 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             return self.key_value();
         }
     }
+    /// Moves the cursor to a given key and returns it.
+    /// If the key does not exist then the next key id used. If no keys
+    /// follow, a nil key is returned.
+    ///
+    /// The returned key and value are only valid for the life of the transaction.
+    pub fn seek(&self, seek: &[u8]) -> Result<CursorItem<'a>> {
+        let mut item = self.seek_to_item(seek)?;
+        let el_ref = {
+            let stack = self.stack.borrow();
+            stack.last().ok_or(Error::Unknown("stack empty"))?.clone()
+        };
+
+
+        Ok(CursorItem::new_null(None, None))
+    }
+
+
+    /// Moves the cursor to a given key and returns it.
+    /// If the key does not exist then the next key is used.
+    pub(crate) fn seek_to_item(&self, seek: &[u8]) -> Result<CursorItem<'a>> {
+        if !self.bucket().tx()?.opened() {
+            return Err(Error::TxClosed);
+        }
+
+        self.stack.borrow_mut().clear();
+        self.search(seek, self.bucket().sub_bucket.root)?;
+        {
+            let stack = self.stack.borrow();
+            let el_ref = stack.last().ok_or(Error::Unknown("stack empty"))?;
+            if el_ref.index > el_ref.count() { //Warnning
+                return Ok(CursorItem::new_null(None, None));
+            }
+        }
+        self.key_value()
+    }
+
     /// Removes the current key/value under the cursor from the bucket.
     /// Delete fails if current key/value is a bucket or if the transaction is not writable.
     pub fn delete(&mut self) -> Result<()> {
