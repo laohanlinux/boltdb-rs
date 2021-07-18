@@ -86,7 +86,7 @@ impl Debug for TxInner {
 /// are using them. A long running read transaction can cause the database to
 /// quickly grow.
 #[derive(Clone)]
-pub(crate) struct TX(pub(crate) Arc<TxInner>);
+pub struct TX(pub(crate) Arc<TxInner>);
 
 unsafe impl Sync for TX {}
 unsafe impl Send for TX {}

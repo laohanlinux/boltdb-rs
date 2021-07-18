@@ -48,7 +48,7 @@ impl SubBucket {
     }
 }
 
-pub(crate) struct Bucket {
+pub struct Bucket {
     pub(crate) sub_bucket: SubBucket,
     // the associated transaction, WeakTx
     pub(crate) tx: WeakTx,

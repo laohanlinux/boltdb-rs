@@ -1,8 +1,6 @@
 use crate::db::Meta;
 use crate::free_list::FreeList;
 use crate::must_align;
-use bitflags;
-use std::borrow::Borrow;
 use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
 use std::mem::size_of;
@@ -22,13 +20,6 @@ pub(crate) const META_PAGE_FLAG: u16 = 0x04;
 pub(crate) const FREE_LIST_PAGE_FLAG: u16 = 0x10;
 
 pub(crate) const BUCKET_LEAF_FLAG: u16 = 0x01;
-
-#[bitflags]
-#[repr(u32)]
-#[derive(Copy, Clone, Debug, PartialEq)]
-enum PageFlag {
-    Branch = 0x01,
-}
 
 pub type PgId = u64;
 

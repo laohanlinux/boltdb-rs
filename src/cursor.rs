@@ -123,7 +123,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
     pub(crate) fn n_search(&self, key: &[u8]) -> Result<()> {
         let mut stack = self.stack.borrow_mut();
         let el_ref = stack.last_mut().unwrap();
-        if let Either::Right(ref n) = el_ref.upgrade() {
+        if let Either::Right(n) = el_ref.upgrade() {
             let index = match n
                 .0
                 .inodes
@@ -314,13 +314,13 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             }
             item.key.ok_or(Error::Unknown("key empty"))?.to_vec()
         };
-        self.node()?.del(&key)
+        Ok(self.node()?.del(&key))
     }
 }
 
 // Represents a reference to an element on a given page/node.
 #[derive(Clone, Debug)]
-struct ElemRef {
+pub(crate) struct ElemRef {
     pub(crate) el: PageNode,
     pub(crate) index: usize,
 }
@@ -329,7 +329,7 @@ impl Deref for ElemRef {
     type Target = PageNode;
 
     fn deref(&self) -> &Self::Target {
-        &Self::Target(&self.el)
+        &self.el
     }
 }
 
@@ -347,6 +347,12 @@ impl Deref for PageNode {
 // TODO why use *const Page instead of &Page
 impl From<*const Page> for PageNode {
     fn from(p: *const Page) -> Self {
+        Self(Either::Left(p))
+    }
+}
+
+impl From<&Page> for PageNode {
+    fn from(p: &Page) -> Self {
         Self(Either::Left(p))
     }
 }
@@ -400,7 +406,7 @@ impl<'a> CursorItem<'a> {
     }
 
     #[inline]
-    pub(crate) fn new_null(key: Option<&'a [u8]>, value: Option<&'a [u8]>, flags: u32) -> Self {
+    pub(crate) fn new_null(key: Option<&'a [u8]>, value: Option<&'a [u8]>) -> Self {
         CursorItem::new(key, value, 0)
     }
 
@@ -416,7 +422,7 @@ impl<'a> CursorItem<'a> {
 
     #[inline]
     pub fn is_bucket(&self) -> bool {
-        self.flags & BUCKET_LEAF_FLAG != 0
+        self.flags & BUCKET_LEAF_FLAG as u32 != 0
     }
 
     /// unwraps item into key, value and flags.

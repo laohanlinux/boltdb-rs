@@ -20,7 +20,7 @@ pub(crate) type Key = Vec<u8>;
 pub(crate) type Value = Vec<u8>;
 
 #[derive(Debug)]
-struct NodeInner {
+pub(crate) struct  NodeInner {
     // associated bucket.
     bucket: *const Bucket,
     is_leaf: AtomicBool,
@@ -236,23 +236,23 @@ impl Node {
     }
 
     // Removes a key from the node.
-    fn del(&mut self, key: Key) {
+    pub(crate) fn del(&mut self, key: &Key) {
         // Find index of key.
         match self
             .0
             .inodes
             .borrow()
-            .binary_search_by(|inode| inode.key.cmp(key.as_ref()))
-        {
-            Ok(index) => {
-                // Delete inode from the node.
-                self.0.inodes.borrow_mut().remove(index);
-                // Mark the node as needing rebalancing.
-                self.0.unbalanced.store(true, Ordering::Release);
+            .binary_search_by(|inode| inode.key.cmp(key))
+            {
+                Ok(index) => {
+                    // Delete inode from the node.
+                    self.0.inodes.borrow_mut().remove(index);
+                    // Mark the node as needing rebalancing.
+                    self.0.unbalanced.store(true, Ordering::Release);
+                }
+                // Exit if the key isn't found.
+                _ => return,
             }
-            // Exit if the key isn't found.
-            _ => return,
-        }
     }
 
     // Inserts a key/value.
