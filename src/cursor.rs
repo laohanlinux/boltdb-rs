@@ -49,7 +49,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         let page_node = self.bucket().page_node(pg_id)?;
         if let Either::Left(p) = page_node.upgrade() {
             match p.flags {
-                BRANCH_PAGE_FLAG => (), 
+                BRANCH_PAGE_FLAG => (),
                 LEAF_PAGE_FLAG => (),
                 _ => panic!("invalid page type: {}: {}", p.id, p.flags),
             };
@@ -255,7 +255,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         }
 
         let mut item = self.key_value()?;
-        if (item.flags & BUCKET_LEAF_FLAG as u32) != 0 {
+        if (item.flags & BUCKET_LEAF_FLAG) != 0 {
             item.value = None;
         }
         Ok(item)
@@ -281,6 +281,70 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             });
         }
         Ok(())
+    }
+
+    /// Moves the cursor to the last item in the bucket and returns its key and value.
+    /// If the bucket is empty then a nil key and value are returned.
+    /// The returned key and value are only valid for the life of the transaction.
+    pub fn last(&self) -> Result<CursorItem<'a>> {
+        if !self.bucket().tx()?.opened() {
+            return Err(Error::TxClosed);
+        }
+        {
+            let mut stack = self.stack.borrow_mut();
+            stack.clear();
+
+            let el_ref = self.bucket.page_node(self.bucket().sub_bucket.root)?;
+            let mut el_ref = ElemRef {
+                el: el_ref,
+                index: 0,
+            };
+            el_ref.index = el_ref.count() - 1;
+            stack.push(el_ref);
+        }
+
+        self.last_leaf()?;
+    }
+
+    /// Moves the cursor to the last leaf element under the last page in the stack.
+    pub(crate) fn last_leaf(&self) -> Result<()> {
+        let mut stack = self.stack.borrow_mut();
+        loop {
+            let el_ref = stack.last().ok_or(Error::Unknown("stack empty"))?;
+            if el_ref.is_leaf() {
+                break;
+            }
+
+            let pgid = match el_ref.upgrade() {
+                Either::Left(p) => p.branch_page_element(el_ref.index).pgid,
+                Either::Right(n) => n.0.inodes.borrow()[el_ref.index].pg_id,
+            };
+
+            let page_node = self.bucket.page_node(pgid)?;
+            let mut next_ref = ElemRef {
+                el: page_node,
+                index: 0,
+            };
+            next_ref.index = next_ref.count() - 1;
+            stack.push(next_ref);
+        }
+
+        Ok(())
+    }
+
+    /// Moves the cursor to the next item in the bucket and returns its key and value.
+    /// If the cursor is at the end of the bucket then a nil key and value are returned.
+    ///
+    /// The returned key and value are only valid for the life of the transaction.
+    pub fn next(&self) -> Result<CursorItem<'a>> {
+        if !self.bucket.tx()?.opened() {
+            return Err(Error::TxClosed);
+        }
+        let mut item = self.next_leaf()?;
+        if (item.flags & BUCKET_LEAF_FLAG) != 0 {
+            item.value = None;
+        }
+        Ok(item)
     }
 
     /// Moves to the next leaf element and returns the key and value.
@@ -320,6 +384,48 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             return self.key_value();
         }
     }
+
+    /// Moves the cursor to the previous item in the bucket and returns its key and value.
+    /// If the cursor is at the beginning of the bucket then a nil key and value are returned.
+    /// The returned key and value are only valid for the life of the tansaction.
+    pub fn prev(&self) -> Result<CursorItem<'a>> {
+        if !self.bucket().tx()?.opened() {
+            return Err(Error::TxClosed);
+        }
+        {
+            let mut stack = self.stack.borrow_mut();
+
+            // If we've hit the end then return nil.
+            if stack.is_empty() {
+                return Ok(CursorItem::new_null(None, None));
+            }
+
+            // Attempt to move back one element until we're successful.
+            // Move up the stack as we hit the beginning of earch page in our stack.
+            for i in stack.len() - 1..=0 {
+                let elem = &mut stack[i];
+                if elem.index > 0 {
+                    elem.index -= 1;
+                    break;
+                }
+                stack.truncate(i);
+            }
+
+            // If we've hit the end then return nil.
+            if stack.is_empty() {
+                return Ok(CursorItem::new_null(None, None));
+            }
+        }
+
+        // Move down the stack to find the last element of the last leaf under this branch.
+        self.last_leaf()?;
+        let mut item = self.key_value()?;
+        if (item.flags & BUCKET_LEAF_FLAG) != 0 {
+            item.value = None;
+        }
+        Ok(item)
+    }
+
     /// Moves the cursor to a given key and returns it.
     /// If the key does not exist then the next key id used. If no keys
     /// follow, a nil key is returned.
@@ -332,10 +438,21 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             stack.last().ok_or(Error::Unknown("stack empty"))?.clone()
         };
 
+        if el_ref.index >= el_ref.count() {
+            item = self.next()?;
+        }
 
-        Ok(CursorItem::new_null(None, None))
+        let mut item = item;
+
+        if item.key.is_none() {
+            return Ok(CursorItem::new_null(None, None));
+        }
+        if (item.flags & BUCKET_LEAF_FLAG) != 0 {
+            item.value = None;
+        }
+
+        Ok(item)
     }
-
 
     /// Moves the cursor to a given key and returns it.
     /// If the key does not exist then the next key is used.
@@ -349,7 +466,8 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         {
             let stack = self.stack.borrow();
             let el_ref = stack.last().ok_or(Error::Unknown("stack empty"))?;
-            if el_ref.index > el_ref.count() { //Warnning
+            if el_ref.index > el_ref.count() {
+                //Warnning
                 return Ok(CursorItem::new_null(None, None));
             }
         }
@@ -369,7 +487,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         let key = {
             let item = self.key_value()?;
             // Return an error if current value is a bucket
-            if (item.flags & BUCKET_LEAF_FLAG as u32) != 0 {
+            if (item.flags & BUCKET_LEAF_FLAG) != 0 {
                 return Err(Error::IncompatibleValue);
             }
             item.key.ok_or(Error::Unknown("key empty"))?.to_vec()
@@ -482,7 +600,7 @@ impl<'a> CursorItem<'a> {
 
     #[inline]
     pub fn is_bucket(&self) -> bool {
-        self.flags & BUCKET_LEAF_FLAG as u32 != 0
+        self.flags & BUCKET_LEAF_FLAG != 0
     }
 
     /// unwraps item into key, value and flags.

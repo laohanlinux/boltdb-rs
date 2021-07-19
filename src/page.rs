@@ -19,7 +19,8 @@ pub(crate) const LEAF_PAGE_FLAG: u16 = 0x02;
 pub(crate) const META_PAGE_FLAG: u16 = 0x04;
 pub(crate) const FREE_LIST_PAGE_FLAG: u16 = 0x10;
 
-pub(crate) const BUCKET_LEAF_FLAG: u16 = 0x01;
+// u16
+pub(crate) const BUCKET_LEAF_FLAG: u32 = 0x01;
 
 pub type PgId = u64;
 
