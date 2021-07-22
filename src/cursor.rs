@@ -304,6 +304,12 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         }
 
         self.last_leaf()?;
+
+        let mut item = self.key_value()?;
+        if (item.flags & BUCKET_LEAF_FLAG) != 0 {
+            item.value = None;
+        }
+        Ok(item)
     }
 
     /// Moves the cursor to the last leaf element under the last page in the stack.
