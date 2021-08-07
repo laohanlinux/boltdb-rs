@@ -1,11 +1,13 @@
-use crate::cursor::PageNode;
+use crate::cursor::{Cursor, PageNode};
 use crate::error::{Error, Result};
 use crate::node::{Node, NodeBuilder, WeakNode};
+use crate::page::BUCKET_LEAF_FLAG;
 use crate::tx::{WeakTx, TX};
 use crate::{Page, PgId};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
+use std::intrinsics::copy_nonoverlapping;
 use std::sync::Weak;
 
 /// The maximum length of a key, in bytes.
@@ -48,6 +50,7 @@ impl SubBucket {
     }
 }
 
+/// Bucket represents a collection of key/value pairs inside the database.
 pub struct Bucket {
     pub(crate) sub_bucket: SubBucket,
     // the associated transaction, WeakTx
@@ -92,19 +95,64 @@ impl PartialEq for Bucket {
 impl Eq for Bucket {}
 
 impl Bucket {
+    fn new(tx: WeakTx) -> Self {
+        Bucket {
+            sub_bucket: Default::default(),
+            tx,
+            buckets: RefCell::new(Default::default()),
+            page: None,
+            root_node: None,
+            nodes: Default::default(),
+            fill_percent: DEFAULT_FILL_PERCENT,
+        }
+    }
+
     /// Returns the tx of the bucket.
     pub fn tx(&self) -> Result<TX> {
         self.tx.upgrade().ok_or(Error::TxGone)
     }
 
     /// Returns the root of the bucket.
-    pub fn root(&self) -> PgId {
+    pub(crate) fn root(&self) -> PgId {
         self.sub_bucket.root
+    }
+
+    fn root_node(&self) -> Option<Node> {
+        self.root_node.clone()
+    }
+
+    /// Creates a cursor associated with the bucket.
+    /// The cursor is only valid as long as the transaction is open.
+    /// Do not use a cursor after the transaction is closed.
+    pub fn cursor(&self) -> Result<Cursor<&Bucket>> {
+        // update transaction statistics.
+        self.tx()?.0.stats.lock().cursor_count += 1;
+        // allocate and return a cursor.
+        Ok(Cursor::new(self))
     }
 
     /// Returns whether the bucket is writable.
     pub fn writeable(&self) -> bool {
         self.tx().unwrap().writable()
+    }
+
+    /// Allocates and writes the bucket to a byte slice.
+    fn write(&mut self) -> Vec<u8> {
+        let n = self.root_node.as_ref().unwrap();
+        let node_size = n.size();
+        let mut value = vec![0u8; SubBucket::SIZE + node_size];
+
+        // write a bucket header.
+        let bucket_ptr = value.as_mut_ptr() as *mut SubBucket;
+        unsafe { copy_nonoverlapping(&self.sub_bucket, bucket_ptr, 1) };
+
+        // Convert byte slice to a fake page and write the root node.
+        {
+            let mut page = &mut value[SubBucket::SIZE..];
+            let mut page = Page::from_slice_mut(&mut page);
+            n.write(&mut page);
+        }
+        value
     }
 
     /// Attempts to balance all nodes
@@ -157,13 +205,13 @@ impl Bucket {
         // differently. We'll return the rootNode (if available) or the fake page.
         if self.sub_bucket.root == 0 {
             if id != 0 {
-                return Err(Error::Unknown("inline bucket no-zero page access"));
+                return Err(Error::Unexpected("inline bucket no-zero page access"));
             }
             if let Some(ref node) = self.root_node {
                 return Ok(PageNode::from(node.clone()));
             }
             return Ok(PageNode::from(
-                &*self.page.as_ref().ok_or(Error::Unknown("page empty"))? as *const Page,
+                &*self.page.as_ref().ok_or(Error::Unexpected("page empty"))? as *const Page,
             ));
         }
 
@@ -184,16 +232,127 @@ impl Bucket {
         self.root_node = None;
     }
 
-    pub fn create_bucket(&self, key: &[u8]) -> Result<&mut Bucket> {
-        todo!()
+    // Creates a new bucket at the given key and returns the new bucket.
+    // Returns an error if the key already exists, if the bucket name is blank, or if the bucket name is too long.
+    // The bucket instance is only valid for the lifetime of the transaction.
+    pub fn create_bucket(&mut self, key: &[u8]) -> Result<&mut Bucket> {
+        {
+            let tx = self.tx()?;
+            if !tx.opened() {
+                return Err(Error::TxClosed);
+            }
+            if !tx.writable() {
+                return Err(Error::TxReadOnly);
+            }
+            if key.is_empty() {
+                return Err(Error::BucketNameRequired);
+            }
+        }
+
+        let tx = self.tx.clone();
+        {
+            // Move cursor to correct position.
+            let mut cursor = self.cursor()?;
+            let (ckey, flags) = {
+                let (key, _, flags) = cursor.seek_to_item(key)?.unwrap();
+                (key, flags)
+            };
+
+            // return an error if there is an existing cursor.
+            if ckey == Some(key) {
+                if (flags & BUCKET_LEAF_FLAG) != 0 {
+                    return Err(Error::BucketExists);
+                };
+                return Err(Error::IncompatibleValue);
+            }
+
+            // create empty, inline bucket.
+            let mut bucket = Bucket::new(tx);
+            bucket.root_node = Some(NodeBuilder::new(&bucket).is_leaf(true).build());
+            bucket.fill_percent = DEFAULT_FILL_PERCENT;
+
+            let value = bucket.write();
+
+            // insert into node.
+            cursor
+                .node()
+                .unwrap()
+                .put(key, key, value, 0, BUCKET_LEAF_FLAG)?;
+
+            // TODO: why
+            // since subbuckets are not allowed on inline buckets, we need to
+            // dereference the inline page, if it exists. This will cause the bucket
+            // to be treated as a regular, non-inline bucket for the rest of the tx.
+            self.page = None;
+        }
+
+        self.bucket_mut(key)
+            .ok_or_else(|| Error::Unexpected("cannot find bucket"))
     }
 
-    pub fn create_bucket_if_not_exists(&self, key: &[u8]) -> Result<&mut Bucket> {
-        todo!()
+    // Creates a new bucket if it doesn't already exist and returns a reference to it.
+    // Returns an error if the bucket name is blank, or if the bucket name is too long.
+    // The bucket instance is only valid for the lifetime of the transaction.
+    pub fn create_bucket_if_not_exists(&mut self, key: &[u8]) -> Result<&mut Bucket> {
+        let other_self = unsafe { &mut *(self as *mut Self) };
+
+        match other_self.create_bucket(key) {
+            Ok(b) => Ok(b),
+            Err(Error::BucketExists) => self
+                .bucket_mut(key)
+                .ok_or_else(|| Error::Unexpected("can't create bucket")),
+            v => v,
+        }
     }
 
+    // DeleteBucket deletes a bucket at the given key.
+    // Returns an error if the bucket does not exists, or if the key represents a non-bucket value.
     pub fn delete_bucket(&self, key: &[u8]) -> Result<()> {
-        todo!()
+        {
+            let tx = self.tx()?;
+            if !tx.opened() {
+                return Err(Error::DatabaseNotOpen);
+            }
+            if !tx.writable() {
+                return Err(Error::DatabaseOnlyRead);
+            }
+            if key.is_empty() {
+                return Err(Error::NameRequired);
+            }
+        }
+
+        let mut c = self.cursor()?;
+        {
+            let item = c.seek(key)?;
+            if item.key.as_deref().map(|v| &*v).unwrap() != key {
+                return Err(Error::BucketNotFound);
+            }
+            if !item.is_bucket() {
+                return Err(Error::IncompatibleValue);
+            }
+        }
+
+        let mut node = c.node()?;
+        {
+            let child = self
+                .bucket_mut(key)
+                .ok_or(Error::Unexpected("Can't get bucket"))?;
+            let child_buckets = child.buckets();
+
+            for bucket in &child_buckets {
+                child.delete_bucket(bucket)?;
+            }
+
+            // Release all bucket pages to free_list.
+            child.nodes.clear();
+            child.root_node = None;
+            child.free();
+        }
+
+        self.buckets.borrow_mut().remove(&key);
+        node.del(key);
+
+        Ok(())
     }
 
     pub(crate) fn buckets(&self) -> Vec<Vec<u8>> {

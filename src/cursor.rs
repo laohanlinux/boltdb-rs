@@ -102,7 +102,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         self.stack
             .borrow_mut()
             .last_mut()
-            .ok_or(Error::Unknown("stack empty"))?
+            .ok_or(Error::Unexpected("stack empty"))?
             .index = index;
 
         // Recursively search to the next page.
@@ -134,7 +134,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         self.stack
             .borrow_mut()
             .last_mut()
-            .ok_or_else(|| Error::Unknown("stack empty"))?
+            .ok_or_else(|| Error::Unexpected("stack empty"))?
             .index = index;
 
         // Recursively search to the next page.
@@ -166,7 +166,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             .el
             .upgrade()
             .left()
-            .ok_or(Error::Unknown("stack empty"))?;
+            .ok_or(Error::Unexpected("stack empty"))?;
         let inodes = page.leaf_page_elements();
         let index = match inodes.binary_search_by(|node| node.key().cmp(key)) {
             Ok(v) => v,
@@ -217,7 +217,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
     /// Returns the key and value of the current leaf element.
     fn key_value(&self) -> Result<CursorItem<'a>> {
         let stack = self.stack.borrow();
-        let el_ref = stack.last().ok_or(Error::Unknown("stack is empty"))?;
+        let el_ref = stack.last().ok_or(Error::Unexpected("stack is empty"))?;
         Ok(CursorItem::from(el_ref))
     }
 
@@ -245,7 +245,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             self.stack
                 .borrow()
                 .last()
-                .ok_or(Error::Unknown("stack empty"))?
+                .ok_or(Error::Unexpected("stack empty"))?
                 .count()
                 == 0
         };
@@ -265,7 +265,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
     pub(crate) fn first_leaf(&self) -> Result<()> {
         let mut stack = self.stack.borrow_mut();
         loop {
-            let el_ref = &stack.last().ok_or(Error::Unknown("stack empty"))?;
+            let el_ref = &stack.last().ok_or(Error::Unexpected("stack empty"))?;
             if el_ref.is_leaf() {
                 break;
             }
@@ -316,7 +316,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
     pub(crate) fn last_leaf(&self) -> Result<()> {
         let mut stack = self.stack.borrow_mut();
         loop {
-            let el_ref = stack.last().ok_or(Error::Unknown("stack empty"))?;
+            let el_ref = stack.last().ok_or(Error::Unexpected("stack empty"))?;
             if el_ref.is_leaf() {
                 break;
             }
@@ -381,7 +381,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
                 .stack
                 .borrow()
                 .last()
-                .ok_or(Error::Unknown("stack empty"))?
+                .ok_or(Error::Unexpected("stack empty"))?
                 .count()
                 == 0
             {
@@ -441,7 +441,10 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         let mut item = self.seek_to_item(seek)?;
         let el_ref = {
             let stack = self.stack.borrow();
-            stack.last().ok_or(Error::Unknown("stack empty"))?.clone()
+            stack
+                .last()
+                .ok_or(Error::Unexpected("stack empty"))?
+                .clone()
         };
 
         if el_ref.index >= el_ref.count() {
@@ -471,7 +474,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         self.search(seek, self.bucket().sub_bucket.root)?;
         {
             let stack = self.stack.borrow();
-            let el_ref = stack.last().ok_or(Error::Unknown("stack empty"))?;
+            let el_ref = stack.last().ok_or(Error::Unexpected("stack empty"))?;
             if el_ref.index > el_ref.count() {
                 //Warnning
                 return Ok(CursorItem::new_null(None, None));
@@ -496,7 +499,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             if (item.flags & BUCKET_LEAF_FLAG) != 0 {
                 return Err(Error::IncompatibleValue);
             }
-            item.key.ok_or(Error::Unknown("key empty"))?.to_vec()
+            item.key.ok_or(Error::Unexpected("key empty"))?.to_vec()
         };
         Ok(self.node()?.del(&key))
     }

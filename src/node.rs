@@ -20,7 +20,7 @@ pub(crate) type Key = Vec<u8>;
 pub(crate) type Value = Vec<u8>;
 
 #[derive(Debug)]
-pub(crate) struct  NodeInner {
+pub(crate) struct NodeInner {
     // associated bucket.
     bucket: *const Bucket,
     is_leaf: AtomicBool,
@@ -126,7 +126,7 @@ impl Node {
     }
 
     // Returns the size of the node after serialization.
-    fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         self.0
             .inodes
             .borrow()
@@ -236,27 +236,34 @@ impl Node {
     }
 
     // Removes a key from the node.
-    pub(crate) fn del(&mut self, key: &Key) {
+    pub(crate) fn del(&mut self, key: &[u8]) {
         // Find index of key.
         match self
             .0
             .inodes
             .borrow()
-            .binary_search_by(|inode| inode.key.cmp(key))
-            {
-                Ok(index) => {
-                    // Delete inode from the node.
-                    self.0.inodes.borrow_mut().remove(index);
-                    // Mark the node as needing rebalancing.
-                    self.0.unbalanced.store(true, Ordering::Release);
-                }
-                // Exit if the key isn't found.
-                _ => return,
+            .binary_search_by(|inode| inode.key.cmp(&key.to_vec()))
+        {
+            Ok(index) => {
+                // Delete inode from the node.
+                self.0.inodes.borrow_mut().remove(index);
+                // Mark the node as needing rebalancing.
+                self.0.unbalanced.store(true, Ordering::Release);
             }
+            // Exit if the key isn't found.
+            _ => return,
+        }
     }
 
     // Inserts a key/value.
-    fn put(&self, old_key: Key, new_key: Key, value: Value, pg_id: PgId, flags: u32) -> Result<()> {
+    pub(crate) fn put(
+        &self,
+        old_key: &[u8],
+        new_key: &[u8],
+        value: Value,
+        pg_id: PgId,
+        flags: u32,
+    ) -> Result<()> {
         let bucket = self.bucket().unwrap();
         if pg_id >= bucket.tx().unwrap().meta_mut().pg_id {
             return Err(Error::PutFailed(format!(
@@ -273,7 +280,7 @@ impl Node {
         // Find insertion index.
         let mut inodes = self.0.inodes.borrow_mut();
         let (extra, index) = inodes
-            .binary_search_by(|inode| inode.key.cmp(&old_key))
+            .binary_search_by(|inode| inode.key.cmp(&old_key.to_vec()))
             .map(|index| (true, index))
             .map_err(|index| (false, index))
             .unwrap();
@@ -322,7 +329,7 @@ impl Node {
     }
 
     // Writes the items onto one or more pages.
-    fn write(&mut self, page: &mut Page) {
+    pub(crate) fn write(&self, page: &mut Page) {
         // Initialize page.
         if self.is_leaf() {
             page.flags != LEAF_PAGE_FLAG;
@@ -492,7 +499,8 @@ impl Node {
         // FIXME: add statistics
         self.bucket_mut()
             .ok_or_else(|| BucketEmpty)?
-            .tx().unwrap()
+            .tx()
+            .unwrap()
             .stats()
             .split += 1;
         Ok(Some(next))

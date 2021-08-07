@@ -443,7 +443,7 @@ fn t_page_type() {
 
 #[test]
 fn t_page_buffer() {
-    let mut page = Page {
+    let page = Page {
         id: 2,
         flags: FREE_LIST_PAGE_FLAG,
         ..Default::default()

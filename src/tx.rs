@@ -104,7 +104,7 @@ impl TX {
         self.0
             .meta
             .try_write()
-            .ok_or(Error::Unknown("pgid locked"))?
+            .ok_or(Error::Unexpected("pgid locked"))?
             .pg_id = id;
         Ok(())
     }
@@ -162,9 +162,9 @@ impl TX {
             .0
             .root
             .try_read()
-            .ok_or(Error::Unknown("can't acquire bucket"))?;
+            .ok_or(Error::Unexpected("can't acquire bucket"))?;
         RwLockReadGuard::try_map(bucket, |b| b.bucket(&key.to_vec()))
-            .map_err(|_| Error::Unknown("can't get bucket"))
+            .map_err(|_| Error::Unexpected("can't get bucket"))
     }
 
     pub fn bucket_mut(&self, key: &[u8]) -> Result<MappedRwLockWriteGuard<Bucket>> {
@@ -172,9 +172,9 @@ impl TX {
             .0
             .root
             .try_write()
-            .ok_or(Error::Unknown("can't acquire bucket"))?;
+            .ok_or(Error::Unexpected("can't acquire bucket"))?;
         RwLockWriteGuard::try_map(bucket, |b| b.bucket_mut(&key.to_vec()))
-            .map_err(|_| Error::Unknown("can't get mut bucket"))
+            .map_err(|_| Error::Unexpected("can't get mut bucket"))
     }
 
     /// returns bucket keys for db
@@ -193,9 +193,9 @@ impl TX {
             .0
             .root
             .try_write()
-            .ok_or(Error::Unknown("can't create bucket"))?;
+            .ok_or(Error::Unexpected("can't create bucket"))?;
         RwLockWriteGuard::try_map(bucket, |b| b.create_bucket(key).ok())
-            .map_err(|_| Error::Unknown("can't create bucket"))
+            .map_err(|_| Error::Unexpected("can't create bucket"))
     }
 
     /// Create a new bucket if it does't already exits
@@ -212,10 +212,10 @@ impl TX {
             .0
             .root
             .try_write()
-            .ok_or(Error::Unknown("Can't acquire bucket"))?;
+            .ok_or(Error::Unexpected("Can't acquire bucket"))?;
 
         RwLockWriteGuard::try_map(bucket, |b| b.create_bucket_if_not_exists(key).ok())
-            .map_err(|_| Error::Unknown("Can't get bucket"))
+            .map_err(|_| Error::Unexpected("Can't get bucket"))
     }
 
     /// Deletes a bucket
@@ -251,7 +251,7 @@ impl TX {
     pub fn copy_to(&self, path: &str, mode: OpenOptions) -> Result<()> {
         let file = mode
             .open(path)
-            .map_err(|_| Error::Unknown("can't open the file"))?;
+            .map_err(|_| Error::Unexpected("can't open the file"))?;
         self.write_to(file)?;
         Ok(())
     }
@@ -386,7 +386,7 @@ pub struct TxStats {
 
     // Cursor statistics
     // number of cursors created.
-    pub(crate) cursor_cont: usize,
+    pub(crate) cursor_count: usize,
 
     // Node statistics
     // number of node allocations

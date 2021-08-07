@@ -34,6 +34,14 @@ pub enum Error {
     LogRead(String),
     #[error("Bucket Empty")]
     BucketEmpty,
+    #[error("Bucket Exists")]
+    BucketExists,
+    #[error("Bucket Name Required")]
+    BucketNameRequired,
+    #[error("Bucket NotFound")]
+    BucketNotFound,
+    #[error("Name Required")]
+    NameRequired,
     #[error("Tx Closed")]
     TxClosed,
     #[error("Tx Read Only")]
@@ -53,7 +61,7 @@ pub enum Error {
     #[error("Database Gone")]
     DatabaseGone,
     #[error("{0}")]
-    Unknown(&'static str),
+    Unexpected(&'static str),
     #[error("database only read")]
     DatabaseOnlyRead,
     // Returned when a DB instance is accessed before it
