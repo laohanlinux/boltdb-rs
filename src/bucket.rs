@@ -138,6 +138,7 @@ impl Bucket {
 
     /// Allocates and writes the bucket to a byte slice.
     fn write(&mut self) -> Vec<u8> {
+        // Allocate the appropriate size.
         let n = self.root_node.as_ref().unwrap();
         let node_size = n.size();
         let mut value = vec![0u8; SubBucket::SIZE + node_size];
@@ -253,10 +254,7 @@ impl Bucket {
         {
             // Move cursor to correct position.
             let mut cursor = self.cursor()?;
-            let (ckey, flags) = {
-                let (key, _, flags) = cursor.seek_to_item(key)?.unwrap();
-                (key, flags)
-            };
+            let (ckey, _, flags) = cursor.seek_to_item(key)?.unwrap();
 
             // return an error if there is an existing cursor.
             if ckey == Some(key) {
@@ -346,11 +344,11 @@ impl Bucket {
             // Release all bucket pages to free_list.
             child.nodes.clear();
             child.root_node = None;
-            child.free();
+            // child.free();
         }
 
-        self.buckets.borrow_mut().remove(&key);
-        node.del(key);
+        // self.buckets.borrow_mut().remove(&key);
+        // node.del(key);
 
         Ok(())
     }

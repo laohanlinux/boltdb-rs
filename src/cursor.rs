@@ -232,7 +232,9 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
 
         {
             let mut stack = self.stack.borrow_mut();
+            // clear stack buffer.
             stack.clear();
+            // loader page from bucket's root
             let el_ref = self.bucket().page_node(self.bucket.sub_bucket.root)?;
             stack.push(ElemRef {
                 el: el_ref,

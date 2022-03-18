@@ -36,7 +36,7 @@ pub(crate) struct NodeInner {
 
 impl NodeInner {
     fn is_leaf(&self) -> bool {
-        self.is_leaf.load(Ordering::Release)
+        self.is_leaf.load(Ordering::Acquire)
     }
 }
 
@@ -81,7 +81,7 @@ impl Node {
             if !self.0.unbalanced.load(Ordering::Acquire) {
                 return;
             }
-            self.0.unbalanced.store(false, Ordering::Acquire);
+            self.0.unbalanced.store(false, Ordering::Relaxed);
 
             // updates stats and get threshold
             let threshold = {
