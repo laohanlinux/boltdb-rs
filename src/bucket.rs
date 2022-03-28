@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::intrinsics::copy_nonoverlapping;
 use std::sync::Weak;
+use either::Either;
+use crate::db::DB;
 
 /// The maximum length of a key, in bytes.
 const MAX_KEY_SIZE: u64 = 32768;
@@ -344,7 +346,7 @@ impl Bucket {
             // Release all bucket pages to free_list.
             child.nodes.clear();
             child.root_node = None;
-            // child.free();
+            child.free();
         }
 
         // self.buckets.borrow_mut().remove(&key);
@@ -369,6 +371,62 @@ impl Bucket {
         self.__bucket_mut(key).map(|b| unsafe { &mut *b })
     }
 
+    pub fn free(&mut self) {
+        if self.sub_bucket.root == 0 {
+            return;
+        }
+
+        let tx = self.tx().unwrap();
+        let db = tx.db().unwrap();
+    }
+
+    /// Iterates over every page in a bucket, including inline pages.
+    pub(crate) fn for_each_page<'a>(&self, mut handler: Box<dyn FnMut(&Page, usize) + 'a>) {
+        // If we have an inline page then just use that.
+        if let Some(ref inline_page) = self.page {
+            handler(&inline_page, 0);
+            return;
+        }
+
+        // Otherwise traverse the page hierarchy.
+        // self.tx().unwrap().for_each()
+    }
+    pub(crate) fn for_each_page_node<F>(&self, mut handler: F)
+        where F: FnMut(Either<&Page, &Node>, isize) {
+        // If we have an inline page then just use that.
+        if let Some(ref page) = self.page {
+            handler(Either::Left(page), 0);
+        } else {
+            self.__for_each_page_node(self.sub_bucket.root, 0, &mut handler);
+        }
+    }
+
+    // Pre-Order Traversal
+    fn __for_each_page_node<F>(&self, pgid: PgId, depth: isize, handler: &mut F) where
+        F: FnMut(Either<&Page, &Node>, isize)
+    {
+        let item = self.page_node(pgid).unwrap();
+        handler(item.upgrade(), depth);
+        // Recursively loop over children
+        match item.upgrade() {
+            Either::Left(page) => {
+                if page.is_branch() {
+                    for i in 0..page.count as usize {
+                        let elem = page.branch_page_element(i);
+                        self.__for_each_page_node(elem.pgid, depth + 1, handler);
+                    }
+                }
+            }
+            Either::Right(node) => {
+                if !node.is_leaf() {
+                    for inode in &*node.0.inodes.borrow() {
+                        self.__for_each_page_node(inode.pg_id, depth + 1, handler)
+                    }
+                }
+            }
+        }
+    }
+
     pub fn __bucket(&self, key: &[u8]) -> Option<*const Bucket> {
         if let Some(b) = self.buckets.borrow().get(&key.to_vec()) {
             return Some(b);
@@ -386,7 +444,6 @@ impl Bucket {
 
 #[cfg(test)]
 mod tests {
-
     #[test]
     fn it_works() {}
 }

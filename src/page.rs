@@ -142,6 +142,16 @@ impl Page {
     }
 
     #[inline]
+    pub(crate) fn is_branch(&self) -> bool {
+        matches!(self.flags, BRANCH_PAGE_FLAG)
+    }
+
+    #[inline]
+    pub(crate) fn is_leaf(&self) -> bool {
+        matches!(self.flags, LEAF_PAGE_FLAG)
+    }
+
+    #[inline]
     pub(crate) fn get_data_mut_ptr(&mut self) -> *mut u8 {
         &mut self.ptr as *mut PhantomData<u8> as *mut u8
     }
@@ -382,8 +392,8 @@ impl PgIds {
 
     #[inline]
     pub fn drain<R>(&mut self, range: R) -> Vec<u64>
-    where
-        R: RangeBounds<usize>,
+        where
+            R: RangeBounds<usize>,
     {
         self.inner.drain(range).collect::<Vec<_>>()
     }
@@ -404,7 +414,7 @@ fn t_page_type() {
             flags: BRANCH_PAGE_FLAG,
             ..Default::default()
         }
-        .to_string(),
+            .to_string(),
         "branch"
     );
     assert_eq!(
@@ -412,7 +422,7 @@ fn t_page_type() {
             flags: LEAF_PAGE_FLAG,
             ..Default::default()
         }
-        .to_string(),
+            .to_string(),
         "leaf"
     );
     assert_eq!(
@@ -420,7 +430,7 @@ fn t_page_type() {
             flags: META_PAGE_FLAG,
             ..Default::default()
         }
-        .to_string(),
+            .to_string(),
         "meta"
     );
     assert_eq!(
@@ -428,7 +438,7 @@ fn t_page_type() {
             flags: FREE_LIST_PAGE_FLAG,
             ..Default::default()
         }
-        .to_string(),
+            .to_string(),
         "freelist"
     );
     assert_eq!(
@@ -436,7 +446,7 @@ fn t_page_type() {
             flags: 0x4e20,
             ..Default::default()
         }
-        .to_string(),
+            .to_string(),
         "unknown<4e20>"
     );
 }

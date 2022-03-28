@@ -89,6 +89,7 @@ impl Debug for TxInner {
 pub struct TX(pub(crate) Arc<TxInner>);
 
 unsafe impl Sync for TX {}
+
 unsafe impl Send for TX {}
 
 impl TX {
@@ -367,6 +368,20 @@ impl TX {
         match self.0.db.try_read().unwrap().upgrade() {
             None => false,
             Some(db) => db.opened(),
+        }
+    }
+
+    pub(crate) fn for_each_page(&self, pgid: PgId, depth: usize, mut func: Box<dyn FnMut(&Page, usize)>) {
+        let page = unsafe { &*self.page(pgid).unwrap() };
+        func(page, depth);
+        // Recursively loop over children.
+        if page.is_leaf() {
+            return;
+        }
+        let count = page.count as usize;
+        for i in 0..count {
+            let el = page.branch_page_element(i);
+            self.for_each_page(el.pgid, depth + 1, Box::new(|p, d| func(p, d)));
         }
     }
 
