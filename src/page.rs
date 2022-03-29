@@ -235,8 +235,9 @@ impl Page {
         v
     }
 
-    pub(crate) fn to_owned(&self) -> Self {
-        self.clone()
+    // FIXME
+    pub(crate) fn to_owned(self) -> Self {
+        self
     }
 }
 
@@ -244,6 +245,13 @@ impl Into<Vec<u8>> for Page {
     fn into(self) -> Vec<u8> {
         let ptr = &self as *const Page as *const u8;
         unsafe { from_raw_parts(ptr, self.byte_size()).to_vec() }
+    }
+}
+
+impl From<Vec<u8>> for Page {
+    fn from(vec: Vec<u8>) -> Self {
+        let page = Page::from_slice(&vec);
+        page.to_owned()
     }
 }
 

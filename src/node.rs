@@ -533,7 +533,7 @@ impl Node {
     }
 
     // Adds the node's underlying `page` to the freelist.
-    fn free(&mut self) {
+    pub(crate) fn free(&mut self) {
         // let pgid = self.0.pgid.borrow().clone();
         // if pgid != 0 {
         //     let mut bucket = self.bucket_mut().unwrap();

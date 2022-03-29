@@ -339,6 +339,7 @@ impl Bucket {
                 .ok_or(Error::Unexpected("Can't get bucket"))?;
             let child_buckets = child.buckets();
 
+            // delete children buckets
             for bucket in &child_buckets {
                 child.delete_bucket(bucket)?;
             }
@@ -349,8 +350,8 @@ impl Bucket {
             child.free();
         }
 
-        // self.buckets.borrow_mut().remove(&key);
-        // node.del(key);
+        self.buckets.borrow_mut().remove(key);
+        node.del(key);
 
         Ok(())
     }
@@ -363,12 +364,42 @@ impl Bucket {
             .collect()
     }
 
+    /// Retrieves a nested bucket by name.
+    /// Returns None if the bucket does not exits or found item is not bucket.
     pub fn bucket(&self, key: &[u8]) -> Option<&Bucket> {
         self.__bucket(key).map(|b| unsafe { &*b })
     }
 
+    /// Retrieves a nested mutable bucket by name.
+    /// Returns None if the bucket does not exist or found item is not bucket.
     pub fn bucket_mut(&self, key: &[u8]) -> Option<&mut Bucket> {
         self.__bucket_mut(key).map(|b| unsafe { &mut *b })
+    }
+
+    /// Helper method that re-interprets a sub-bucket value
+    /// from a parent into a Bucket.
+    ///
+    /// value is bytes serialized bucket
+    pub(crate) fn open_bucket(&self, value: Vec<u8>) -> Bucket {
+        let mut child = Bucket::new(self.tx.clone());
+
+        {
+            let b = unsafe { (&*(value.as_ptr() as *const SubBucket)).clone() };
+            child.sub_bucket = b;
+        }
+        // Save reference to the inline page if the bucket is inline.
+        if child.sub_bucket.root == 0 {
+            let data = unsafe {
+                let slice = &value[SubBucket::SIZE..];
+                let mut vec = vec![0u8; slice.len()];
+                copy_nonoverlapping(slice.as_ptr(), vec.as_mut_ptr(), slice.len());
+                vec
+            };
+            let page = Page::from(data);
+            child.page = Some(page);
+        }
+
+        child
     }
 
     pub fn free(&mut self) {
@@ -378,6 +409,14 @@ impl Bucket {
 
         let tx = self.tx().unwrap();
         let db = tx.db().unwrap();
+        self.for_each_page_node(|page, _| match page {
+            Either::Left(page) => {
+                let txid = tx.id();
+                db.0.free_list.write().free(txid, &page);
+            }
+            Either::Right(node) => node.clone().free(),
+        });
+        self.sub_bucket.root = 0;
     }
 
     /// Iterates over every page in a bucket, including inline pages.
@@ -389,8 +428,11 @@ impl Bucket {
         }
 
         // Otherwise traverse the page hierarchy.
-        // self.tx().unwrap().for_each()
+        self.tx().unwrap().for_each_page(self.sub_bucket.root, 0, handler);
     }
+
+    /// Iterates over every page (or node) in a bucket.
+    /// This also includes inline pages.
     pub(crate) fn for_each_page_node<F>(&self, mut handler: F)
         where F: FnMut(Either<&Page, &Node>, isize) {
         // If we have an inline page then just use that.

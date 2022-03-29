@@ -371,7 +371,8 @@ impl TX {
         }
     }
 
-    pub(crate) fn for_each_page(&self, pgid: PgId, depth: usize, mut func: Box<dyn FnMut(&Page, usize)>) {
+    /// Iterates over every page within a given page and page and executes a function.
+    pub(crate) fn for_each_page<'a>(&self, pgid: PgId, depth: usize, mut func: Box<dyn FnMut(&Page, usize) + 'a>) {
         let page = unsafe { &*self.page(pgid).unwrap() };
         func(page, depth);
         // Recursively loop over children.
