@@ -1,6 +1,6 @@
 use crate::bucket::SubBucket;
 use crate::error::Error;
-use crate::error::Error::DBOpFailed;
+use crate::error::Error::{DBOpFailed, Unexpected};
 use crate::error::Result;
 use crate::free_list::FreeList;
 use crate::page::{META_PAGE_FLAG, META_PAGE_SIZE};
@@ -12,17 +12,19 @@ use fs2::FileExt;
 use memmap::Mmap;
 use parking_lot::{MappedMutexGuard, MappedRwLockReadGuard};
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
-use std::fs::{File, Permissions};
+use std::fs::{File, OpenOptions, Permissions};
 use std::hash::Hasher;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Read, Write};
 use std::ops::AddAssign;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::slice::from_raw_parts;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::thread::{sleep, spawn};
 use std::time::Duration;
+use env_logger::init;
+use kv_log_macro::debug;
 
 /// The largest step that can be token when remapping the mman.
 const MAX_MMAP_STEP: u64 = 1 << 30; //1GB
@@ -34,7 +36,7 @@ const VERSION: usize = 2;
 const MAGIC: u32 = 0xED0CDAED;
 
 /// Default values if not set in a `DB` instance.
-const DEFAULT_MAX_BATCH_SIZE: isize = 1000;
+const DEFAULT_MAX_BATCH_SIZE: usize = 1000;
 const DEFAULT_MAX_BATCH_DELAY: Duration = Duration::from_millis(10);
 const DEFAULT_ALLOC_SIZE: isize = 16 * 1024 * 1024;
 
@@ -117,7 +119,82 @@ impl Default for DB {
 }
 
 impl<'a> DB {
-    pub fn open(_path: &'static str, _perm: Permissions) {}
+    pub fn open<P: AsRef<Path>>(path: P, opt: Options) -> Result<DB> {
+        let path = path.as_ref().to_owned();
+        let file = {
+            let mut open_opts = OpenOptions::new();
+            open_opts.read(true);
+            if !opt.read_only {
+                open_opts.write(true).create(true);
+            }
+            open_opts.open(path).map_err(|err| Error::Io(Box::new(err)))?
+        };
+        DB::open_file(file, Some(path), opt)
+    }
+
+    pub fn open_file<P: Into<PathBuf>>(mut file: File, path: Option<P>, opt: Options) -> Result<Self> {
+        let path = path.map(|v| v.into());
+        let needs_initialization = (!std::path::Path::new(path.as_ref().unwrap()).exists())
+            || file.metadata().map_err(|_| "Can't read metadata")?.len() == 0;
+
+        if opt.read_only {
+            file.lock_exclusive().map_err(|err| Unexpected("Cannot lock db file"))?;
+        } else {
+            file.lock_shared().map_err(|err| Unexpected("Cannt lock db file"))?;
+        }
+
+        let page_size = if needs_initialization {
+            page_size::get()
+        } else {
+            let mut buf = vec![0u8; 1000];
+            file.read_exact(&mut buf).map_err(|err| Error::Io(Box::new(err)))?;
+            let page = Page::from_slice(&buf);
+            if !page.is_meta() {
+                return Err(Unexpected("Database format unknown"));
+            }
+            page.meta().page_size as usize
+        };
+        file.allocate(page_size as u64 * 4).map_err(|_| Unexpected("Cannot allocate 4 required pages"))?;
+        // todo! why is page_size len?
+        let mmap = unsafe {
+            memmap::MmapOptions::new().offset(0).len(page_size).map(&file).map_err(|_| Unexpected("Failed to mmap"))?
+        };
+        let mut db: DB = DB(Arc::new(DBInner {
+            check_mode: opt.check_mode,
+            no_sync: false,
+            no_grow_sync: opt.no_grow_sync,
+            max_batch_size: opt.max_batch_size,
+            max_batch_delay: opt.max_batch_delay,
+            auto_remove: opt.auto_remove,
+            alloc_size: 0,
+            path: path.as_ref().unwrap(),
+            file: RwLock::new(BufWriter::new(file)),
+            mmap_size: Default::default(),
+            mmap: RwLock::new(mmap),
+            file_size: Default::default(),
+            page_size,
+            opened: AtomicBool::new(tre),
+            rw_lock: Default::default(),
+            rw_tx: Default::default(),
+            txs: Default::default(),
+            free_list: Default::default(),
+            stats: Default::default(),
+            batch: Default::default(),
+            page_pool: Default::default(),
+            read_only: opt.read_only,
+        }));
+
+        if needs_initialization {
+            db.init()?;
+        }
+        db.mmap(opt.initial_mmap_size as u64)?;
+        {
+            let free_list_id = db.meta().free_list;
+            db.mmap((free_list_id+1) * db.0.page_size as u64)?;
+
+        }
+        Ok(db)
+    }
 
     /// Return the path to currently open database file.
     pub fn path(&self) -> &'static str {
@@ -615,6 +692,107 @@ pub struct Info {
     /// pointer to data
     pub data: *const u8,
     pub page_size: i64,
+}
+
+pub struct DBBuilder {
+    path: PathBuf,
+    no_grow_sync: bool,
+    read_only: bool,
+    initial_mmap_size: usize,
+    auto_remove: bool,
+    check_mode: CheckMode,
+    max_batch_delay: Duration,
+    max_batch_size: usize,
+}
+
+impl DBBuilder {
+    pub fn new<P: AsRef<Path>>(path: P) -> Self {
+        Self {
+            path: path.as_ref().to_owned(),
+            no_grow_sync: false,
+            read_only: false,
+            initial_mmap_size: 0,
+            auto_remove: false,
+            check_mode: CheckMode::NO,
+            max_batch_delay: DEFAULT_MAX_BATCH_DELAY,
+            max_batch_size: DEFAULT_MAX_BATCH_SIZE,
+        }
+    }
+
+    pub fn set_path<P: AsRef<Path>>(mut self, path: P) -> Self {
+        self.path = path.as_ref().to_owned();
+        self
+    }
+
+    pub fn set_no_grow_sync(mut self, no_grow_sync: bool) -> Self {
+        self.no_grow_sync = no_grow_sync;
+        Self
+    }
+
+    pub fn set_read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    /// Initial mmap size of the database
+    ///
+    /// in bytes. Read transactions won't block write transaction
+    ///
+    /// If = 0, the initial map size is size of first 4 pages.
+    /// If initial_mmap_size is smaller than the previous database size,
+    /// it takes no effect.
+    ///
+    /// Default: 0 (mmap will be equal to 4 page sizes)
+    pub fn set_initial_mmap_size(mut self, mmap_size: usize) -> Self {
+        self.initial_mmap_size = mmap_size;
+        self
+    }
+
+    /// Defines wether db file will be removed after db close
+    ///
+    /// Default: false
+    pub fn set_auto_remove(mut self, auto_remove: bool) -> Self {
+        self.auto_remove = auto_remove;
+        self
+    }
+
+    pub fn set_check_mode(mut self, check_mode: CheckMode) -> Self {
+        self.check_mode = check_mode;
+        self
+    }
+
+    pub fn set_batch_delay(mut self, batch_delay: Duration) -> Self {
+        self.max_batch_delay = batch_delay;
+        self
+    }
+
+    pub fn set_batch_size(mut self, batch_size: usize) -> Self {
+        self.max_batch_size = batch_size;
+        self
+    }
+
+    pub fn build(self) -> Result<DB> {
+        let opt = Options {
+            no_grow_sync: self.no_grow_sync,
+            read_only: self.read_only,
+            initial_mmap_size: self.initial_mmap_size,
+            auto_remove: self.auto_remove,
+            check_mode: self.check_mode,
+            max_batch_delay: self.max_batch_delay,
+            max_batch_size: self.max_batch_size,
+        };
+        DB::open(self.path, opt)
+    }
+}
+
+struct Options {
+    no_grow_sync: bool,
+    read_only: bool,
+    initial_mmap_size: usize,
+    auto_remove: bool,
+    check_mode: CheckMode,
+    max_batch_delay: Duration,
+    max_batch_size: usize,
 }
 
 #[cfg(test)]

@@ -18,6 +18,7 @@ pub mod os;
 pub mod page;
 pub mod tx;
 pub mod cursor;
+mod test_util;
 
 pub(crate) use bucket::Bucket;
 pub use page::{Page, PageInfo, PgId, PgIds};

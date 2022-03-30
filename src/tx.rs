@@ -524,7 +524,9 @@ mod tests {
     }
 
     #[test]
-    fn commit_entry() {}
+    fn commit_entry() {
+
+    }
 
     #[test]
     fn test_tx_commit_err_tx_closed() {}

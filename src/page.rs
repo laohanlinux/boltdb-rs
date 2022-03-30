@@ -151,6 +151,10 @@ impl Page {
         matches!(self.flags, LEAF_PAGE_FLAG)
     }
 
+    pub(crate) fn is_meta(&self) -> bool {
+        matches!(self.flags, META_PAGE_FLAG)
+    }
+
     #[inline]
     pub(crate) fn get_data_mut_ptr(&mut self) -> *mut u8 {
         &mut self.ptr as *mut PhantomData<u8> as *mut u8
