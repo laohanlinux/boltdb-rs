@@ -372,7 +372,12 @@ impl TX {
     }
 
     /// Iterates over every page within a given page and page and executes a function.
-    pub(crate) fn for_each_page<'a>(&self, pgid: PgId, depth: usize, mut func: Box<dyn FnMut(&Page, usize) + 'a>) {
+    pub(crate) fn for_each_page<'a>(
+        &self,
+        pgid: PgId,
+        depth: usize,
+        mut func: Box<dyn FnMut(&Page, usize) + 'a>,
+    ) {
         let page = unsafe { &*self.page(pgid).unwrap() };
         func(page, depth);
         // Recursively loop over children.
@@ -448,8 +453,79 @@ impl WeakTx {
     }
 }
 
+pub(crate) struct TxBuilder {
+    db: WeakDB,
+    writable: bool,
+    check: bool,
+}
+
+impl TxBuilder {
+    pub(crate) fn new() -> Self {
+        Self {
+            db: WeakDB::new(),
+            writable: false,
+            check: false,
+        }
+    }
+
+    pub(crate) fn set_db(mut self, db: WeakDB) -> Self {
+        self.db = db;
+        self
+    }
+
+    pub(crate) fn set_writable(mut self, writable: bool) -> Self {
+        self.writable = writable;
+        self
+    }
+
+    pub(crate) fn set_check(mut self, check: bool) -> Self {
+        self.check = check;
+        self
+    }
+
+    pub fn builder(self) -> TX {
+        let mut meta = match self.db.upgrade() {
+            None => Meta::default(),
+            Some(db) => db.meta(),
+        };
+        if self.writable {
+            meta.tx_id += 1;
+        }
+        let tx = TX(Arc::new(TxInner {
+            writeable: self.writable,
+            managed: Default::default(),
+            check: AtomicBool::new(self.check),
+            db: RwLock::new(self.db),
+            meta: RwLock::new(meta),
+            root: RwLock::new(Bucket::new(WeakTx::new())),
+            pages: Default::default(),
+            stats: Default::default(),
+            commit_handlers: Default::default(),
+            write_flag: 0,
+        }));
+        {
+            let mut bucket = tx.0.root.write();
+            bucket.tx = WeakTx::from(&tx);
+            bucket.local_bucket = tx.0.meta.try_read().unwrap().root.clone();
+        }
+        tx
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::tx::{TxBuilder, TxInner, TX};
+    use std::sync::Arc;
+
+    fn tx_mock() -> TX {
+        let tx = TxBuilder::new().set_writable(true).builder();
+        tx.0.meta.write().pg_id = 1;
+        tx
+    }
+
+    #[test]
+    fn commit_entry() {}
+
     #[test]
     fn test_tx_commit_err_tx_closed() {}
 

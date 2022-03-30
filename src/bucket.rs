@@ -1,21 +1,22 @@
 use crate::cursor::{Cursor, PageNode};
+use crate::db::{Stats, DB};
 use crate::error::{Error, Result};
 use crate::node::{Node, NodeBuilder, WeakNode};
 use crate::page::BUCKET_LEAF_FLAG;
 use crate::tx::{WeakTx, TX};
 use crate::{Page, PgId};
+use either::Either;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::intrinsics::copy_nonoverlapping;
 use std::sync::Weak;
-use either::Either;
-use crate::db::DB;
+use test::RunIgnored::No;
 
 /// The maximum length of a key, in bytes.
-const MAX_KEY_SIZE: u64 = 32768;
+const MAX_KEY_SIZE: usize = 32768;
 /// The maximum length of a value, in bytes.
-const MAX_VALUE_SIZE: u64 = (1 << 31) - 2;
+const MAX_VALUE_SIZE: usize = (1 << 31) - 2;
 
 const MAX_UINT: u64 = 0;
 const MIN_UINT: u64 = 0;
@@ -54,7 +55,7 @@ impl SubBucket {
 
 /// Bucket represents a collection of key/value pairs inside the database.
 pub struct Bucket {
-    pub(crate) sub_bucket: SubBucket,
+    pub(crate) local_bucket: SubBucket,
     // the associated transaction, WeakTx
     pub(crate) tx: WeakTx,
     // subbucket cache
@@ -77,7 +78,7 @@ impl Debug for Bucket {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         // let tx = self.tx();
         f.debug_struct("Bucket")
-            .field("bucket", &self.sub_bucket)
+            .field("bucket", &self.local_bucket)
             // .field("tx", &tx)
             .field("buckets", &self.buckets)
             .field("page", &self.page.as_ref())
@@ -97,9 +98,9 @@ impl PartialEq for Bucket {
 impl Eq for Bucket {}
 
 impl Bucket {
-    fn new(tx: WeakTx) -> Self {
+    pub(crate) fn new(tx: WeakTx) -> Self {
         Bucket {
-            sub_bucket: Default::default(),
+            local_bucket: Default::default(),
             tx,
             buckets: RefCell::new(Default::default()),
             page: None,
@@ -116,7 +117,7 @@ impl Bucket {
 
     /// Returns the root of the bucket.
     pub(crate) fn root(&self) -> PgId {
-        self.sub_bucket.root
+        self.local_bucket.root
     }
 
     fn root_node(&self) -> Option<Node> {
@@ -147,7 +148,7 @@ impl Bucket {
 
         // write a bucket header.
         let bucket_ptr = value.as_mut_ptr() as *mut SubBucket;
-        unsafe { copy_nonoverlapping(&self.sub_bucket, bucket_ptr, 1) };
+        unsafe { copy_nonoverlapping(&self.local_bucket, bucket_ptr, 1) };
 
         // Convert byte slice to a fake page and write the root node.
         {
@@ -206,7 +207,7 @@ impl Bucket {
     pub(crate) fn page_node(&self, id: PgId) -> Result<PageNode> {
         // Inline buckets have fake page embedded in their value so treat them
         // differently. We'll return the rootNode (if available) or the fake page.
-        if self.sub_bucket.root == 0 {
+        if self.local_bucket.root == 0 {
             if id != 0 {
                 return Err(Error::Unexpected("inline bucket no-zero page access"));
             }
@@ -376,6 +377,93 @@ impl Bucket {
         self.__bucket_mut(key).map(|b| unsafe { &mut *b })
     }
 
+    /// Retrieves the value for a key in the bucket.
+    /// Returns None if the key does not exist of if the key is a nested bucket.
+    pub fn get(&self, key: &[u8]) -> Option<&[u8]> {
+        let (ckey, value, flag) = self.cursor().unwrap().seek(key).unwrap().unwrap();
+        if flag & BUCKET_LEAF_FLAG != 0 {
+            return None;
+        }
+        // If our target node isn't the same key as what's passed in then return nil.
+        if ckey != Some(key) {
+            return None;
+        }
+        value
+    }
+
+    /// Sets the value for a key in the bucket.
+    /// If the key already exists then its previous value will be overwritten.
+    /// Returns an error if the bucket was created from a read-only transaction, if the key is blank,
+    /// if the key is too large, or if the value is too large.
+    pub fn put(&mut self, key: &[u8], value: Vec<u8>) -> Result<()> {
+        if !self.tx()?.opened() {
+            return Err(Error::TxClosed);
+        }
+        if !self.tx()?.writable() {
+            return Err(Error::TxReadOnly);
+        }
+        if key.is_empty() {
+            return Err(Error::EmptyKey);
+        }
+        if key.len() > MAX_KEY_SIZE {
+            return Err(Error::KeyTooLarge);
+        }
+        if value.len() > MAX_VALUE_SIZE {
+            return Err(Error::ValueTooLarge);
+        }
+        let mut c = self.cursor()?;
+        let item = c.seek(key)?;
+        if (Some(key) == item.key) && item.is_bucket() {
+            return Err(Error::IncompatibleValue);
+        }
+        c.node().unwrap().put(key, key, value, 0, 0);
+        Ok(())
+    }
+
+    /// Removes a key from the bucket.
+    /// If the key does not exist then nothing is done.
+    /// Returns the error if the bucket was created from a read-only transaction.
+    pub fn delete(&mut self, key: &[u8]) -> Result<()> {
+        if self.tx()?.db().is_err() {
+            return Err(Error::TxClosed);
+        }
+        if !self.tx()?.writable() {
+            return Err(Error::TxReadOnly);
+        }
+        let mut c = self.cursor()?;
+        let item = c.seek(key)?;
+        c.node().unwrap().del(key);
+        Ok(())
+    }
+
+    /// Returns the current integer for the bucket without incrementing it.
+    pub fn sequence(&self) -> u64 {
+        self.local_bucket.sequence
+    }
+
+    pub fn next_sequence(&mut self) -> Result<u64> {
+        if !self.tx()?.writable() {
+            return Err(Error::TxReadOnly);
+        }
+        if self.root_node.is_none() {
+            self.node(self.root(), WeakNode::new());
+        }
+
+        self.local_bucket.sequence += 1;
+        Ok(self.local_bucket.sequence)
+    }
+
+    pub fn set_sequence(&mut self, seq: u64) -> Result<()> {
+        if !self.tx()?.writable() {
+            return Err(Error::TxReadOnly);
+        }
+        if self.root_node.is_none() {
+            let pgid = self.root();
+            self.node(pgid, WeakNode::new());
+        }
+        self.local_bucket.sequence = seq;
+        Ok(())
+    }
     /// Helper method that re-interprets a sub-bucket value
     /// from a parent into a Bucket.
     ///
@@ -385,10 +473,10 @@ impl Bucket {
 
         {
             let b = unsafe { (&*(value.as_ptr() as *const SubBucket)).clone() };
-            child.sub_bucket = b;
+            child.local_bucket = b;
         }
         // Save reference to the inline page if the bucket is inline.
-        if child.sub_bucket.root == 0 {
+        if child.local_bucket.root == 0 {
             let data = unsafe {
                 let slice = &value[SubBucket::SIZE..];
                 let mut vec = vec![0u8; slice.len()];
@@ -402,8 +490,31 @@ impl Bucket {
         child
     }
 
+    /// Executions a function for each key/value pair in a bucket.
+    /// If the provided function returns an error the the interaction is stopped and
+    /// the error is returned to the caller.
+    pub fn for_each(
+        &self,
+        mut handler: impl FnMut(&[u8], Option<&[u8]>) -> Result<()>,
+    ) -> Result<()> {
+        if !self.tx()?.opened() {
+            return Err(Error::TxClosed);
+        }
+        let c = self.cursor()?;
+        let mut item = c.first()?;
+        loop {
+            if item.is_none() {
+                break;
+            }
+            handler(item.key.unwrap(), item.value)?;
+            item = c.next()?;
+        }
+
+        Ok(())
+    }
+
     pub fn free(&mut self) {
-        if self.sub_bucket.root == 0 {
+        if self.local_bucket.root == 0 {
             return;
         }
 
@@ -416,7 +527,16 @@ impl Bucket {
             }
             Either::Right(node) => node.clone().free(),
         });
-        self.sub_bucket.root = 0;
+        self.local_bucket.root = 0;
+    }
+
+    /// Returns stats on a bucket.
+    /// todo
+    pub fn stats(&self) -> Stats {
+        let mut stats = Stats::default();
+        let mut sub_stats = Stats::default();
+        let page_size = self.tx().unwrap().db().unwrap().page_size();
+        stats
     }
 
     /// Iterates over every page in a bucket, including inline pages.
@@ -428,24 +548,29 @@ impl Bucket {
         }
 
         // Otherwise traverse the page hierarchy.
-        self.tx().unwrap().for_each_page(self.sub_bucket.root, 0, handler);
+        self.tx()
+            .unwrap()
+            .for_each_page(self.local_bucket.root, 0, handler);
     }
 
     /// Iterates over every page (or node) in a bucket.
     /// This also includes inline pages.
     pub(crate) fn for_each_page_node<F>(&self, mut handler: F)
-        where F: FnMut(Either<&Page, &Node>, isize) {
+    where
+        F: FnMut(Either<&Page, &Node>, isize),
+    {
         // If we have an inline page then just use that.
         if let Some(ref page) = self.page {
             handler(Either::Left(page), 0);
         } else {
-            self.__for_each_page_node(self.sub_bucket.root, 0, &mut handler);
+            self.__for_each_page_node(self.local_bucket.root, 0, &mut handler);
         }
     }
 
     // Pre-Order Traversal
-    fn __for_each_page_node<F>(&self, pgid: PgId, depth: isize, handler: &mut F) where
-        F: FnMut(Either<&Page, &Node>, isize)
+    fn __for_each_page_node<F>(&self, pgid: PgId, depth: isize, handler: &mut F)
+    where
+        F: FnMut(Either<&Page, &Node>, isize),
     {
         let item = self.page_node(pgid).unwrap();
         handler(item.upgrade(), depth);

@@ -235,7 +235,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             // clear stack buffer.
             stack.clear();
             // loader page from bucket's root
-            let el_ref = self.bucket().page_node(self.bucket.sub_bucket.root)?;
+            let el_ref = self.bucket().page_node(self.bucket.local_bucket.root)?;
             stack.push(ElemRef {
                 el: el_ref,
                 index: 0,
@@ -296,7 +296,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             let mut stack = self.stack.borrow_mut();
             stack.clear();
 
-            let el_ref = self.bucket.page_node(self.bucket().sub_bucket.root)?;
+            let el_ref = self.bucket.page_node(self.bucket().local_bucket.root)?;
             let mut el_ref = ElemRef {
                 el: el_ref,
                 index: 0,
@@ -473,7 +473,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         }
 
         self.stack.borrow_mut().clear();
-        self.search(seek, self.bucket().sub_bucket.root)?;
+        self.search(seek, self.bucket().local_bucket.root)?;
         {
             let stack = self.stack.borrow();
             let el_ref = stack.last().ok_or(Error::Unexpected("stack empty"))?;

@@ -381,9 +381,12 @@ impl<'a> DB {
 
 impl Drop for DB {
     fn drop(&mut self) {
-        if Arc::strong_count(&self.0) > 1 {
+        let strong_count = Arc::strong_count(&self.0);
+        if strong_count > 1 {
+            debug!("db strong ref count {}", strong_count);
             return;
         }
+        self.cleanup().unwrap();
     }
 }
 
@@ -410,7 +413,7 @@ pub struct Meta {
     version: u32,
     page_size: u32,
     flags: u32,
-    root: SubBucket,
+    pub(crate) root: SubBucket,
     free_list: PgId,
     pub(crate) pg_id: PgId,
     pub(crate) tx_id: TxId,
@@ -470,7 +473,7 @@ impl Meta {
 }
 
 // Represents statistics about the database.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Stats {
     // FreeList stats.
     // total number of free pages on the freelist.

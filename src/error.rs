@@ -10,6 +10,10 @@ pub enum Error {
     Io(#[source] Box<io::Error>),
     #[error("Empty key")]
     EmptyKey,
+    #[error("Key too large")]
+    KeyTooLarge,
+    #[error("Value too large")]
+    ValueTooLarge,
     #[error("{0}")]
     OperatorFailed(String),
     #[error("Put failed: {0}")]
