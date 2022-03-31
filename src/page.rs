@@ -44,6 +44,10 @@ impl Page {
         unsafe { &*(self.get_data_ptr() as *const Meta) }
     }
 
+    pub fn meta_mut(&mut self) -> &mut Meta {
+        unsafe { &mut *(self.get_data_ptr() as *mut Meta) }
+    }
+
     // Retrieves the leaf node by index.
     pub(crate) fn leaf_page_element(&self, index: usize) -> &LeafPageElement {
         &self.leaf_page_elements()[index]

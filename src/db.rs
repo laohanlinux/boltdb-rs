@@ -3,7 +3,7 @@ use crate::error::Error;
 use crate::error::Error::{DBOpFailed, Unexpected};
 use crate::error::Result;
 use crate::free_list::FreeList;
-use crate::page::{META_PAGE_FLAG, META_PAGE_SIZE};
+use crate::page::{FREE_LIST_PAGE_FLAG, LEAF_PAGE_FLAG, META_PAGE_FLAG, META_PAGE_SIZE};
 use crate::tx::TX;
 use crate::{Bucket, Page, PgId, TxId};
 use bitflags::bitflags;
@@ -14,7 +14,7 @@ use parking_lot::{MappedMutexGuard, MappedRwLockReadGuard};
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use std::fs::{File, OpenOptions, Permissions};
 use std::hash::Hasher;
-use std::io::{BufWriter, Read, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::ops::AddAssign;
 use std::path::{Path, PathBuf};
 use std::slice::from_raw_parts;
@@ -25,6 +25,7 @@ use std::thread::{sleep, spawn};
 use std::time::Duration;
 use env_logger::init;
 use kv_log_macro::debug;
+use parking_lot::lock_api::{RawMutex, RawRwLock};
 
 /// The largest step that can be token when remapping the mman.
 const MAX_MMAP_STEP: u64 = 1 << 30; //1GB
@@ -82,6 +83,7 @@ pub(crate) struct DBInner {
     pub(crate) page_size: usize,
     opened: AtomicBool,
     pub(crate) rw_lock: Mutex<()>,
+    // Only one write transaction
     pub(crate) rw_tx: RwLock<Option<TX>>,
     pub(crate) txs: RwLock<Vec<TX>>,
     pub(crate) free_list: RwLock<FreeList>,
@@ -127,7 +129,7 @@ impl<'a> DB {
             if !opt.read_only {
                 open_opts.write(true).create(true);
             }
-            open_opts.open(path).map_err(|err| Error::Io(Box::new(err)))?
+            open_opts.open(path.clone()).map_err(|err| Error::Io(Box::new(err)))?
         };
         DB::open_file(file, Some(path), opt)
     }
@@ -190,8 +192,9 @@ impl<'a> DB {
         db.mmap(opt.initial_mmap_size as u64)?;
         {
             let free_list_id = db.meta().free_list;
-            db.mmap((free_list_id+1) * db.0.page_size as u64)?;
-
+            db.mmap((free_list_id + 1) * db.0.page_size as u64)?;
+            let freelist_page = db.page(free_list_id);
+            db.0.free_list.try_write().unwrap().read(&freelist_page);
         }
         Ok(db)
     }
@@ -206,8 +209,48 @@ impl<'a> DB {
         self.0.opened.load(Ordering::Acquire)
     }
 
-    pub(crate) fn remove_tx(&self) -> Result<TX> {
-        todo!()
+    pub(crate) fn remove_tx(&self, tx: &TX) -> Result<TX> {
+        if tx.writable() {
+            let (free_list_n, free_list_pending_n, free_list_alloc) = {
+                let free_list = self.0.free_list.try_read().unwrap();
+                (free_list.free_count(), free_list.pending_count(), free_list.size())
+            };
+
+            let tx = {
+                // Only One write tx
+                let mut db_tx = self.0.rw_tx.write();
+                if db_tx.is_none() {
+                    return Err(Unexpected("No write transaction exists"));
+                }
+                if !Arc::ptr_eq(&tx.0, &db_tx.as_ref().unwrap().0) {
+                    return Err(Unexpected("Trying to remove unowned transaction"));
+                }
+                db_tx.take().unwrap()
+            };
+
+            unsafe {
+                self.0.rw_lock.raw().unlock();
+            }
+            let mut stats = self.0.stats.write();
+            stats.free_page_n = free_list_n;
+            stats.pending_page_n = free_list_pending_n;
+            stats.free_alloc = free_list_alloc;
+            Ok(tx)
+        } else {
+            let mut txs = self.0.txs.try_write_for(Duration::from_secs(10)).unwrap();
+            let index = txs.iter().position(|db_tx| Arc::ptr_eq(&tx.0, &db_tx.0));
+            debug_assert!(index.is_some(), "trying to remove nonexistent tx");
+            let index = index.unwrap();
+            let tx = txs.remove(index);
+            unsafe {
+                // todo!
+                self.0.mmap.raw().unlock_shared();
+            }
+
+            let mut stats = self.0.stats.write();
+            stats.open_tx_n = txs.len();
+            Ok(tx)
+        }
     }
 
     pub(crate) fn sync(&mut self) -> Result<()> {
@@ -381,6 +424,43 @@ impl<'a> DB {
         Ok(())
     }
 
+    fn init(&mut self) -> Result<()> {
+        // allocate 4 page, meta0, meta1, freelist, root-page
+        let mut buf = vec![0u8; self.0.page_size * 4];
+        (0..=1).for_each(|i| {
+            let mut p = self.page_in_buffer(&mut buf, i);
+            p.id = i;
+            p.flags = META_PAGE_FLAG;
+            let m = p.meta_mut();
+            m.magic = MAGIC;
+            m.version = VERSION as u32;
+            m.page_size = self.0.page_size as u32;
+            m.free_list = 2;
+            m.root = SubBucket { root: 3, sequence: 0 };
+            m.pg_id = 4;
+            m.tx_id = i;
+            m.check_sum = m.sum64();
+        });
+
+        let mut page = self.page_in_buffer(&mut buf, 2);
+        page.id = 2;
+        page.flags = FREE_LIST_PAGE_FLAG;
+
+        let mut page = self.page_in_buffer(&mut buf, 3);
+        page.id = 3;
+        page.flags = LEAF_PAGE_FLAG;
+        self.write_at(0, std::io::Cursor::new(&mut buf));
+        self.sync()?;
+        Ok(())
+    }
+
+    fn write_at<T: Read>(&mut self, pos: u64, mut buf: T) -> Result<()> {
+        let mut file = self.0.file.write();
+        file.seek(SeekFrom::Start(pos)).map_err(|_| Unexpected("Can't seek to position"))?;
+        std::io::copy(&mut buf, &mut *file).map_err(|_| Unexpected("Can't write buffer"))?;
+        Ok(())
+    }
+
     fn mmap_size(&self, mut size: u64) -> Result<u64> {
         // Double the size from 32KB until 1GB
         for i in 15..=30 {
@@ -492,6 +572,7 @@ pub struct Meta {
     flags: u32,
     pub(crate) root: SubBucket,
     free_list: PgId,
+    // pg_id high watermark
     pub(crate) pg_id: PgId,
     pub(crate) tx_id: TxId,
     check_sum: u64,
@@ -554,18 +635,18 @@ impl Meta {
 pub struct Stats {
     // FreeList stats.
     // total number of free pages on the freelist.
-    pending_page_n: u64,
+    pending_page_n: usize,
     // total number of pending pages on the freelist.
-    free_alloc: u64,
+    free_alloc: usize,
     // total bytes allocated in free pages.
     free_list_inuse: u64,
     // total bytes used by the freelist.
-    free_page_n: u64,
+    free_page_n: usize,
     // Transaction stats
     // total number of started read transactions.
     tx_n: u64,
     // number of currently open read transactions.
-    open_tx_n: u64,
+    open_tx_n: usize,
 }
 
 /// Transaction statistics

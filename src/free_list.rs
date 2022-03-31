@@ -23,7 +23,7 @@ impl FreeList {
 
     /// Returns the `size` of the `page` after serialization.
     #[inline]
-    fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         let mut n = self.count();
         if n >= 0xFFFF {
             // The first element will be used to store the count. See free_list.write.
@@ -39,12 +39,12 @@ impl FreeList {
     }
 
     // Returns `count` of free pages
-    fn free_count(&self) -> usize {
+    pub(crate) fn free_count(&self) -> usize {
         self.ids.len()
     }
 
     // Returns `count` of `pending pages`
-    fn pending_count(&self) -> usize {
+    pub(crate) fn pending_count(&self) -> usize {
         self.pending
             .iter()
             .fold(0, |acc, (_, pg_ids)| acc + pg_ids.len())
@@ -138,7 +138,7 @@ impl FreeList {
     }
 
     // Read initializes the free list from a freelist page.
-    fn read(&mut self, page: &Page) {
+    pub(crate) fn read(&mut self, page: &Page) {
         // If the page.count is at the max uint16 value(64k) then it's considered
         // an overflow and the size of the free list is stored as the first element.
         let mut idx = 0;
