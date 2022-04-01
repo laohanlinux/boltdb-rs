@@ -12,6 +12,8 @@ use std::fmt::{Debug, Formatter};
 use std::fs::OpenOptions;
 use std::hash::Hash;
 use std::io::Write;
+use std::marker::PhantomData;
+use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Weak};
 use std::thread::spawn;
@@ -483,7 +485,7 @@ impl TxBuilder {
         self
     }
 
-    pub fn builder(self) -> TX {
+    pub fn build(self) -> TX {
         let mut meta = match self.db.upgrade() {
             None => Meta::default(),
             Some(db) => db.meta(),
@@ -512,6 +514,50 @@ impl TxBuilder {
     }
 }
 
+/// Guard returned by DB.begin_tx()
+///
+/// Statically guards against outliving db
+/// and prevents from making mutable actions.
+///
+/// Implements Deref to Tx
+pub struct TxGuard<'a> {
+    pub(crate) tx: Tx,
+    pub(crate) db: PhantomData<&'a DB>,
+}
+
+impl<'a> Deref for TxGuard {
+    type Target = TX;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.tx
+    }
+}
+
+/// Guard returned by DB.begin_rw_tx()
+///
+/// Statically guards against multiple mutable db borrows.
+///
+/// Implements Deref and DerefMut to Tx
+pub struct RWTxGuard<'a> {
+    pub(crate) tx: TX,
+    pub(crate) db: PhantomData<&'a mut DB>,
+}
+
+impl<'a> Deref for RWTxGuard {
+    type Target = TX;
+
+    fn deref(&self) -> &Self::Target {
+        &self.tx
+    }
+}
+
+impl<'a> DerefMut for RWTxGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.tx
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::tx::{TxBuilder, TxInner, TX};
@@ -524,9 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_entry() {
-
-    }
+    fn commit_entry() {}
 
     #[test]
     fn test_tx_commit_err_tx_closed() {}

@@ -4,7 +4,7 @@ use crate::error::Error::{DBOpFailed, Unexpected};
 use crate::error::Result;
 use crate::free_list::FreeList;
 use crate::page::{FREE_LIST_PAGE_FLAG, LEAF_PAGE_FLAG, META_PAGE_FLAG, META_PAGE_SIZE};
-use crate::tx::TX;
+use crate::tx::{TX, TxBuilder, TxGuard};
 use crate::{Bucket, Page, PgId, TxId};
 use bitflags::bitflags;
 use fnv::FnvHasher;
@@ -207,6 +207,47 @@ impl<'a> DB {
     #[inline(always)]
     pub fn opened(&self) -> bool {
         self.0.opened.load(Ordering::Acquire)
+    }
+
+    /// Starts a new transaction.
+    /// Multiple read-only transactions can be used concurrently but only one
+    /// write transaction can be used at a time.
+    ///
+    /// Transaction should be not dependent on one another.
+    ///
+    /// If a long running read transaction (for example, a snapshot transaction) is
+    /// needed, you might want to set DBBuilder.initial_mmap_size to a large enough value
+    /// to avoid potential blocking of write transaction.
+    pub fn begin_tx(&self) -> Result<TxGuard> {
+        if !self.opened() {
+            return Err(Error::DatabaseGone);
+        }
+        unsafe {
+            self.0.mmap.raw().lock_shared();
+        }
+
+        let tx = TxBuilder::new().set_db(WeakDB::from(self))
+            .set_writable(false)
+            .set_check(self.0.check_mode.contains(CheckMode::READ))
+            .build();
+
+        let txs_len = {
+            let mut txs = self.0.txs.write();
+            txs.push(tx.clone());
+            txs.len()
+            // free txs lock
+        };
+
+        {
+            let mut stats = self.0.stats.write();
+            stats.tx_n += 1;
+            stats.open_tx_n = txs_len;
+        }
+
+        Ok(TxGuard {
+            tx,
+            db: std::marker::PhantomData,
+        })
     }
 
     pub(crate) fn remove_tx(&self, tx: &TX) -> Result<TX> {
@@ -532,6 +573,13 @@ impl<'a> DB {
     }
 
     fn cleanup(&mut self) -> Result<()> {
+        if !self.0.opened.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if self.0.check_mode.contains(CheckMode::CLOSE) {
+            let strict = self.0.check_mode.contains(CheckMode::STRICT);
+            let tx = self.begin_tx()?;
+        }
         Ok(())
     }
 }
