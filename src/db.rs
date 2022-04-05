@@ -4,7 +4,7 @@ use crate::error::Error::{DBOpFailed, Unexpected};
 use crate::error::Result;
 use crate::free_list::FreeList;
 use crate::page::{FREE_LIST_PAGE_FLAG, LEAF_PAGE_FLAG, META_PAGE_FLAG, META_PAGE_SIZE};
-use crate::tx::{TX, TxBuilder, TxGuard};
+use crate::tx::{RWTxGuard, TX, TxBuilder, TxGuard};
 use crate::{Bucket, Page, PgId, TxId};
 use bitflags::bitflags;
 use fnv::FnvHasher;
@@ -245,6 +245,50 @@ impl<'a> DB {
         }
 
         Ok(TxGuard {
+            tx,
+            db: std::marker::PhantomData,
+        })
+    }
+
+
+    /// Starts a new writable transaction.
+    /// Multiple read-only transactions can be used concurrently but only one
+    /// write transaction can be used at a time.
+    ///
+    /// Transaction should not be dependent on one another.
+    ///
+    /// If a long running read transaction (for example, a snapshot transaction) is
+    /// needed, you might want to set DBBuilder.init_mmap_size to a large enough value
+    /// to avoid potential blocking of write transasction.
+    pub fn begin_rw_tx(&mut self) -> Result<RWTxGuard> {
+        if self.read_only() {
+            return Err(Error::DatabaseOnlyRead);
+        }
+        if !self.opened() {
+            return Err(Error::DatabaseGone);
+        }
+
+        unsafe {
+            self.0.rw_lock.raw().lock();
+        }
+
+        let mut rw_tx = self.0.rw_tx.write();
+        let minid = {
+            let txs = self.0.txs.read();
+            txs.iter().map(|tx| tx.id()).min().unwrap_or(0xFFFF_FFFF_FFFF_FFFF)
+        };
+
+        let tx = TxBuilder::new().set_db(WeakDB::from(self)).set_writable(true).set_check(self.0.check_mode.contains(CheckMode::WRITE))
+            .build();
+        *rw_tx = Some(tx.clone());
+        drop(rw_tx);
+
+        // Free any pages associated with closed read-only transactions.
+        if minid > 0 {
+            self.0.free_list.try_write().unwrap().release(minid - 1);
+        }
+
+        Ok(RWTxGuard {
             tx,
             db: std::marker::PhantomData,
         })
