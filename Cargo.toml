@@ -24,3 +24,4 @@ kv-log-macro = "1.0.7"
 [dev-dependencies]
 rand = "0.8.4"
 env_logger = "0.9.0"
+temp-file = "0.1.7"

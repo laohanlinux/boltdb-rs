@@ -58,6 +58,7 @@ dependencies = [
  "page_size",
  "parking_lot",
  "rand",
+ "temp-file",
  "thiserror",
 ]
 
@@ -363,6 +364,12 @@ dependencies = [
  "quote",
  "unicode-xid",
 ]
+
+[[package]]
+name = "temp-file"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4479870ee948e4c5c3fc4774b46aa73eedf97d84503a9b90922c1bb19a73a8d"
 
 [[package]]
 name = "termcolor"

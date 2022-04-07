@@ -262,7 +262,7 @@ impl TX {
     /// Closes transaction (so subsequent user of it will resolve in error)
     pub(crate) fn close(&self) -> Result<()> {
         let mut db = self.db()?;
-        let tx = db.remove_tx()?;
+        let tx = db.remove_tx(self)?;
         tx.0.root.try_write().unwrap().clear();
         tx.0.pages.try_write().unwrap().clear();
         Ok(())
@@ -521,11 +521,11 @@ impl TxBuilder {
 ///
 /// Implements Deref to Tx
 pub struct TxGuard<'a> {
-    pub(crate) tx: Tx,
+    pub(crate) tx: TX,
     pub(crate) db: PhantomData<&'a DB>,
 }
 
-impl<'a> Deref for TxGuard {
+impl<'a> Deref for TxGuard<'a> {
     type Target = TX;
 
     #[inline]
@@ -544,7 +544,7 @@ pub struct RWTxGuard<'a> {
     pub(crate) db: PhantomData<&'a mut DB>,
 }
 
-impl<'a> Deref for RWTxGuard {
+impl<'a> Deref for RWTxGuard<'a> {
     type Target = TX;
 
     fn deref(&self) -> &Self::Target {
@@ -552,7 +552,7 @@ impl<'a> Deref for RWTxGuard {
     }
 }
 
-impl<'a> DerefMut for RWTxGuard {
+impl<'a> DerefMut for RWTxGuard<'a> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.tx
     }
@@ -563,14 +563,10 @@ mod tests {
     use crate::tx::{TxBuilder, TxInner, TX};
     use std::sync::Arc;
 
-    fn tx_mock() -> TX {
-        let tx = TxBuilder::new().set_writable(true).builder();
-        tx.0.meta.write().pg_id = 1;
-        tx
-    }
-
     #[test]
-    fn commit_entry() {}
+    fn commit_entry() {
+        // let mut db =
+    }
 
     #[test]
     fn test_tx_commit_err_tx_closed() {}

@@ -23,7 +23,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::thread::{sleep, spawn};
 use std::time::Duration;
-use env_logger::init;
 use kv_log_macro::debug;
 use parking_lot::lock_api::{RawMutex, RawRwLock};
 
@@ -75,7 +74,7 @@ pub(crate) struct DBInner {
     pub(crate) max_batch_delay: Duration,
     pub(crate) auto_remove: bool,
     pub(crate) alloc_size: u64,
-    pub(crate) path: &'static str,
+    pub(crate) path: Option<PathBuf>,
     pub(crate) file: RwLock<BufWriter<File>>,
     pub(crate) mmap_size: Mutex<usize>,
     pub(crate) mmap: RwLock<memmap::Mmap>,
@@ -142,7 +141,7 @@ impl<'a> DB {
         if opt.read_only {
             file.lock_exclusive().map_err(|err| Unexpected("Cannot lock db file"))?;
         } else {
-            file.lock_shared().map_err(|err| Unexpected("Cannt lock db file"))?;
+            file.lock_shared().map_err(|err| Unexpected("Can't lock db file"))?;
         }
 
         let page_size = if needs_initialization {
@@ -169,13 +168,13 @@ impl<'a> DB {
             max_batch_delay: opt.max_batch_delay,
             auto_remove: opt.auto_remove,
             alloc_size: 0,
-            path: path.as_ref().unwrap(),
+            path,
             file: RwLock::new(BufWriter::new(file)),
             mmap_size: Default::default(),
             mmap: RwLock::new(mmap),
             file_size: Default::default(),
             page_size,
-            opened: AtomicBool::new(tre),
+            opened: AtomicBool::new(true),
             rw_lock: Default::default(),
             rw_tx: Default::default(),
             txs: Default::default(),
@@ -200,13 +199,18 @@ impl<'a> DB {
     }
 
     /// Return the path to currently open database file.
-    pub fn path(&self) -> &'static str {
-        self.0.path
+    pub fn path(&self) -> Option<PathBuf> {
+        self.0.path.clone()
     }
 
     #[inline(always)]
     pub fn opened(&self) -> bool {
         self.0.opened.load(Ordering::Acquire)
+    }
+
+    #[inline(always)]
+    pub fn read_only(&self) -> bool {
+        self.0.read_only
     }
 
     /// Starts a new transaction.
@@ -899,7 +903,7 @@ impl DBBuilder {
 
     pub fn set_no_grow_sync(mut self, no_grow_sync: bool) -> Self {
         self.no_grow_sync = no_grow_sync;
-        Self
+        self
     }
 
     pub fn set_read_only(mut self, read_only: bool) -> Self {
@@ -958,7 +962,7 @@ impl DBBuilder {
     }
 }
 
-struct Options {
+pub struct Options {
     no_grow_sync: bool,
     read_only: bool,
     initial_mmap_size: usize,

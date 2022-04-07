@@ -96,4 +96,11 @@ impl From<io::Error> for Error {
     }
 }
 
+impl From<&'static str> for Error {
+    #[inline]
+    fn from(s: &'static str) -> Self {
+        Self::Unexpected(s)
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;

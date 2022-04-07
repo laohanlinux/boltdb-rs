@@ -108,7 +108,7 @@ impl FreeList {
     }
 
     // Release moves all page ids for a transaction id (or older) to the freelist.
-    fn release(&mut self, tx_id: TxId) {
+    pub(crate) fn release(&mut self, tx_id: TxId) {
         let mut m = self
             .pending
             .drain_filter(|key, _| *key <= tx_id)
