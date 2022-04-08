@@ -1,15 +1,17 @@
-use crate::bucket::SubBucket;
+use crate::bucket::TopBucket;
 use crate::error::Error;
 use crate::error::Error::{DBOpFailed, Unexpected};
 use crate::error::Result;
 use crate::free_list::FreeList;
 use crate::page::{FREE_LIST_PAGE_FLAG, LEAF_PAGE_FLAG, META_PAGE_FLAG, META_PAGE_SIZE};
-use crate::tx::{RWTxGuard, TX, TxBuilder, TxGuard};
+use crate::tx::{RWTxGuard, TxBuilder, TxGuard, TX};
 use crate::{Bucket, Page, PgId, TxId};
 use bitflags::bitflags;
 use fnv::FnvHasher;
 use fs2::FileExt;
+use kv_log_macro::debug;
 use memmap::Mmap;
+use parking_lot::lock_api::{RawMutex, RawRwLock};
 use parking_lot::{MappedMutexGuard, MappedRwLockReadGuard};
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use std::fs::{File, OpenOptions, Permissions};
@@ -23,14 +25,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::thread::{sleep, spawn};
 use std::time::Duration;
-use kv_log_macro::debug;
-use parking_lot::lock_api::{RawMutex, RawRwLock};
 
 /// The largest step that can be token when remapping the mman.
-const MAX_MMAP_STEP: u64 = 1 << 30; //1GB
+pub const MAX_MMAP_STEP: u64 = 1 << 30; //1GB
+
+/// Represents the largest mmap size supported by the Bolt
+pub const MAX_MMAP_SIZE: u64 = 0xFFFFFFFFFFFF; // 256T
 
 /// The data file format version.
-const VERSION: usize = 2;
+pub const VERSION: usize = 2;
 
 /// Represents a marker value to indicate that a file is a Bolt `DB`.
 const MAGIC: u32 = 0xED0CDAED;
@@ -122,43 +125,61 @@ impl Default for DB {
 impl<'a> DB {
     pub fn open<P: AsRef<Path>>(path: P, opt: Options) -> Result<DB> {
         let path = path.as_ref().to_owned();
-        let file = {
-            let mut open_opts = OpenOptions::new();
-            open_opts.read(true);
-            if !opt.read_only {
-                open_opts.write(true).create(true);
-            }
-            open_opts.open(path.clone()).map_err(|err| Error::Io(Box::new(err)))?
-        };
-        DB::open_file(file, Some(path), opt)
+        let fp = OpenOptions::new()
+            .read(true)
+            .write(!opt.read_only)
+            .create(!opt.read_only)
+            .open(path.clone())
+            .map_err(|err| Error::Io(Box::new(err)))?;
+        DB::open_file(fp, Some(path), opt)
     }
 
-    pub fn open_file<P: Into<PathBuf>>(mut file: File, path: Option<P>, opt: Options) -> Result<Self> {
+    pub fn open_file<P: Into<PathBuf>>(
+        mut file: File,
+        path: Option<P>,
+        opt: Options,
+    ) -> Result<Self> {
         let path = path.map(|v| v.into());
         let needs_initialization = (!std::path::Path::new(path.as_ref().unwrap()).exists())
             || file.metadata().map_err(|_| "Can't read metadata")?.len() == 0;
 
-        if opt.read_only {
-            file.lock_exclusive().map_err(|err| Unexpected("Cannot lock db file"))?;
+        /// Lock file that other process using Bolt in read-write mode cannot
+        /// use the database at the same time. This would cause corruption since
+        /// the two process would write metadata pages and free pages separately.
+        /// The database file is locked exclusively (only one process can grab the lock)
+        /// if !opt.read_only.
+        /// The database file is locked using the shared lock (more than one process may
+        /// hold a lock at the same time) otherwise (opt.read_only is set).
+        if !opt.read_only {
+            file.lock_exclusive()
+                .map_err(|err| Unexpected("Cannot lock db file"))?;
         } else {
-            file.lock_shared().map_err(|err| Unexpected("Can't lock db file"))?;
+            file.lock_shared()
+                .map_err(|err| Unexpected("Can't lock db file"))?;
         }
 
         let page_size = if needs_initialization {
             page_size::get()
         } else {
-            let mut buf = vec![0u8; 1000];
-            file.read_exact(&mut buf).map_err(|err| Error::Io(Box::new(err)))?;
+            let mut buf = vec![0u8; 0x1000];
+            file.read_exact(&mut buf)
+                .map_err(|err| Error::Io(Box::new(err)))?;
             let page = Page::from_slice(&buf);
             if !page.is_meta() {
                 return Err(Unexpected("Database format unknown"));
             }
             page.meta().page_size as usize
         };
-        file.allocate(page_size as u64 * 4).map_err(|_| Unexpected("Cannot allocate 4 required pages"))?;
-        // todo! why is page_size len?
+        debug!("page size is {}", page_size);
+        // initialize the database if it doesn't exist.
+        file.allocate(page_size as u64 * 4)
+            .map_err(|_| Unexpected("Cannot allocate 4 required pages"))?;
         let mmap = unsafe {
-            memmap::MmapOptions::new().offset(0).len(page_size).map(&file).map_err(|_| Unexpected("Failed to mmap"))?
+            memmap::MmapOptions::new()
+                .offset(0)
+                .len(page_size)
+                .map(&file)
+                .map_err(|_| Unexpected("Failed to mmap"))?
         };
         let mut db: DB = DB(Arc::new(DBInner {
             check_mode: opt.check_mode,
@@ -188,11 +209,14 @@ impl<'a> DB {
         if needs_initialization {
             db.init()?;
         }
+
         db.mmap(opt.initial_mmap_size as u64)?;
+
         {
             let free_list_id = db.meta().free_list;
-            db.mmap((free_list_id + 1) * db.0.page_size as u64)?;
+            // db.mmap((free_list_id + 1) * db.0.page_size as u64)?;
             let freelist_page = db.page(free_list_id);
+            debug!("-------------");
             db.0.free_list.try_write().unwrap().read(&freelist_page);
         }
         Ok(db)
@@ -230,7 +254,8 @@ impl<'a> DB {
             self.0.mmap.raw().lock_shared();
         }
 
-        let tx = TxBuilder::new().set_db(WeakDB::from(self))
+        let tx = TxBuilder::new()
+            .set_db(WeakDB::from(self))
             .set_writable(false)
             .set_check(self.0.check_mode.contains(CheckMode::READ))
             .build();
@@ -253,7 +278,6 @@ impl<'a> DB {
             db: std::marker::PhantomData,
         })
     }
-
 
     /// Starts a new writable transaction.
     /// Multiple read-only transactions can be used concurrently but only one
@@ -279,10 +303,16 @@ impl<'a> DB {
         let mut rw_tx = self.0.rw_tx.write();
         let minid = {
             let txs = self.0.txs.read();
-            txs.iter().map(|tx| tx.id()).min().unwrap_or(0xFFFF_FFFF_FFFF_FFFF)
+            txs.iter()
+                .map(|tx| tx.id())
+                .min()
+                .unwrap_or(0xFFFF_FFFF_FFFF_FFFF)
         };
 
-        let tx = TxBuilder::new().set_db(WeakDB::from(self)).set_writable(true).set_check(self.0.check_mode.contains(CheckMode::WRITE))
+        let tx = TxBuilder::new()
+            .set_db(WeakDB::from(self))
+            .set_writable(true)
+            .set_check(self.0.check_mode.contains(CheckMode::WRITE))
             .build();
         *rw_tx = Some(tx.clone());
         drop(rw_tx);
@@ -302,7 +332,11 @@ impl<'a> DB {
         if tx.writable() {
             let (free_list_n, free_list_pending_n, free_list_alloc) = {
                 let free_list = self.0.free_list.try_read().unwrap();
-                (free_list.free_count(), free_list.pending_count(), free_list.size())
+                (
+                    free_list.free_count(),
+                    free_list.pending_count(),
+                    free_list.size(),
+                )
             };
 
             let tx = {
@@ -397,15 +431,14 @@ impl<'a> DB {
         if meta_0.validate().is_ok() {
             return meta_0.clone();
         }
-        // TODO: ?
-        // Why meta1 can be returned?
         if meta_1.validate().is_ok() {
             return meta_1.clone();
         }
 
+        debug!("meta_0: {:?}, meta_1: {:?}", meta_0, meta_1);
         // This should never be reached, because both meta1 and meta0 were validated
         // on mmap() and we do fsync() on every write.
-        panic!("bolt.DB.meta(): invalid meta pages")
+        panic!("invalid meta pages")
     }
 
     pub(crate) fn allocate(&mut self, count: u64, tx: &mut TX) -> Result<Page> {
@@ -447,6 +480,8 @@ impl<'a> DB {
         Ok(p)
     }
 
+    /// mmap opens that underlying memory-mapped file and initialize tha meta references.
+    /// min_size is the minimum size that the new mmap can be.
     fn mmap(&mut self, mut min_size: u64) -> Result<()> {
         let file = self
             .0
@@ -456,11 +491,11 @@ impl<'a> DB {
         let mut mmap = self
             .0
             .mmap
-            .try_write_for(Duration::from_secs(6000))
+            .try_write_for(Duration::from_secs(60))
             .ok_or(Error::Unexpected("can't acquire mmap lock"))?;
 
         let init_min_size = self.0.page_size as u64 * 4;
-        min_size = min_size.max(init_min_size);
+        min_size = min_size.min(init_min_size);
         let mut size = self.mmap_size(min_size)?;
 
         if mmap.len() >= size as usize {
@@ -473,7 +508,7 @@ impl<'a> DB {
                 .metadata()
                 .map_err(|_| Error::Unexpected("can't get file metadata"))?
                 .len();
-            size = size.max(file_len);
+            size = size.min(file_len);
         }
 
         let mut mmap_size = self.0.mmap_size.lock();
@@ -493,6 +528,10 @@ impl<'a> DB {
         *mmap_size = nmmap.len();
         *mmap = nmmap;
 
+        debug!(
+            "succeed to reset mmap, size: {}, mmap size: {}",
+            size, mmap_size
+        );
         drop(file);
         drop(mmap);
         drop(mmap_size);
@@ -504,18 +543,17 @@ impl<'a> DB {
         // validation, since meta_0 failing validation means that it wasn't saved
         // properly -- but we can recover using meta_1. And vice-versa.
         if check_0.is_err() && check_1.is_err() {
-            return Err(Error::InvalidChecksum(format!(
-                "mmap fail: {:?}",
-                check_0.unwrap_err(),
-            )));
+            return Err(check_0.unwrap_err());
         }
 
         Ok(())
     }
 
     fn init(&mut self) -> Result<()> {
+        debug!("ready to init a new db");
         // allocate 4 page, meta0, meta1, freelist, root-page
         let mut buf = vec![0u8; self.0.page_size * 4];
+        // init two meta page.
         (0..=1).for_each(|i| {
             let mut p = self.page_in_buffer(&mut buf, i);
             p.id = i;
@@ -525,31 +563,42 @@ impl<'a> DB {
             m.version = VERSION as u32;
             m.page_size = self.0.page_size as u32;
             m.free_list = 2;
-            m.root = SubBucket { root: 3, sequence: 0 };
+            m.root = TopBucket {
+                root: 3,
+                sequence: 0,
+            };
             m.pg_id = 4;
             m.tx_id = i;
             m.check_sum = m.sum64();
         });
-
+        debug!("succeed to init meta pages");
+        // init free list page.
         let mut page = self.page_in_buffer(&mut buf, 2);
         page.id = 2;
         page.flags = FREE_LIST_PAGE_FLAG;
-
+        debug!("succeed to init free list page");
+        // init root page
         let mut page = self.page_in_buffer(&mut buf, 3);
         page.id = 3;
         page.flags = LEAF_PAGE_FLAG;
+        debug!("succeed to init root page");
         self.write_at(0, std::io::Cursor::new(&mut buf));
         self.sync()?;
+        debug!("succeed to init db");
         Ok(())
     }
 
     fn write_at<T: Read>(&mut self, pos: u64, mut buf: T) -> Result<()> {
         let mut file = self.0.file.write();
-        file.seek(SeekFrom::Start(pos)).map_err(|_| Unexpected("Can't seek to position"))?;
+        file.seek(SeekFrom::Start(pos))
+            .map_err(|_| Unexpected("Can't seek to position"))?;
         std::io::copy(&mut buf, &mut *file).map_err(|_| Unexpected("Can't write buffer"))?;
         Ok(())
     }
 
+    /// mmap_size determines the appropriate size for the mmap given the current size
+    /// of the database. The minimum size is 32KB and doubles until it reaches 1GB.
+    /// Returns an error if the new mmap size is greater than then max allowed.
     fn mmap_size(&self, mut size: u64) -> Result<u64> {
         // Double the size from 32KB until 1GB
         for i in 15..=30 {
@@ -559,8 +608,8 @@ impl<'a> DB {
         }
 
         // Verify the requested size is not above the maximum allowed.
-        if size > MAX_MMAP_STEP {
-            return Err(Error::Unexpected("mmap too large"));
+        if size > MAX_MMAP_SIZE {
+            return Err("mmap too large".into());
         }
 
         // If larger than the 1GB then grow by 1GB at a time.
@@ -577,8 +626,8 @@ impl<'a> DB {
         }
 
         // If we've exceeded the max size then only grow up to the max size.
-        if size > MAX_MMAP_STEP {
-            size = MAX_MMAP_STEP;
+        if size > MAX_MMAP_SIZE {
+            size = MAX_MMAP_SIZE;
         }
         Ok(size)
     }
@@ -666,7 +715,7 @@ pub struct Meta {
     version: u32,
     page_size: u32,
     flags: u32,
-    pub(crate) root: SubBucket,
+    pub(crate) root: TopBucket,
     free_list: PgId,
     // pg_id high watermark
     pub(crate) pg_id: PgId,
@@ -681,7 +730,7 @@ impl Meta {
         } else if self.version != VERSION as u32 {
             return Err(Error::VersionMismatch);
         } else if self.check_sum != 0 && self.check_sum != self.sum64() {
-            return Err(Error::InvalidChecksum("".to_owned()));
+            return Err(Error::InvalidChecksum);
         }
         Ok(())
     }
@@ -711,7 +760,7 @@ impl Meta {
 
     pub fn sum64(&self) -> u64 {
         let mut h = FnvHasher::default();
-        h.write(self.as_slice());
+        h.write(self.as_slice_no_checksum());
         h.finish()
     }
 
@@ -719,6 +768,12 @@ impl Meta {
     fn as_slice(&self) -> &[u8] {
         let ptr = self as *const Meta as *const u8;
         unsafe { from_raw_parts(ptr, self.byte_size()) }
+    }
+
+    #[inline]
+    fn as_slice_no_checksum(&self) -> &[u8] {
+        let ptr = self as *const Meta as *const u8;
+        unsafe { from_raw_parts(ptr, memoffset::offset_of!(Meta, check_sum)) }
     }
 
     fn byte_size(&self) -> usize {

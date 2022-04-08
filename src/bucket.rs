@@ -36,17 +36,17 @@ const DEFAULT_FILL_PERCENT: f64 = 0.5;
 /// header. In the case of inline buckets, the "root" will be 0.
 #[derive(Default, Debug, Clone)]
 #[repr(C)]
-pub struct SubBucket {
+pub struct TopBucket {
     /// page id of the bucket's root-level page
     pub root: PgId,
     /// monotonically incrementing, used by next_sequence()
     pub sequence: u64,
 }
 
-impl SubBucket {
+impl TopBucket {
     pub(crate) const SIZE: usize = std::mem::size_of::<Self>();
-    pub(crate) fn new() -> SubBucket {
-        SubBucket {
+    pub(crate) fn new() -> TopBucket {
+        TopBucket {
             root: 0,
             sequence: 0,
         }
@@ -55,7 +55,7 @@ impl SubBucket {
 
 /// Bucket represents a collection of key/value pairs inside the database.
 pub struct Bucket {
-    pub(crate) local_bucket: SubBucket,
+    pub(crate) local_bucket: TopBucket,
     // the associated transaction, WeakTx
     pub(crate) tx: WeakTx,
     // subbucket cache
@@ -144,15 +144,15 @@ impl Bucket {
         // Allocate the appropriate size.
         let n = self.root_node.as_ref().unwrap();
         let node_size = n.size();
-        let mut value = vec![0u8; SubBucket::SIZE + node_size];
+        let mut value = vec![0u8; TopBucket::SIZE + node_size];
 
         // write a bucket header.
-        let bucket_ptr = value.as_mut_ptr() as *mut SubBucket;
+        let bucket_ptr = value.as_mut_ptr() as *mut TopBucket;
         unsafe { copy_nonoverlapping(&self.local_bucket, bucket_ptr, 1) };
 
         // Convert byte slice to a fake page and write the root node.
         {
-            let mut page = &mut value[SubBucket::SIZE..];
+            let mut page = &mut value[TopBucket::SIZE..];
             let mut page = Page::from_slice_mut(&mut page);
             n.write(&mut page);
         }
@@ -472,13 +472,13 @@ impl Bucket {
         let mut child = Bucket::new(self.tx.clone());
 
         {
-            let b = unsafe { (&*(value.as_ptr() as *const SubBucket)).clone() };
+            let b = unsafe { (&*(value.as_ptr() as *const TopBucket)).clone() };
             child.local_bucket = b;
         }
         // Save reference to the inline page if the bucket is inline.
         if child.local_bucket.root == 0 {
             let data = unsafe {
-                let slice = &value[SubBucket::SIZE..];
+                let slice = &value[TopBucket::SIZE..];
                 let mut vec = vec![0u8; slice.len()];
                 copy_nonoverlapping(slice.as_ptr(), vec.as_mut_ptr(), slice.len());
                 vec

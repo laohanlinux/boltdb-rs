@@ -23,7 +23,7 @@ pub enum Error {
     #[error("page {0} already freed")]
     MmapAllocateFailed(String),
     #[error("Invalid checksum")]
-    InvalidChecksum(String),
+    InvalidChecksum,
     #[error("{0}")]
     InvalidNode(String),
     #[error("ResizeFail")]
