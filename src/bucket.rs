@@ -120,10 +120,6 @@ impl Bucket {
         self.local_bucket.root
     }
 
-    fn root_node(&self) -> Option<Node> {
-        self.root_node.clone()
-    }
-
     /// Creates a cursor associated with the bucket.
     /// The cursor is only valid as long as the transaction is open.
     /// Do not use a cursor after the transaction is closed.
@@ -357,12 +353,18 @@ impl Bucket {
         Ok(())
     }
 
+    /// Returns list of subbuckets's keys
     pub(crate) fn buckets(&self) -> Vec<Vec<u8>> {
-        self.buckets
-            .borrow()
-            .keys()
-            .map(|key| key.to_owned())
-            .collect()
+        let mut names = Vec::new();
+        self.for_each(|key, value| -> Result<()> {
+            if value.is_none() {
+                // only return bucket item
+                names.push(key.to_vec());
+            }
+            Ok(())
+        })
+        .unwrap();
+        names
     }
 
     /// Retrieves a nested bucket by name.

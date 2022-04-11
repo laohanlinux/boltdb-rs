@@ -1,11 +1,10 @@
 use crate::db::Meta;
 use crate::free_list::FreeList;
 use crate::must_align;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ops::RangeBounds;
-use std::ptr::slice_from_raw_parts;
 use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
 
 pub(crate) const PAGE_HEADER_SIZE: usize = size_of::<Page>();
@@ -170,6 +169,12 @@ impl Page {
     }
 
     #[inline]
+    pub(crate) fn get_data_slice(&self) -> &[u8] {
+        let ptr = self.get_data_ptr();
+        unsafe { from_raw_parts(ptr, self.byte_size() - PAGE_HEADER_SIZE) }
+    }
+
+    #[inline]
     pub(crate) fn as_slice(&self) -> &[u8] {
         let ptr = self as *const Page as *const u8;
         unsafe { from_raw_parts(ptr, self.byte_size()) }
@@ -182,7 +187,7 @@ impl Page {
     }
 
     #[inline]
-    pub(crate) fn from_slice(buffer: &[u8]) -> &Self {
+    pub(crate) fn from_slice(buffer: &[u8]) -> &Page {
         unsafe { &*(buffer.as_ptr() as *const Page) }
     }
 
@@ -243,7 +248,6 @@ impl Page {
         v
     }
 
-    // FIXME
     pub(crate) fn to_owned(self) -> Self {
         self
     }
@@ -408,8 +412,8 @@ impl PgIds {
 
     #[inline]
     pub fn drain<R>(&mut self, range: R) -> Vec<u64>
-        where
-            R: RangeBounds<usize>,
+    where
+        R: RangeBounds<usize>,
     {
         self.inner.drain(range).collect::<Vec<_>>()
     }
@@ -430,7 +434,7 @@ fn t_page_type() {
             flags: BRANCH_PAGE_FLAG,
             ..Default::default()
         }
-            .to_string(),
+        .to_string(),
         "branch"
     );
     assert_eq!(
@@ -438,7 +442,7 @@ fn t_page_type() {
             flags: LEAF_PAGE_FLAG,
             ..Default::default()
         }
-            .to_string(),
+        .to_string(),
         "leaf"
     );
     assert_eq!(
@@ -446,7 +450,7 @@ fn t_page_type() {
             flags: META_PAGE_FLAG,
             ..Default::default()
         }
-            .to_string(),
+        .to_string(),
         "meta"
     );
     assert_eq!(
@@ -454,7 +458,7 @@ fn t_page_type() {
             flags: FREE_LIST_PAGE_FLAG,
             ..Default::default()
         }
-            .to_string(),
+        .to_string(),
         "freelist"
     );
     assert_eq!(
@@ -462,7 +466,7 @@ fn t_page_type() {
             flags: 0x4e20,
             ..Default::default()
         }
-            .to_string(),
+        .to_string(),
         "unknown<4e20>"
     );
 }

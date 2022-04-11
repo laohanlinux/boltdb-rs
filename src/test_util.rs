@@ -1,4 +1,4 @@
-use crate::db::{CheckMode, DBBuilder, DB};
+use crate::db::{CheckMode, DBBuilder, DB, MAGIC};
 use crate::tx::{TxBuilder, TX};
 use rand::random;
 use std::env::temp_dir;
@@ -38,4 +38,27 @@ pub(crate) fn mock_log() {
 #[test]
 fn open() {
     let db = mock_db().build().unwrap();
+    assert_eq!(db.page_size(), page_size::get());
+    assert_eq!(db.meta().version, 2);
+    assert_eq!(db.meta().magic, MAGIC);
+    assert_eq!(db.meta().root.root, 3);
+}
+
+#[test]
+fn open_existing() {
+    mock_log();
+    let db = DBBuilder::new("./test_data/remark.db")
+        .set_read_only(true)
+        .build()
+        .unwrap();
+    assert_eq!(db.page_size(), page_size::get());
+    assert_eq!(db.meta().version, 2);
+    assert_eq!(db.meta().magic, MAGIC);
+    assert_eq!(db.meta().root.root, 9);
+    {
+        let tx = db.begin_tx().unwrap();
+        let buckets = tx.buckets();
+        assert_eq!(buckets.len(), 7);
+        tx.check_sync().unwrap();
+    }
 }

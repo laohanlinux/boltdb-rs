@@ -394,7 +394,32 @@ impl TX {
     }
 
     fn __check(&self, ch: mpsc::Sender<String>) {
-        todo!()
+        let mut freed = HashMap::<PgId, bool>::new();
+        let all_pgids = self
+            .db()
+            .unwrap()
+            .0
+            .free_list
+            .try_read()
+            .unwrap()
+            .get_pg_ids();
+        for id in &all_pgids {
+            if freed.contains_key(id) {
+                ch.send(format!("page {}: already freed", id)).unwrap();
+            }
+            freed.insert(*id, true);
+        }
+
+        let mut reachable = HashMap::new();
+        reachable.insert(0, true);
+        reachable.insert(1, true);
+        let freelist_pgid = self.0.meta.try_read().unwrap().free_list;
+        let freelist_overflow = unsafe { &*self.page(freelist_pgid).unwrap() }.over_flow;
+        for i in 0..=freelist_overflow {
+            reachable.insert(freelist_pgid + u64::from(i), true);
+        }
+
+        // FIXME: todo it
     }
 }
 
@@ -506,8 +531,10 @@ impl TxBuilder {
             write_flag: 0,
         }));
         {
+            // build circular reference each others.
             let mut bucket = tx.0.root.write();
             bucket.tx = WeakTx::from(&tx);
+            // fill root bucket
             bucket.local_bucket = tx.0.meta.try_read().unwrap().root.clone();
         }
         tx

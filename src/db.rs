@@ -36,7 +36,7 @@ pub const MAX_MMAP_SIZE: u64 = 0xFFFFFFFFFFFF; // 256T
 pub const VERSION: usize = 2;
 
 /// Represents a marker value to indicate that a file is a Bolt `DB`.
-const MAGIC: u32 = 0xED0CDAED;
+pub const MAGIC: u32 = 0xED0CDAED;
 
 /// Default values if not set in a `DB` instance.
 const DEFAULT_MAX_BATCH_SIZE: usize = 1000;
@@ -94,24 +94,6 @@ pub(crate) struct DBInner {
     pub(crate) page_pool: Mutex<Vec<Page>>,
     read_only: bool,
 }
-//
-// /// `DB` represents a collection of buckets persisted to a file on disk.
-// /// All data access is performed through transactions which can be obtained through the `DB`
-// /// All the functions on `DB` will return a `DatabaseNotOpen` if accessed before Open() is called.
-// #[derive(Default)]
-// pub struct DB {
-//     /// When enabled, the database will perform a Check() after every commit.
-//     /// A panic is issued if the database is in a inconsistent state. This
-//     /// flag has a large performance impact so it should only be used for
-//     /// debugging purpose.
-//     pub strict_mode: bool,
-//
-//     path: &'static str,
-//     pub(crate) mmap: Option<Mmap>,
-//     pub(crate) mmap_size: usize,
-//     pub(crate) page_size: usize,
-//     pub(crate) free_list: FreeList,
-// }
 
 #[derive(Clone)]
 pub struct DB(pub(crate) Arc<DBInner>);
@@ -142,26 +124,29 @@ impl<'a> DB {
         let path = path.map(|v| v.into());
         let needs_initialization = (!std::path::Path::new(path.as_ref().unwrap()).exists())
             || file.metadata().map_err(|_| "Can't read metadata")?.len() == 0;
+        if needs_initialization {
+            debug!("need to initialize a new db");
+        }
 
-        /// Lock file that other process using Bolt in read-write mode cannot
-        /// use the database at the same time. This would cause corruption since
-        /// the two process would write metadata pages and free pages separately.
-        /// The database file is locked exclusively (only one process can grab the lock)
-        /// if !opt.read_only.
-        /// The database file is locked using the shared lock (more than one process may
-        /// hold a lock at the same time) otherwise (opt.read_only is set).
+        // Lock file that other process using Bolt in read-write mode cannot
+        // use the database at the same time. This would cause corruption since
+        // the two process would write metadata pages and free pages separately.
+        // The database file is locked exclusively (only one process can grab the lock)
+        // if !opt.read_only.
+        // The database file is locked using the shared lock (more than one process may
+        // hold a lock at the same time) otherwise (opt.read_only is set).
         if !opt.read_only {
             file.lock_exclusive()
-                .map_err(|err| Unexpected("Cannot lock db file"))?;
+                .map_err(|_| Unexpected("Cannot lock db file"))?;
         } else {
             file.lock_shared()
-                .map_err(|err| Unexpected("Can't lock db file"))?;
+                .map_err(|_| Unexpected("Can't lock db file"))?;
         }
 
         let page_size = if needs_initialization {
             page_size::get()
         } else {
-            let mut buf = vec![0u8; 0x1000];
+            let mut buf = vec![0u8; 1000];
             file.read_exact(&mut buf)
                 .map_err(|err| Error::Io(Box::new(err)))?;
             let page = Page::from_slice(&buf);
@@ -211,12 +196,10 @@ impl<'a> DB {
         }
 
         db.mmap(opt.initial_mmap_size as u64)?;
-
         {
             let free_list_id = db.meta().free_list;
-            // db.mmap((free_list_id + 1) * db.0.page_size as u64)?;
+            db.mmap((free_list_id + 1) * db.0.page_size as u64)?;
             let freelist_page = db.page(free_list_id);
-            debug!("-------------");
             db.0.free_list.try_write().unwrap().read(&freelist_page);
         }
         Ok(db)
@@ -400,11 +383,14 @@ impl<'a> DB {
         }
     }
 
-    /// Why use ?
     /// Retrieves page from mmap
     pub fn page(&self, id: PgId) -> MappedRwLockReadGuard<Page> {
         let page_size = self.0.page_size;
         let pos = id as usize * page_size as usize;
+        debug!(
+            "ready to load page from mmap, id: {}, pos:{}, page_size:{}",
+            id, pos, page_size
+        );
         let mmap = self.0.mmap.read_recursive();
         RwLockReadGuard::map(mmap, |mmap| Page::from_slice(&mmap.as_ref()[pos..]))
     }
@@ -495,7 +481,7 @@ impl<'a> DB {
             .ok_or(Error::Unexpected("can't acquire mmap lock"))?;
 
         let init_min_size = self.0.page_size as u64 * 4;
-        min_size = min_size.min(init_min_size);
+        min_size = min_size.max(init_min_size);
         let mut size = self.mmap_size(min_size)?;
 
         if mmap.len() >= size as usize {
@@ -710,16 +696,27 @@ impl WeakDB {
 }
 
 #[derive(Debug, Default, Clone)]
+#[repr(C)]
 pub struct Meta {
-    magic: u32,
-    version: u32,
+    /// database mime header
+    pub(crate) magic: u32,
+    /// database version
+    pub(crate) version: u32,
+    /// defined page size.
+    /// u32 to be platform independent
     page_size: u32,
+    /// haven't seen it's usage
     flags: u32,
+    /// bucket that has root property changed
+    /// during commits and transactions
     pub(crate) root: TopBucket,
-    free_list: PgId,
-    // pg_id high watermark
+    /// free list page id
+    pub(crate) free_list: PgId,
+    /// pg_id high watermark
     pub(crate) pg_id: PgId,
+    /// transaction id
     pub(crate) tx_id: TxId,
+    /// meta check_sum
     check_sum: u64,
 }
 

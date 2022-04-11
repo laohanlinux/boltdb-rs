@@ -257,6 +257,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         }
 
         let mut item = self.key_value()?;
+        // Note: if the item is subbucket, need not return it's value, only return bucket's name it was item key
         if (item.flags & BUCKET_LEAF_FLAG) != 0 {
             item.value = None;
         }

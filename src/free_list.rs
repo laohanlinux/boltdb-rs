@@ -50,6 +50,17 @@ impl FreeList {
             .fold(0, |acc, (_, pg_ids)| acc + pg_ids.len())
     }
 
+    /// returns vec with all pgids
+    pub fn get_pg_ids(&self) -> Vec<PgId> {
+        let mut m = Vec::with_capacity(self.count());
+        for list in self.pending.values() {
+            m.extend_from_slice(&list.as_slice());
+        }
+        m.extend_from_slice(&self.ids.as_slice());
+        m.sort_unstable();
+        m
+    }
+
     // Returns the starting page id of contiguous list of pages of a given size.
     // If a contiguous block cannot be found then 0 is returned.
     pub(crate) fn allocate(&mut self, n: usize) -> Option<PgId> {
