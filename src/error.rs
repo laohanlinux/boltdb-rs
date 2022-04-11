@@ -1,5 +1,4 @@
 use std::io;
-use std::os::macos::raw::stat;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
