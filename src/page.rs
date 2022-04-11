@@ -5,6 +5,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ops::RangeBounds;
+use std::ptr::slice_from_raw_parts;
 use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
 
 pub(crate) const PAGE_HEADER_SIZE: usize = size_of::<Page>();
@@ -196,6 +197,7 @@ impl Page {
         unsafe { &mut *(buffer.as_mut_ptr() as *mut Page) }
     }
 
+    // The size of page, including header and elements.
     #[inline]
     pub(crate) fn copy_from_meta(&mut self, meta: &Meta) {
         self.count = 0;
