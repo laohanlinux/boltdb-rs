@@ -23,7 +23,7 @@ impl FreeList {
 
     /// Returns the `size` of the `page` after serialization.
     #[inline]
-    fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         let mut n = self.count();
         if n >= 0xFFFF {
             // The first element will be used to store the count. See free_list.write.
@@ -34,25 +34,36 @@ impl FreeList {
 
     // Returns `count` of `pages` on the `freelist`
     #[inline]
-    fn count(&self) -> usize {
+    pub(crate) fn count(&self) -> usize {
         self.free_count() + self.pending_count()
     }
 
     // Returns `count` of free pages
-    fn free_count(&self) -> usize {
+    pub(crate) fn free_count(&self) -> usize {
         self.ids.len()
     }
 
     // Returns `count` of `pending pages`
-    fn pending_count(&self) -> usize {
+    pub(crate) fn pending_count(&self) -> usize {
         self.pending
             .iter()
             .fold(0, |acc, (_, pg_ids)| acc + pg_ids.len())
     }
 
+    /// returns vec with all pgids
+    pub fn get_pg_ids(&self) -> Vec<PgId> {
+        let mut m = Vec::with_capacity(self.count());
+        for list in self.pending.values() {
+            m.extend_from_slice(&list.as_slice());
+        }
+        m.extend_from_slice(&self.ids.as_slice());
+        m.sort_unstable();
+        m
+    }
+
     // Returns the starting page id of contiguous list of pages of a given size.
     // If a contiguous block cannot be found then 0 is returned.
-    fn allocate(&mut self, n: usize) -> Option<PgId> {
+    pub(crate) fn allocate(&mut self, n: usize) -> Option<PgId> {
         if self.ids.len() == 0 {
             return None;
         }
@@ -108,7 +119,7 @@ impl FreeList {
     }
 
     // Release moves all page ids for a transaction id (or older) to the freelist.
-    fn release(&mut self, tx_id: TxId) {
+    pub(crate) fn release(&mut self, tx_id: TxId) {
         let mut m = self
             .pending
             .drain_filter(|key, _| *key <= tx_id)
@@ -133,12 +144,12 @@ impl FreeList {
     }
 
     // freed returns whether a given page is in the free list.
-    fn freed(&self, pg_id: &PgId) -> bool {
+    pub(crate) fn freed(&self, pg_id: &PgId) -> bool {
         self.cache.contains(pg_id)
     }
 
     // Read initializes the free list from a freelist page.
-    fn read(&mut self, page: &Page) {
+    pub(crate) fn read(&mut self, page: &Page) {
         // If the page.count is at the max uint16 value(64k) then it's considered
         // an overflow and the size of the free list is stored as the first element.
         let mut idx = 0;

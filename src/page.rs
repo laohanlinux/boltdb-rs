@@ -1,6 +1,7 @@
 use crate::db::Meta;
+use crate::free_list::FreeList;
 use crate::must_align;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ops::RangeBounds;
@@ -18,7 +19,8 @@ pub(crate) const LEAF_PAGE_FLAG: u16 = 0x02;
 pub(crate) const META_PAGE_FLAG: u16 = 0x04;
 pub(crate) const FREE_LIST_PAGE_FLAG: u16 = 0x10;
 
-pub(crate) const BUCKET_LEAF_FLAG: u16 = 0x01;
+// u16
+pub(crate) const BUCKET_LEAF_FLAG: u32 = 0x01;
 
 pub type PgId = u64;
 
@@ -31,15 +33,19 @@ pub struct Page {
     pub(crate) id: PgId,
     pub(crate) flags: u16,
     pub(crate) count: u16,
-    pub(crate) over_flow: u16,
+    pub(crate) over_flow: u32,
     // PhantomData not occupy real memory
     pub(crate) ptr: PhantomData<u8>,
 }
 
 impl Page {
     // `meta` returns a pointer to the metadata section of the `page`
-    pub(crate) fn meta(&mut self) -> &mut Meta {
-        unsafe { &mut *(self.get_data_mut_ptr() as *mut Meta) }
+    pub fn meta(&self) -> &Meta {
+        unsafe { &*(self.get_data_ptr() as *const Meta) }
+    }
+
+    pub fn meta_mut(&mut self) -> &mut Meta {
+        unsafe { &mut *(self.get_data_ptr() as *mut Meta) }
     }
 
     // Retrieves the leaf node by index.
@@ -84,7 +90,7 @@ impl Page {
     }
 
     // Retrieves a list of branch nodes.
-    fn branch_page_elements(&self) -> &[BranchPageElement] {
+    pub(crate) fn branch_page_elements(&self) -> &[BranchPageElement] {
         unsafe {
             std::slice::from_raw_parts(
                 self.get_data_ptr() as *const BranchPageElement,
@@ -140,6 +146,20 @@ impl Page {
     }
 
     #[inline]
+    pub(crate) fn is_branch(&self) -> bool {
+        matches!(self.flags, BRANCH_PAGE_FLAG)
+    }
+
+    #[inline]
+    pub(crate) fn is_leaf(&self) -> bool {
+        matches!(self.flags, LEAF_PAGE_FLAG)
+    }
+
+    pub(crate) fn is_meta(&self) -> bool {
+        matches!(self.flags, META_PAGE_FLAG)
+    }
+
+    #[inline]
     pub(crate) fn get_data_mut_ptr(&mut self) -> *mut u8 {
         &mut self.ptr as *mut PhantomData<u8> as *mut u8
     }
@@ -147,6 +167,12 @@ impl Page {
     #[inline]
     pub(crate) fn get_data_ptr(&self) -> *const u8 {
         &self.ptr as *const PhantomData<u8> as *const u8
+    }
+
+    #[inline]
+    pub(crate) fn get_data_slice(&self) -> &[u8] {
+        let ptr = self.get_data_ptr();
+        unsafe { from_raw_parts(ptr, self.byte_size() - PAGE_HEADER_SIZE) }
     }
 
     #[inline]
@@ -162,13 +188,26 @@ impl Page {
     }
 
     #[inline]
-    pub(crate) fn from_slice(buffer: &[u8]) -> &Self {
+    pub(crate) fn from_slice(buffer: &[u8]) -> &Page {
         unsafe { &*(buffer.as_ptr() as *const Page) }
     }
 
     #[inline]
     pub(crate) fn from_slice_mut(mut buffer: &mut [u8]) -> &mut Self {
         unsafe { &mut *(buffer.as_mut_ptr() as *mut Page) }
+    }
+
+    // The size of page, including header and elements.
+    #[inline]
+    pub(crate) fn copy_from_meta(&mut self, meta: &Meta) {
+        self.count = 0;
+        self.flags = BRANCH_PAGE_FLAG;
+    }
+
+    #[inline]
+    pub(crate) fn copy_from_free_list(&mut self, free_list: &FreeList) {
+        self.count = free_list.count() as u16;
+        self.flags = FREE_LIST_PAGE_FLAG;
     }
 
     // The size of page, including header and elements.
@@ -210,12 +249,23 @@ impl Page {
         let v: Vec<u8> = self.into();
         v
     }
+
+    pub(crate) fn to_owned(self) -> Self {
+        self
+    }
 }
 
 impl Into<Vec<u8>> for Page {
     fn into(self) -> Vec<u8> {
         let ptr = &self as *const Page as *const u8;
         unsafe { from_raw_parts(ptr, self.byte_size()).to_vec() }
+    }
+}
+
+impl From<Vec<u8>> for Page {
+    fn from(vec: Vec<u8>) -> Self {
+        let page = Page::from_slice(&vec);
+        page.to_owned()
     }
 }
 
@@ -300,10 +350,10 @@ impl LeafPageElement {
 // represents human readable information about a page.
 #[derive(Debug, Default)]
 pub struct PageInfo {
-    pub id: isize,
-    pub typ: String,
-    pub count: isize,
-    pub over_flow_count: isize,
+    pub id: u64,
+    pub typ: u16,
+    pub count: usize,
+    pub over_flow_count: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialOrd, PartialEq)]
@@ -425,7 +475,7 @@ fn t_page_type() {
 
 #[test]
 fn t_page_buffer() {
-    let mut page = Page {
+    let page = Page {
         id: 2,
         flags: FREE_LIST_PAGE_FLAG,
         ..Default::default()
