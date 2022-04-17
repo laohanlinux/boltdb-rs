@@ -2,10 +2,11 @@ use crate::cursor::{Cursor, PageNode};
 use crate::db::{Stats, DB};
 use crate::error::{Error, Result};
 use crate::node::{Node, NodeBuilder, WeakNode};
-use crate::page::BUCKET_LEAF_FLAG;
+use crate::page::{BUCKET_LEAF_FLAG, LEAF_PAGE_ELEMENT_SIZE, PAGE_HEADER_SIZE};
 use crate::tx::{WeakTx, TX};
 use crate::{Page, PgId};
 use either::Either;
+use kv_log_macro::debug;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
@@ -65,6 +66,7 @@ pub struct Bucket {
     // materialized node for the root page
     pub(crate) root_node: Option<Node>,
     // node cache
+    // TODO: maybe use refHashMap
     pub(crate) nodes: HashMap<PgId, Node>,
     // Sets the threshold for filling nodes when they split. By default,
     // the bucket will fill to 50% but it can be useful to increase this
@@ -167,7 +169,10 @@ impl Bucket {
 
     /// Create a `node` from a `page` and associates it with a given parent.
     pub(crate) fn node(&mut self, pg_id: PgId, parent: WeakNode) -> Node {
-        assert!(!self.nodes.is_empty(), "nodes map expected");
+        // assert!(!self.nodes.is_empty(), "nodes map expected");
+        if !self.tx().unwrap().writable() {
+            panic!("tx is read-only");
+        }
         // Retrieve node if it's already been created.
         if let Some(node) = self.nodes.get(&pg_id) {
             return node.clone();
@@ -179,10 +184,12 @@ impl Bucket {
         if let Some(parent) = parent.upgrade() {
             parent.child_mut().push(node.clone());
         } else {
+            // Why? Ony root node has not parent, so the node is root node
+            // Update it
             self.root_node.replace(node.clone());
         }
-        // Use the page into the node and cache it.
 
+        // Use the page into the node and cache it.
         if let Some(page) = &self.page {
             node.read(&page);
         } else {
@@ -192,6 +199,7 @@ impl Bucket {
                 node.read(&*page);
             }
         }
+        debug!("cache a node: {:?}", node);
         self.nodes.insert(pg_id, node.clone());
         // Update statistics.
         self.tx().unwrap().stats().node_count += 1;
@@ -208,13 +216,14 @@ impl Bucket {
                 return Err(Error::Unexpected("inline bucket no-zero page access"));
             }
             if let Some(ref node) = self.root_node {
+                debug!("return a inline root_node");
                 return Ok(PageNode::from(node.clone()));
             }
+            debug!("return a inline root page");
             return Ok(PageNode::from(
                 &*self.page.as_ref().ok_or(Error::Unexpected("page empty"))? as *const Page,
             ));
         }
-
         // Check the node cache for non-inline buckets.
         if let Some(node) = self.nodes.get(&id) {
             return Ok(PageNode::from(node.clone()));
@@ -248,13 +257,11 @@ impl Bucket {
                 return Err(Error::BucketNameRequired);
             }
         }
-
         let tx = self.tx.clone();
         {
             // Move cursor to correct position.
             let mut cursor = self.cursor()?;
             let (ckey, _, flags) = cursor.seek_to_item(key)?.unwrap();
-
             // return an error if there is an existing cursor.
             if ckey == Some(key) {
                 if (flags & BUCKET_LEAF_FLAG) != 0 {
@@ -276,6 +283,8 @@ impl Bucket {
                 .unwrap()
                 .put(key, key, value, 0, BUCKET_LEAF_FLAG)?;
 
+            use kv_log_macro::debug;
+            debug!("insert bucket into node");
             // TODO: why
             // since subbuckets are not allowed on inline buckets, we need to
             // dereference the inline page, if it exists. This will cause the bucket
@@ -594,6 +603,107 @@ impl Bucket {
                 }
             }
         }
+    }
+
+    /// Writes all the nodes for this bucket to dirty pages.
+    pub(crate) fn spill(&mut self) -> Result<()> {
+        let mutself = unsafe { &mut *(self as *mut Self) };
+
+        // Spill all child buckets first.
+        for (name, child) in &mut *self.buckets.borrow_mut() {
+            // If the child bucket is small enough and it has no child buckets then
+            // write it inline into the parent bucket's page. Otherwise spill it
+            // like a normal bucket and make the parent value a pointer to the page.
+            let value = if child.inlineable() {
+                child.free();
+                child.write()
+            } else {
+                child.spill()?;
+                // Update the child bucket header in this bucket.
+                let mut vec = vec![0u8; TopBucket::SIZE];
+                let bucket_ptr = vec.as_mut_ptr() as *mut TopBucket;
+                unsafe { copy_nonoverlapping(&child.local_bucket, bucket_ptr, 1) };
+                vec
+            };
+            // Skip writing the bucket if there are no materialized node.
+            if child.root_node.is_none() {
+                continue;
+            }
+            // Update parent node.
+            let mut c = mutself.cursor()?;
+            let mut item = c.seek(&name)?;
+            if item.key != Some(name.as_slice()) {
+                return Err(Error::Unexpected2(format!(
+                    "misplaced bucket header: {:?} -> {:?}",
+                    name,
+                    item.key.as_ref().unwrap()
+                )));
+            }
+            if !item.is_bucket() {
+                return Err(Error::Unexpected2(format!(
+                    "unexpected bucket header flag: {}",
+                    item.flags
+                )));
+            }
+            c.node()?.put(&name, &name, value, 0, BUCKET_LEAF_FLAG);
+        }
+
+        /// ignore if there's not a materialized root node.
+        if self.root_node.is_none() {
+            return Ok(());
+        }
+
+        {
+            // Spill nodes.
+            let mut root_node = self
+                .root_node
+                .clone()
+                .ok_or(Error::Unexpected("root node empty"))?
+                .root();
+            root_node.spill()?;
+            self.root_node = Some(root_node);
+
+            let pgid = self.root_node.as_ref().unwrap().pg_id();
+            let txpgid = self.tx()?.pgid();
+            // Update the root node for this bucket.
+            if pgid >= txpgid as u64 {
+                panic!("pgid ({}) above high water mark ({})", pgid, txpgid);
+            }
+
+            self.local_bucket.root = pgid;
+        }
+
+        Ok(())
+    }
+
+    /// Returns true if a bucket is small enough to be written inline
+    /// and if it contains no subbuckets. Otherwise returns false.
+    fn inlineable(&self) -> bool {
+        // TODO: root node is none? init bucket time?
+        // if self.root_node.is_none() || !self.root_node.unwrap().is_leaf() {
+        //     return false;
+        // }
+        //
+        // let mut size = PAGE_HEADER_SIZE;
+        // let node = self.root_node.clone().unwrap();
+        //
+        // for inode in &*node.0.inodes.borrow() {
+        //     if inode.flags & BUCKET_LEAF_FLAG != 0 {
+        //         return false;
+        //     }
+        //
+        //     size += LEAF_PAGE_ELEMENT_SIZE + inode.key.len() + inode.value.len();
+        //     if size > self.max_inline_bucket_size() {
+        //         return false;
+        //     }
+        // }
+
+        true
+    }
+
+    /// Returns the maximum total size of a bucket to make it a candidate for inlining.
+    fn max_inline_bucket_size(&self) -> usize {
+        self.tx().unwrap().db().unwrap().page_size() / 4
     }
 
     pub fn __bucket(&self, key: &[u8]) -> Option<*const Bucket> {

@@ -62,3 +62,46 @@ fn open_existing() {
         tx.check_sync().unwrap();
     }
 }
+
+#[test]
+fn panic_while_update() {
+    use kv_log_macro::info;
+    let mut db = mock_db().build().unwrap();
+
+    db.update(|tx| {
+        info!("ready to create a bucket");
+        let _ = tx.create_bucket(b"exists").unwrap();
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[cfg(test)]
+mod other {
+    use crate::page::PAGE_HEADER_SIZE;
+    use crate::Page;
+    use bitflags::_core::borrow::Borrow;
+    use std::borrow::BorrowMut;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::ptr::NonNull;
+
+    fn insert2(h: &mut HashMap<i32, Vec<u8>>) -> *mut Page {
+        let mut v = vec![0u8; PAGE_HEADER_SIZE];
+        let page = unsafe { v.as_mut_ptr() as *mut Page };
+        h.insert(1, v);
+        page
+    }
+
+    #[test]
+    fn double_ref() {
+        let mut h = HashMap::default();
+        let mut page = insert2(&mut h);
+        let page = unsafe { &mut *page };
+
+        println!("{:?}", h.get(&1).unwrap());
+
+        page.id = 200;
+        println!("{:?}", h.get(&1).unwrap());
+    }
+}

@@ -54,7 +54,6 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
                 _ => panic!("invalid page type: {}: {}", p.id, p.flags),
             };
         }
-
         let elem_ref = ElemRef {
             el: page_node,
             index: 0,
@@ -182,7 +181,6 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         if self.stack.borrow().is_empty() {
             return Err(Error::StackEmpty);
         }
-
         // If the top of the stack is a leaf node then just return it.
         {
             let stack = self.stack.borrow();
@@ -198,6 +196,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             match el_ref.upgrade() {
                 Either::Left(p) => {
                     let id = p.id;
+                    // root node has not parent node
                     self.mut_bucket().node(id, WeakNode::new())
                 }
                 Either::Right(n) => n.clone(),
@@ -205,6 +204,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         };
 
         for refi in self.stack.borrow().iter() {
+            kv_log_macro::info!("===>>> {:?}", n);
             assert!(!n.is_leaf(), "expected branch");
             let child = n.child_at(refi.index).map_err(|_| Error::TraverserFailed)?;
             n = child;

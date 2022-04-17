@@ -3,14 +3,14 @@ use crate::error::Error;
 use crate::error::Error::{DBOpFailed, Unexpected};
 use crate::error::Result;
 use crate::free_list::FreeList;
+use crate::page::OwnedPage;
 use crate::page::{FREE_LIST_PAGE_FLAG, LEAF_PAGE_FLAG, META_PAGE_FLAG, META_PAGE_SIZE};
 use crate::tx::{RWTxGuard, TxBuilder, TxGuard, TX};
 use crate::{Bucket, Page, PgId, TxId};
 use bitflags::bitflags;
 use fnv::FnvHasher;
 use fs2::FileExt;
-use kv_log_macro::debug;
-use memmap::Mmap;
+use kv_log_macro::{debug, info};
 use parking_lot::lock_api::{RawMutex, RawRwLock};
 use parking_lot::{MappedMutexGuard, MappedRwLockReadGuard};
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
@@ -91,7 +91,7 @@ pub(crate) struct DBInner {
     pub(crate) free_list: RwLock<FreeList>,
     pub(crate) stats: RwLock<Stats>,
     pub(crate) batch: Mutex<Option<Batch>>,
-    pub(crate) page_pool: Mutex<Vec<Page>>,
+    pub(crate) page_pool: Mutex<Vec<OwnedPage>>,
     read_only: bool,
 }
 
@@ -311,6 +311,69 @@ impl<'a> DB {
         })
     }
 
+    /// shorthand for db.begin_rw_tx with addditional guagrantee for panic safery
+    pub fn update<'b>(
+        &mut self,
+        mut handler: impl FnMut(&mut TX) -> Result<()> + 'b,
+    ) -> Result<()> {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        let mut tx = scopeguard::guard(self.begin_rw_tx()?, |mut tx| {
+            let db_exists = tx.db().is_ok();
+            if db_exists {
+                tx.__rollback().unwrap();
+            }
+        });
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            tx.0.managed.store(true, Ordering::Release);
+            let result = handler(&mut tx);
+            tx.0.managed.store(false, Ordering::Release);
+            result
+        }));
+
+        if result.is_err() {
+            tx.__rollback()?;
+            return Err("Panic while update".into());
+        }
+
+        let result = result.unwrap();
+        if let Err(err) = result {
+            tx.rollback()?;
+            return Err(err);
+        }
+
+        tx.commit()
+    }
+
+    /// shorthand for db.begin_tx with additional guarantee for panic safery
+    pub fn view<'b>(&self, handler: impl Fn(&TX) -> Result<()> + 'b) -> Result<()> {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let tx = scopeguard::guard(self.begin_tx()?, |tx| {
+            if tx.db().is_ok() {
+                tx.__rollback().unwrap();
+            }
+        });
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            tx.0.managed.store(true, Ordering::Release);
+            let result = handler(&tx);
+            tx.0.managed.store(false, Ordering::Release);
+            result
+        }));
+
+        if result.is_err() {
+            tx.__rollback()?;
+            return Err(Error::Unexpected("Panic while update"));
+        }
+
+        let result = result.unwrap();
+        if let Err(err) = result {
+            tx.rollback()?;
+            return Err(err);
+        }
+        Ok(())
+    }
+
     pub(crate) fn remove_tx(&self, tx: &TX) -> Result<TX> {
         if tx.writable() {
             let (free_list_n, free_list_pending_n, free_list_alloc) = {
@@ -427,17 +490,15 @@ impl<'a> DB {
         panic!("invalid meta pages")
     }
 
-    pub(crate) fn allocate(&mut self, count: u64, tx: &mut TX) -> Result<Page> {
+    pub(crate) fn allocate(&mut self, count: u64, tx: &mut TX) -> Result<OwnedPage> {
         let mut p = if count == 1 {
             let mut page_pool = self.0.page_pool.lock();
             page_pool
                 .pop()
-                .or_else(|| {
-                    Some(Page::from_slice(&Vec::with_capacity(self.0.page_size)).to_owned())
-                })
+                .or_else(|| Some(OwnedPage::new(self.0.page_size)))
                 .unwrap()
         } else {
-            Page::from_slice(&Vec::with_capacity(self.0.page_size * count as usize)).to_owned()
+            OwnedPage::new(self.0.page_size * count as usize)
         };
 
         p.over_flow = count as u32 - 1;
@@ -574,7 +635,7 @@ impl<'a> DB {
         Ok(())
     }
 
-    fn write_at<T: Read>(&mut self, pos: u64, mut buf: T) -> Result<()> {
+    pub(crate) fn write_at<T: Read>(&mut self, pos: u64, mut buf: T) -> Result<()> {
         let mut file = self.0.file.write();
         file.seek(SeekFrom::Start(pos))
             .map_err(|_| Unexpected("Can't seek to position"))?;

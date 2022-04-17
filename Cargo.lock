@@ -58,6 +58,7 @@ dependencies = [
  "page_size",
  "parking_lot",
  "rand",
+ "scopeguard",
  "temp-file",
  "thiserror",
 ]

@@ -1,11 +1,12 @@
 use crate::db::Meta;
 use crate::free_list::FreeList;
 use crate::must_align;
+use std::borrow::{Borrow, BorrowMut};
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ops::RangeBounds;
-use std::ptr::slice_from_raw_parts;
+use std::ops::{Deref, DerefMut};
 use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
 
 pub(crate) const PAGE_HEADER_SIZE: usize = size_of::<Page>();
@@ -426,6 +427,95 @@ impl PgIds {
         self.inner.extend_from_slice(&*slice.inner);
         self.inner.dedup();
         self.inner.sort();
+    }
+}
+
+#[derive(Clone)]
+#[repr(align(64))]
+pub(crate) struct OwnedPage {
+    page: Vec<u8>,
+}
+
+impl OwnedPage {
+    pub(crate) fn new(size: usize) -> Self {
+        Self {
+            page: vec![0u8; size],
+        }
+    }
+
+    // return page size
+    #[inline]
+    pub(crate) fn size(&self) -> usize {
+        self.page.len()
+    }
+
+    /// reserve capacity of underlying vector to size
+    #[allow(dead_code)]
+    pub(crate) fn reserve(&mut self, size: usize) {
+        self.page.reserve(size);
+    }
+
+    /// Returns pointer to page structure
+    #[inline]
+    pub(crate) fn as_ptr(&self) -> *const u8 {
+        self.page.as_ptr()
+    }
+
+    /// Returns pointer to page structure
+    #[allow(dead_code)]
+    #[inline]
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.page.as_mut_ptr()
+    }
+
+    /// Returns binary serialized buffer of a page
+    #[inline]
+    pub(crate) fn buf(&self) -> &[u8] {
+        &self.page
+    }
+
+    /// Returns binary serliazied muttable buffer of a page
+    #[inline]
+    pub(crate) fn buf_mut(&mut self) -> &mut [u8] {
+        &mut self.page
+    }
+}
+
+impl Borrow<Page> for OwnedPage {
+    #[inline]
+    fn borrow(&self) -> &Page {
+        unsafe { &*(self.page.as_ptr() as *const Page) }
+    }
+}
+
+impl BorrowMut<Page> for OwnedPage {
+    #[inline]
+    fn borrow_mut(&mut self) -> &mut Page {
+        unsafe { &mut *(self.page.as_mut_ptr() as *mut Page) }
+    }
+}
+
+impl Deref for OwnedPage {
+    type Target = Page;
+    #[inline]
+    fn deref(&self) -> &Page {
+        self.borrow()
+    }
+}
+
+impl DerefMut for OwnedPage {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Page {
+        self.borrow_mut()
+    }
+}
+
+impl std::fmt::Debug for OwnedPage {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("OwnedPage")
+            .field("size", &self.page.len())
+            .field("page", &self as &Page)
+            .finish()
     }
 }
 

@@ -65,6 +65,8 @@ pub enum Error {
     DatabaseGone,
     #[error("{0}")]
     Unexpected(&'static str),
+    #[error("{0}")]
+    Unexpected2(String),
     #[error("database only read")]
     DatabaseOnlyRead,
     // Returned when a DB instance is accessed before it

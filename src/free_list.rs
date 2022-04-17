@@ -131,7 +131,7 @@ impl FreeList {
     }
 
     // Removes the `pages` from a given `pending` tx.
-    fn rollback(&mut self, txid: &TxId) {
+    pub(crate) fn rollback(&mut self, txid: &TxId) {
         // Remove page ids from cache.
         if let Some(pids) = self.pending.get(txid) {
             for id in pids.iter() {
@@ -192,7 +192,7 @@ impl FreeList {
     // Writes the page ids onto a freelist page. All free and pending ids are
     // saved to disk since in the event of a program crash, all pending ids will
     // become free.
-    fn write(&mut self, page: &mut Page) {
+    pub(crate) fn write(&mut self, page: &mut Page) {
         // Combine the old free PgIds and PgIds waiting on an open transaction.
 
         // Update the header flag.
@@ -221,7 +221,7 @@ impl FreeList {
     // `Writes the `Page ids` onto a `free_list page`. All `free` and `pending ids` are
     // saved to disk since in the event of a program crash, all `pending ids` will become
     // free.
-    fn reload(&mut self, page: &Page) {
+    pub(crate) fn reload(&mut self, page: &Page) {
         // TODO: FIXME
 
         // Build a cache of only pending pages.

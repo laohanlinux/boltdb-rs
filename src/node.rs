@@ -66,11 +66,15 @@ impl Node {
     }
 
     // Returns the top-level node this node is attached to.
-    fn root(&self) -> Node {
+    pub(crate) fn root(&self) -> Node {
         match self.parent() {
             Some(ref p) => p.root(),
             None => self.clone(),
         }
+    }
+
+    pub fn pg_id(&self) -> PgId {
+        self.0.pgid.borrow().clone()
     }
 
     /// Attempts to combine the node with sibling nodes if the node fill
@@ -408,7 +412,7 @@ impl Node {
 
     // Writes the nodes to dirty pages and splits nodes as it goes.
     // Returns an error if dirty pages cannot be allocated.
-    fn spill(&mut self) -> Result<()> {
+    pub(crate) fn spill(&mut self) -> Result<()> {
         // if self.0.spilled.load(Ordering::Acquire) {
         //     return Ok(());
         // }

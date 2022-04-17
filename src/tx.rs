@@ -1,7 +1,10 @@
 use crate::cursor::Cursor;
-use crate::db::{Meta, WeakDB, DB};
+use crate::db::{CheckMode, Meta, WeakDB, DB};
+use crate::error::Error::Unexpected;
+use crate::page::OwnedPage;
 use crate::page::FREE_LIST_PAGE_FLAG;
 use crate::{error::Error, error::Result, Bucket, Page, PageInfo, PgId};
+use kv_log_macro::{info, warn};
 use parking_lot::lock_api::MutexGuard;
 use parking_lot::{
     MappedRwLockReadGuard, MappedRwLockWriteGuard, Mutex, RawMutex, RawRwLock, RwLock,
@@ -10,7 +13,6 @@ use parking_lot::{
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::fs::OpenOptions;
-use std::hash::Hash;
 use std::io::Write;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
@@ -40,7 +42,7 @@ pub(crate) struct TxInner {
     /// this bucket holds another buckets
     pub(crate) root: RwLock<Bucket>,
     /// page cache
-    pub(crate) pages: RwLock<HashMap<PgId, Page>>,
+    pub(crate) pages: RwLock<HashMap<PgId, OwnedPage>>,
     /// transactions statistics
     pub(crate) stats: Mutex<TxStats>,
     /// List of callbacks that will be called after commit
@@ -120,7 +122,7 @@ impl TX {
         {
             let pages = self.0.pages.try_read().unwrap();
             if let Some(p) = pages.get(&id) {
-                return Ok(&*p);
+                return Ok(&**p);
             }
         }
 
@@ -261,7 +263,7 @@ impl TX {
 
     /// Closes transaction (so subsequent user of it will resolve in error)
     pub(crate) fn close(&self) -> Result<()> {
-        let mut db = self.db()?;
+        let db = self.db()?;
         let tx = db.remove_tx(self)?;
         tx.0.root.try_write().unwrap().clear();
         tx.0.pages.try_write().unwrap().clear();
@@ -272,12 +274,128 @@ impl TX {
     /// Returns an error if a disk write error occurrs; or if Commit is
     /// called on a read-only transaction.
     pub fn commit(&mut self) -> Result<()> {
-        todo!()
+        if self.0.managed.load(Ordering::Acquire) {
+            return Err(Error::TxManaged);
+        } else if !self.writable() {
+            return Err(Error::TxReadOnly);
+        }
+
+        let mut db = self.db()?;
+        {
+            let start_time = std::time::SystemTime::now();
+            self.0.root.try_write().unwrap().rebalance();
+            let mut stats = self.0.stats.lock();
+            if stats.rebalance > 0 {
+                stats.rebalance_time += std::time::SystemTime::now()
+                    .duration_since(start_time)
+                    .map_err(|_| Unexpected("Cann't get system time"))?;
+            }
+        }
+
+        {
+            // spill
+            let start_time = std::time::SystemTime::now();
+            {
+                let mut root = self.0.root.try_write().unwrap();
+                root.spill()?;
+            }
+            self.0.stats.try_lock().unwrap().spill_time = std::time::SystemTime::now()
+                .duration_since(start_time)
+                .map_err(|_| Unexpected("Cann't get system time"))?;
+        }
+
+        // Free the old root bucket.
+        self.0.meta.try_write().unwrap().root.root =
+            self.0.root.try_read().unwrap().local_bucket.root;
+
+        let (txid, tx_pgid, free_list_pgid) = {
+            let meta = self.0.meta.try_read().unwrap();
+            (meta.tx_id as usize, meta.pg_id, meta.free_list)
+        };
+
+        let (free_list_size, page_size) = {
+            // Free the freelist and allocate new pages for it. This will overestimate
+            // the size of the freelist but not understimate the size (which would to bad).
+            let page = db.page(free_list_pgid);
+            let mut free_list = db.0.free_list.try_write().unwrap();
+            free_list.free(tx_pgid as u64, &page);
+
+            let free_list_size = free_list.size();
+            let page_size = db.page_size() as usize;
+
+            (free_list_size, page_size)
+        };
+
+        {
+            let page = self.allocate((free_list_size / page_size) as u64 + 1);
+            if let Err(err) = page {
+                self.rollback()?;
+                return Err(err);
+            }
+
+            let page = page?;
+            let page = unsafe { &mut *page };
+
+            db.0.free_list.try_write().unwrap().write(page);
+            self.0.meta.try_write().unwrap().free_list = page.id;
+
+            // If the high water mark has moved up then attemp to grow the database.
+            if self.pgid() > tx_pgid as u64 {
+                if let Err(e) = db.grow((tx_pgid + 1) * page_size as u64) {
+                    self.rollback()?;
+                    return Err(e);
+                }
+            }
+
+            // Write dirty pages to disk.
+            let write_start_time = std::time::SystemTime::now();
+            if let Err(e) = self.write() {
+                self.rollback()?;
+                return Err(e.into());
+            }
+
+            // If strict mode is enabled then perform a consistency check.
+            // Only the first consistency error is reported in the panic.
+            if self.0.check.swap(false, Ordering::AcqRel) {
+                let strict = db.0.check_mode.contains(CheckMode::STRICT);
+                if let Err(e) = self.check_sync() {
+                    if strict {
+                        self.rollback()?;
+                        return Err(e);
+                    } else {
+                        warn!("failed to check sync, {:?}", e);
+                    }
+                }
+            }
+
+            // Write meta to disk
+            {
+                if let Err(e) = self.write_meta() {
+                    self.0.check.store(false, Ordering::Release);
+                    self.rollback()?;
+                    return Err(e);
+                }
+            }
+
+            self.0.stats.try_lock().unwrap().write_time += std::time::SystemTime::now()
+                .duration_since(write_start_time)
+                .map_err(|_| Unexpected("Cann't get system time"))?;
+        }
+
+        // Finalize the transaction.
+        self.close()?;
+        {
+            for h in &*self.0.commit_handlers.try_lock().unwrap() {
+                h();
+            }
+        }
+
+        Ok(())
     }
 
     /// Closes the transaction and ignores all previous updates. Read-Only
     /// transactions must be rolled back and not committed
-    pub fn rollback(&mut self) -> Result<()> {
+    pub fn rollback(&self) -> Result<()> {
         if self.0.managed.load(Ordering::Acquire) {
             return Err(Error::TxManaged);
         }
@@ -285,8 +403,29 @@ impl TX {
         Ok(())
     }
 
-    fn __rollback(&mut self) -> Result<()> {
-        todo!()
+    pub(crate) fn __rollback(&self) -> Result<()> {
+        let db = self.db()?;
+        if self.0.check.swap(false, Ordering::AcqRel) {
+            let strict = db.0.check_mode.contains(CheckMode::STRICT);
+            if let Err(err) = self.check_sync() {
+                if strict {
+                    return Err(err);
+                } else {
+                    info!("failed to check sync, {:?}", err);
+                }
+            }
+        }
+
+        if self.writable() {
+            let txid = self.id();
+            let mut free_list = db.0.free_list.write();
+            free_list.rollback(&txid);
+            let free_list_id = db.meta().free_list;
+            let free_list_page = db.page(free_list_id);
+            free_list.reload(&free_list_page);
+        }
+        self.close()?;
+        Ok(())
     }
 
     /// Sync version of check()
@@ -333,6 +472,71 @@ impl TX {
         ch: &mpsc::Sender<String>,
     ) -> mpsc::Receiver<String> {
         todo!()
+    }
+
+    /// Returns a contiguous block of memory starting at a given page.
+    pub(crate) fn allocate(&mut self, count: u64) -> Result<*mut Page> {
+        let mut db = self.db()?;
+        let mut page = db.allocate(count, self)?;
+        let pgid = page.id;
+        let page_ptr = &mut *page as *mut Page;
+        self.0.pages.try_write().unwrap().insert(pgid, page);
+
+        // Updates statistics
+        {
+            let mut stats = self.0.stats.lock();
+            stats.page_count += 1;
+            stats.page_alloc += count as usize * self.db()?.page_size();
+        }
+
+        Ok(page_ptr)
+    }
+
+    /// Writes any dirty pages to disk.
+    pub(crate) fn write(&mut self) -> Result<()> {
+        let mut pages = self
+            .0
+            .pages
+            .write()
+            .drain()
+            .map(|x| {
+                let pgid = x.1.id;
+                (pgid, x.1)
+            })
+            .collect::<Vec<_>>();
+        pages.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut db = self.db()?;
+        let page_size = db.page_size();
+        for (id, p) in &pages {
+            let size = (p.over_flow + 1) as usize + page_size;
+            let offset = *id as u64 * page_size as u64;
+            let buffer = p.as_slice();
+            let cursor = std::io::Cursor::new(buffer);
+            db.write_at(offset, cursor)?;
+        }
+
+        if !db.0.no_sync {
+            db.sync()?;
+        }
+
+        /// TODO add page pool
+        Ok(())
+    }
+
+    /// Writes the meta to disk.
+    pub(crate) fn write_meta(&mut self) -> Result<()> {
+        let mut db = self.db()?;
+        let mut buffer = vec![0u8; db.page_size() as usize];
+        let mut page = Page::from_slice_mut(&mut buffer);
+        self.0.meta.try_write().unwrap().write(&mut page)?;
+        // TODO why the pos is zero
+        db.write_at(0, std::io::Cursor::new(buffer))?;
+        if !db.0.no_sync {
+            db.sync()?;
+        }
+        self.0.stats.lock().write += 1;
+        Ok(())
     }
 
     /// Returns page information for a given page number.
