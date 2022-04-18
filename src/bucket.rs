@@ -285,7 +285,7 @@ impl Bucket {
                 .put(key, key, value, 0, BUCKET_LEAF_FLAG)?;
 
             use kv_log_macro::debug;
-            debug!("insert bucket into node");
+            debug!("insert bucket into node {}", self.nodes.keys().len());
             // TODO: why
             // since subbuckets are not allowed on inline buckets, we need to
             // dereference the inline page, if it exists. This will cause the bucket
@@ -314,7 +314,7 @@ impl Bucket {
 
     // DeleteBucket deletes a bucket at the given key.
     // Returns an error if the bucket does not exists, or if the key represents a non-bucket value.
-    pub fn delete_bucket(&self, key: &[u8]) -> Result<()> {
+    pub fn delete_bucket(&mut self, key: &[u8]) -> Result<()> {
         {
             let tx = self.tx()?;
             if !tx.opened() {
@@ -385,8 +385,11 @@ impl Bucket {
 
     /// Retrieves a nested mutable bucket by name.
     /// Returns None if the bucket does not exist or found item is not bucket.
-    pub fn bucket_mut(&self, key: &[u8]) -> Option<&mut Bucket> {
-        self.__bucket_mut(key).map(|b| unsafe { &mut *b })
+    pub fn bucket_mut(&mut self, key: &[u8]) -> Option<&mut Bucket> {
+        if !self.tx().unwrap().writable() {
+            return None;
+        }
+        self.__bucket(key).map(|b| unsafe { &mut *b })
     }
 
     /// Retrieves the value for a key in the bucket.
@@ -632,7 +635,7 @@ impl Bucket {
             }
             // Update parent node.
             let mut c = mutself.cursor()?;
-            let mut item = c.seek(&name)?;
+            let item = c.seek(&name)?;
             if item.key != Some(name.as_slice()) {
                 return Err(Error::Unexpected2(format!(
                     "misplaced bucket header: {:?} -> {:?}",
@@ -649,7 +652,7 @@ impl Bucket {
             c.node()?.put(&name, &name, value, 0, BUCKET_LEAF_FLAG);
         }
 
-        /// ignore if there's not a materialized root node.
+        // ignore if there's not a materialized root node.
         if self.root_node.is_none() {
             return Ok(());
         }
@@ -707,20 +710,37 @@ impl Bucket {
         self.tx().unwrap().db().unwrap().page_size() / 4
     }
 
-    pub fn __bucket(&self, key: &[u8]) -> Option<*const Bucket> {
-        if let Some(b) = self.buckets.borrow().get(&key.to_vec()) {
+    pub fn __bucket(&self, name: &[u8]) -> Option<*mut Bucket> {
+        if let Some(b) = self.buckets.borrow_mut().get_mut(&name.to_vec()) {
             return Some(b);
         }
-        None
-    }
 
-    pub(crate) fn __bucket_mut(&self, key: &[u8]) -> Option<*mut Bucket> {
-        info!("--------------- {}", self.buckets.borrow().len());
+        let (key, value) = {
+            let c = self.cursor().unwrap();
+            let (key, value, flags) = c.seek_to_item(name).unwrap().unwrap();
 
-        if let Some(b) = self.buckets.borrow_mut().get_mut(&key.to_vec()) {
-            return Some(b);
-        }
-        None
+            // Return None if the key doesn't exist or it is not a bucket.
+            if key != Some(name) || (flags & BUCKET_LEAF_FLAG) == 0 {
+                return None;
+            }
+
+            (key.map(|k| k.to_vec()), value.map(|v| v.to_vec()))
+        };
+
+        // Otherwisse create a bucket and cache it.
+        let child = self.open_bucket(value.unwrap());
+
+        let mut buckets = self.buckets.borrow_mut();
+        let bucket = match buckets.entry(key.unwrap()) {
+            std::collections::hash_map::Entry::Vacant(e) => e.insert(child),
+            std::collections::hash_map::Entry::Occupied(e) => {
+                let c = e.into_mut();
+                *c = child;
+                c
+            }
+        };
+        info!("loader a bucket {:?}", name);
+        Some(bucket)
     }
 }
 

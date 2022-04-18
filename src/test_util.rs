@@ -72,6 +72,7 @@ fn panic_while_update() {
     db.update(|tx| {
         info!("ready to create a bucket");
         let _ = tx.create_bucket(b"exists").unwrap();
+        info!("has created a new bucket");
         Ok(())
     })
     .unwrap();
