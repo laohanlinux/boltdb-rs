@@ -51,6 +51,7 @@ fn open_existing() {
         .set_read_only(true)
         .build()
         .unwrap();
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     assert_eq!(db.page_size(), page_size::get());
     assert_eq!(db.meta().version, 2);
     assert_eq!(db.meta().magic, MAGIC);

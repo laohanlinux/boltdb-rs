@@ -9,7 +9,9 @@ use crate::{bucket, search, Bucket, Page, PgId};
 use memoffset::ptr::copy_nonoverlapping;
 use std::borrow::{Borrow, BorrowMut};
 use std::cell::{Cell, Ref, RefCell, RefMut};
+use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, RangeBounds};
+use std::path::Display;
 use std::process::id;
 use std::rc::{Rc, Weak};
 use std::slice::Iter;
@@ -19,7 +21,6 @@ use std::sync::Arc;
 pub(crate) type Key = Vec<u8>;
 pub(crate) type Value = Vec<u8>;
 
-#[derive(Debug)]
 pub(crate) struct NodeInner {
     // associated bucket.
     bucket: *const Bucket,
@@ -32,6 +33,18 @@ pub(crate) struct NodeInner {
     parent: RefCell<WeakNode>,
     children: RefCell<Vec<Node>>,
     pub(crate) inodes: RefCell<Vec<Inode>>,
+}
+
+impl Debug for NodeInner {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let local_bucket = unsafe { (*self.bucket).local_bucket.root };
+        f.debug_struct("node")
+            .field("bucket", &local_bucket)
+            .field("is_leaf", &self.is_leaf)
+            .field("spilled", &self.spilled)
+            .field("unbalanced", &self.unbalanced)
+            .finish()
+    }
 }
 
 impl NodeInner {
@@ -283,11 +296,11 @@ impl Node {
 
         // Find insertion index.
         let mut inodes = self.0.inodes.borrow_mut();
-        let (extra, index) = inodes
-            .binary_search_by(|inode| inode.key.cmp(&old_key.to_vec()))
-            .map(|index| (true, index))
-            .map_err(|index| (false, index))
-            .unwrap();
+        let (extra, index) = match inodes.binary_search_by(|inode| inode.key.cmp(&old_key.to_vec()))
+        {
+            Ok(n) => (true, n),
+            Err(n) => (false, n),
+        };
         // Add capacity and shift nodes if we don't have an exact match and need to insert.
         if !extra {
             inodes.insert(index, Inode::default());

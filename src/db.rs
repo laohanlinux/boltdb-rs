@@ -732,7 +732,7 @@ impl Drop for DB {
     fn drop(&mut self) {
         let strong_count = Arc::strong_count(&self.0);
         if strong_count > 1 {
-            debug!("db strong ref count {}", strong_count);
+            // debug!("db strong ref count {}", strong_count);
             return;
         }
         self.cleanup().unwrap();

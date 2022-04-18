@@ -7,6 +7,7 @@ use crate::tx::{WeakTx, TX};
 use crate::{Page, PgId};
 use either::Either;
 use kv_log_macro::debug;
+use log::info;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
@@ -714,6 +715,8 @@ impl Bucket {
     }
 
     pub(crate) fn __bucket_mut(&self, key: &[u8]) -> Option<*mut Bucket> {
+        info!("--------------- {}", self.buckets.borrow().len());
+
         if let Some(b) = self.buckets.borrow_mut().get_mut(&key.to_vec()) {
             return Some(b);
         }

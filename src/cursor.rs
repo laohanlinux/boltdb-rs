@@ -203,8 +203,9 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             }
         };
 
-        for refi in self.stack.borrow().iter() {
-            kv_log_macro::info!("===>>> {:?}", n);
+        // from last second iter because 'n' is the last top.
+        let stacklen = self.stack.borrow().len();
+        for refi in &self.stack.borrow()[..stacklen - 1] {
             assert!(!n.is_leaf(), "expected branch");
             let child = n.child_at(refi.index).map_err(|_| Error::TraverserFailed)?;
             n = child;
