@@ -160,6 +160,13 @@ impl Bucket {
 
     /// Attempts to balance all nodes
     pub(crate) fn rebalance(&mut self) {
+        let pid = self.local_bucket.root;
+        info!(
+            "ready to rebalance, pid:{}, nodes:{}, bucekts: {}",
+            pid,
+            self.nodes.len(),
+            self.buckets.borrow().len()
+        );
         for node in self.nodes.values_mut() {
             node.rebalance();
         }

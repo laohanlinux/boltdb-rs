@@ -279,7 +279,7 @@ impl TX {
         } else if !self.writable() {
             return Err(Error::TxReadOnly);
         }
-
+        info!("ready to commit");
         let mut db = self.db()?;
         {
             let start_time = std::time::SystemTime::now();
