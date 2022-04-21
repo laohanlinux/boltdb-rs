@@ -539,23 +539,68 @@ impl Node {
             .map(|idx| self.0.children.borrow_mut().remove(idx));
     }
 
-    // Writes the nodes to dirty pages and splits nodes as it goes.
-    // Returns an error if dirty pages cannot be allocated.
-    pub(crate) fn spill(&mut self) -> Result<()> {
-        // if self.0.spilled.load(Ordering::Acquire) {
-        //     return Ok(());
-        // }
-        //
-        // let page_size = self.bucket().unwrap().tx().db().page_size;
-        // {
-        //     // Why?
-        //     let mut children = self.0.children.borrow_mut().clone();
-        //     children.sort_by_key(|node| node.0.key);
-        //     for child in &mut *children {
-        //         // child.split()?;
-        //     }
-        //     self.0.children.borrow_mut().clear();
-        // }
+    /// Writes the nodes to dirty pages and splits nodes as it goes.
+    /// Returns an error if dirty pages cannot be allocated.
+    pub fn spill(&mut self) -> Result<()> {
+        if self.0.spilled.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let page_size = self.bucket().unwrap().tx()?.db()?.page_size();
+        {
+            let mut children = self.0.children.borrow_mut().clone();
+            children.sort_by(Node::cmp_by_key);
+            for child in &mut *children {
+                child.spill()?;
+            }
+            self.0.children.borrow_mut().clear();
+        }
+
+        let mut node_parent = None;
+        {
+            let mut nodes = match self.split(page_size)? {
+                None => vec![self.clone()],
+                Some(p) => {
+                    node_parent = Some(p.clone());
+                    p.0.children.borrow().clone()
+                }
+            };
+
+            let bucket = self.bucket_mut().unwrap();
+            let mut tx = bucket.tx()?;
+            let db = tx.db()?;
+            let txid = tx.id();
+
+            for node in &mut nodes {
+                {
+                    // Add node's page to the freelist if it's not new.
+                    let node_pgid = *node.0.pgid.borrow_mut();
+                    // TODO *Notes*: if node is new that it's pgid was setted to 0
+                    if node_pgid > 0 {
+                        db.0.free_list
+                            .try_write()
+                            .unwrap()
+                            .free(txid, unsafe { &*tx.page(node_pgid)? })
+                            .unwrap();
+                        *node.0.pgid.borrow_mut() = 0;
+                    }
+                }
+
+                let page = tx.allocate((node.size() / db.page_size()) as u64 + 1)?;
+                let mut page = unsafe { &mut *page };
+                {
+                    // Write the node.
+                    let id = page.id;
+                    let txpgid = tx.pgid();
+                    if id >= txpgid {
+                        panic!("pgid ({}) above high water marl ({}}", id, txid);
+                    }
+                    *node.0.pgid.borrow_mut() = id;
+                    node.write(&mut page);
+                    node.0.spilled.store(true, Ordering::Release);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -684,6 +729,10 @@ impl Node {
     }
 
     fn node_builder(bucket: *const Bucket) {}
+
+    fn cmp_by_key(a: &Node, b: &Node) -> std::cmp::Ordering {
+        a.0.inodes.borrow()[0].key.cmp(&b.0.inodes.borrow()[0].key)
+    }
 }
 
 pub(crate) struct NodeBuilder {
