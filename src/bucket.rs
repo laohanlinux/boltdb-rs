@@ -2,7 +2,7 @@ use crate::cursor::{Cursor, PageNode};
 use crate::db::{Stats, DB};
 use crate::error::{Error, Result};
 use crate::node::{Node, NodeBuilder, WeakNode};
-use crate::page::{BUCKET_LEAF_FLAG, LEAF_PAGE_ELEMENT_SIZE, PAGE_HEADER_SIZE};
+use crate::page::{OwnedPage, BUCKET_LEAF_FLAG, LEAF_PAGE_ELEMENT_SIZE, PAGE_HEADER_SIZE};
 use crate::tx::{WeakTx, TX};
 use crate::{Page, PgId};
 use either::Either;
@@ -56,6 +56,7 @@ impl TopBucket {
 }
 
 /// Bucket represents a collection of key/value pairs inside the database.
+#[derive(Debug)]
 pub struct Bucket {
     pub(crate) local_bucket: TopBucket,
     // the associated transaction, WeakTx
@@ -63,12 +64,12 @@ pub struct Bucket {
     // subbucket cache
     pub(crate) buckets: RefCell<HashMap<Vec<u8>, Bucket>>,
     // inline page reference
-    pub(crate) page: Option<Page>,
+    pub(crate) page: Option<OwnedPage>,
     // materialized node for the root page
     pub(crate) root_node: Option<Node>,
     // node cache
     // TODO: maybe use refHashMap
-    pub(crate) nodes: HashMap<PgId, Node>,
+    pub(crate) nodes: RefCell<HashMap<PgId, Node>>,
     // Sets the threshold for filling nodes when they split. By default,
     // the bucket will fill to 50% but it can be useful to increase this
     // amount if you know that your write workloads are mostly append-only.
@@ -77,20 +78,20 @@ pub struct Bucket {
     pub(crate) fill_percent: f64,
 }
 
-impl Debug for Bucket {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        // let tx = self.tx();
-        f.debug_struct("Bucket")
-            .field("bucket", &self.local_bucket)
-            // .field("tx", &tx)
-            .field("buckets", &self.buckets)
-            .field("page", &self.page.as_ref())
-            .field("root_node", &self.root_node)
-            .field("nodes", &self.nodes)
-            .field("fill_percent", &self.fill_percent)
-            .finish()
-    }
-}
+// impl Debug for Bucket {
+//     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+//         // let tx = self.tx();
+//         f.debug_struct("Bucket")
+//             .field("bucket", &self.local_bucket)
+//             // .field("tx", &tx)
+//             .field("buckets", &self.buckets)
+//             .field("page", &self.page.as_ref())
+//             .field("root_node", &self.root_node)
+//             .field("nodes", &self.nodes.borrow())
+//             .field("fill_percent", &self.fill_percent)
+//             .finish()
+//     }
+// }
 
 impl PartialEq for Bucket {
     fn eq(&self, _other: &Self) -> bool {
@@ -164,10 +165,10 @@ impl Bucket {
         info!(
             "ready to rebalance, pid:{}, nodes:{}, bucekts: {}",
             pid,
-            self.nodes.len(),
+            self.nodes.borrow().len(),
             self.buckets.borrow().len()
         );
-        for node in self.nodes.values_mut() {
+        for node in self.nodes.borrow_mut().values_mut() {
             node.rebalance();
         }
         for child in self.buckets.borrow_mut().values_mut() {
@@ -182,7 +183,7 @@ impl Bucket {
             panic!("tx is read-only");
         }
         // Retrieve node if it's already been created.
-        if let Some(node) = self.nodes.get(&pg_id) {
+        if let Some(node) = self.nodes.borrow().get(&pg_id) {
             return node.clone();
         }
         // Otherwise create a node and cache it.
@@ -208,7 +209,7 @@ impl Bucket {
             }
         }
         debug!("cache a node: {:?}", node);
-        self.nodes.insert(pg_id, node.clone());
+        self.nodes.borrow_mut().insert(pg_id, node.clone());
         // Update statistics.
         self.tx().unwrap().stats().node_count += 1;
         node
@@ -229,11 +230,11 @@ impl Bucket {
             }
             debug!("return a inline root page");
             return Ok(PageNode::from(
-                &*self.page.as_ref().ok_or(Error::Unexpected("page empty"))? as *const Page,
+                &**self.page.as_ref().ok_or("page empty")? as *const Page
             ));
         }
         // Check the node cache for non-inline buckets.
-        if let Some(node) = self.nodes.get(&id) {
+        if let Some(node) = self.nodes.borrow().get(&id) {
             return Ok(PageNode::from(node.clone()));
         }
 
@@ -244,7 +245,7 @@ impl Bucket {
 
     pub fn clear(&mut self) {
         self.buckets.borrow_mut().clear();
-        self.nodes.clear();
+        self.nodes.borrow_mut().clear();
         self.page = None;
         self.root_node = None;
     }
@@ -292,7 +293,10 @@ impl Bucket {
                 .put(key, key, value, 0, BUCKET_LEAF_FLAG)?;
 
             use kv_log_macro::debug;
-            debug!("insert bucket into node {}", self.nodes.keys().len());
+            debug!(
+                "insert bucket into node {}",
+                self.nodes.borrow().keys().len()
+            );
             // TODO: why
             // since subbuckets are not allowed on inline buckets, we need to
             // dereference the inline page, if it exists. This will cause the bucket
@@ -359,7 +363,7 @@ impl Bucket {
             }
 
             // Release all bucket pages to free_list.
-            child.nodes.clear();
+            child.nodes.borrow_mut().clear();
             child.root_node = None;
             child.free();
         }
@@ -505,7 +509,7 @@ impl Bucket {
                 copy_nonoverlapping(slice.as_ptr(), vec.as_mut_ptr(), slice.len());
                 vec
             };
-            let page = Page::from(data);
+            let page = OwnedPage::from_vec(data);
             child.page = Some(page);
         }
 
@@ -535,7 +539,9 @@ impl Bucket {
         Ok(())
     }
 
+    /// Recursively frees all pages in the bucket.
     pub fn free(&mut self) {
+        // This is a inline bucket, don't need to free it.
         if self.local_bucket.root == 0 {
             return;
         }
@@ -626,6 +632,11 @@ impl Bucket {
             // write it inline into the parent bucket's page. Otherwise spill it
             // like a normal bucket and make the parent value a pointer to the page.
             let value = if child.inlineable() {
+                println!(
+                    "+++++++ {:?} {}",
+                    child.local_bucket.root,
+                    child.root_node.is_some()
+                );
                 child.free();
                 child.write()
             } else {
@@ -734,9 +745,9 @@ impl Bucket {
             (key.map(|k| k.to_vec()), value.map(|v| v.to_vec()))
         };
 
-        // Otherwisse create a bucket and cache it.
+        // Otherwise, create a bucket and cache it.
         let child = self.open_bucket(value.unwrap());
-
+        info!("<<<<<< {}", child.root_node.is_some());
         let mut buckets = self.buckets.borrow_mut();
         let bucket = match buckets.entry(key.unwrap()) {
             std::collections::hash_map::Entry::Vacant(e) => e.insert(child),
@@ -746,7 +757,12 @@ impl Bucket {
                 c
             }
         };
-        info!("loader a bucket {:?}", name);
+        info!(
+            "loader a bucket {:?}, root: {:?}, root_node: {}",
+            String::from_utf8_lossy(name),
+            bucket.local_bucket,
+            bucket.root_node.is_some()
+        );
         Some(bucket)
     }
 }

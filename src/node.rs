@@ -45,6 +45,10 @@ impl Debug for NodeInner {
             .field("is_leaf", &self.is_leaf)
             .field("spilled", &self.spilled)
             .field("unbalanced", &self.unbalanced)
+            .field("key", &self.key.borrow())
+            .field("pgid", &self.pgid.borrow())
+            .field("children", &self.children.borrow())
+            .field("inodes", &self.inodes.borrow())
             .finish()
     }
 }
@@ -95,10 +99,10 @@ impl Node {
     /// Attempts to combine the node with sibling nodes if the node fill
     /// size is below a threshold or if there are not enough keys.
     pub fn rebalance(&mut self) {
+        warn!("need not to rebalance: {:?}", self.0);
         {
             let selfsize = self.size();
             if !self.0.unbalanced.load(Ordering::Acquire) {
-                warn!("need not to rebalance: {:?}", self.0.key);
                 return;
             }
             self.0.unbalanced.store(false, Ordering::Relaxed);
@@ -575,13 +579,12 @@ impl Node {
                 {
                     // Add node's page to the freelist if it's not new.
                     let node_pgid = *node.0.pgid.borrow_mut();
-                    // TODO *Notes*: if node is new that it's pgid was setted to 0
+                    // TODO *Notes*: if node is new that it's pgid was set to 0
                     if node_pgid > 0 {
                         db.0.free_list
                             .try_write()
                             .unwrap()
-                            .free(txid, unsafe { &*tx.page(node_pgid)? })
-                            .unwrap();
+                            .free(txid, unsafe { &*tx.page(node_pgid)? });
                         *node.0.pgid.borrow_mut() = 0;
                     }
                 }
@@ -593,7 +596,7 @@ impl Node {
                     let id = page.id;
                     let txpgid = tx.pgid();
                     if id >= txpgid {
-                        panic!("pgid ({}) above high water marl ({}}", id, txid);
+                        panic!("pgid ({}) above high water marl ({})", id, txid);
                     }
                     *node.0.pgid.borrow_mut() = id;
                     node.write(&mut page);
@@ -601,11 +604,36 @@ impl Node {
                 }
             }
         }
+
+        // If the root node split and created a new root then we need to spill that
+        // as well. We'll clear out the children to make sure it doesn't try to respill.
+        {
+            let spill_parent = match node_parent {
+                None => None,
+                Some(p) => {
+                    let pgid_valid = *p.0.pgid.borrow() == 0;
+                    if pgid_valid {
+                        Some(p)
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(parent) = spill_parent {
+                self.0.children.borrow_mut().clear();
+                // setting self as parent to hold strong reference
+                *self = parent;
+                return self.spill();
+            }
+        }
         Ok(())
     }
 
     // Breaks up a node into multiple smaller nodes, if appropriate.
     // This should only be called from the spill() function.
+    //
+    // returns None if no split occurred, or parent Node otherwise (the parent maybe is new if not
+    // exists at before).
     fn split(&mut self, page_size: usize) -> Result<Option<Node>> {
         let mut nodes = vec![self.clone()];
         while let Some(n) = nodes.last().unwrap().clone().split_two(page_size)? {
@@ -621,7 +649,9 @@ impl Node {
                 let mut children = p.0.children.borrow_mut();
                 let index = children.iter().position(|ch| Rc::ptr_eq(&self.0, &ch.0));
                 assert!(index.is_some());
+                // remove old children's reference for parent
                 children.remove(index.unwrap());
+                // reset all nodes parent reference
                 for node in nodes {
                     *node.0.parent.borrow_mut() = WeakNode::from(&p);
                     children.push(node);
@@ -632,6 +662,7 @@ impl Node {
                 Ok(Some(p))
             }
             None => {
+                // generate a new parent and set collection with them.
                 let parent = NodeBuilder::new(self.0.bucket).children(nodes).build();
                 for ch in &mut *parent.0.children.borrow_mut() {
                     *ch.0.parent.borrow_mut() = WeakNode::from(&parent);
@@ -673,8 +704,8 @@ impl Node {
             .borrow_mut()
             .drain(split_index..)
             .collect::<Vec<_>>();
+        // Only the first block has pgid of older(use old memory space), thew second block is set to 0
         *next.0.inodes.borrow_mut() = nodes;
-        // FIXME: add statistics
         self.bucket_mut()
             .ok_or_else(|| BucketEmpty)?
             .tx()

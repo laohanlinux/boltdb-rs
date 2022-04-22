@@ -71,11 +71,17 @@ fn panic_while_update() {
 
     db.update(|tx| {
         info!("ready to create a bucket");
-        let _ = tx.create_bucket(b"exists").unwrap();
+        let _ = tx.create_bucket(b"bucket").unwrap();
         info!("has created a new bucket");
         Ok(())
     })
     .unwrap();
+}
+
+#[test]
+fn dd() {
+    let v = vec![98, 117, 99, 107, 101, 116];
+    println!("{}", String::from_utf8_lossy(&v));
 }
 
 #[cfg(test)]

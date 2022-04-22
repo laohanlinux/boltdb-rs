@@ -279,7 +279,10 @@ impl TX {
         } else if !self.writable() {
             return Err(Error::TxReadOnly);
         }
-        info!("ready to commit");
+        info!(
+            "ready to commit : {:?}",
+            self.bucket("bucket".as_ref()).unwrap()
+        );
         let mut db = self.db()?;
         {
             let start_time = std::time::SystemTime::now();
@@ -667,7 +670,7 @@ pub struct TxStats {
     pub(crate) write_time: Duration,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct WeakTx(Weak<TxInner>);
 
 impl WeakTx {

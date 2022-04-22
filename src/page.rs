@@ -443,6 +443,10 @@ impl OwnedPage {
         }
     }
 
+    pub(crate) fn from_vec(buf: Vec<u8>) -> Self {
+        Self { page: buf }
+    }
+
     // return page size
     #[inline]
     pub(crate) fn size(&self) -> usize {
