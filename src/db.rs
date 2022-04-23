@@ -1,6 +1,6 @@
 use crate::bucket::TopBucket;
 use crate::error::Error;
-use crate::error::Error::{DBOpFailed, Unexpected};
+use crate::error::Error::{DBOpFailed, DatabaseGone, DatabaseOnlyRead, Unexpected};
 use crate::error::Result;
 use crate::free_list::FreeList;
 use crate::page::OwnedPage;
@@ -273,24 +273,24 @@ impl<'a> DB {
     /// to avoid potential blocking of write transasction.
     pub fn begin_rw_tx(&mut self) -> Result<RWTxGuard> {
         if self.read_only() {
-            return Err(Error::DatabaseOnlyRead);
-        }
+            return Err(DatabaseOnlyRead);
+        };
         if !self.opened() {
-            return Err(Error::DatabaseGone);
-        }
+            return Err(DatabaseGone);
+        };
 
         unsafe {
             self.0.rw_lock.raw().lock();
-        }
-
-        let mut rw_tx = self.0.rw_tx.write();
-        let minid = {
-            let txs = self.0.txs.read();
-            txs.iter()
-                .map(|tx| tx.id())
-                .min()
-                .unwrap_or(0xFFFF_FFFF_FFFF_FFFF)
         };
+        let mut rw_tx = self.0.rw_tx.write();
+
+        let txs = self.0.txs.read();
+        let minid = txs
+            .iter()
+            .map(|tx| tx.id())
+            .min()
+            .unwrap_or(0xFFFF_FFFF_FFFF_FFFF);
+        drop(txs);
 
         let tx = TxBuilder::new()
             .set_db(WeakDB::from(self))

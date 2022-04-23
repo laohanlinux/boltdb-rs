@@ -701,24 +701,24 @@ impl Bucket {
     /// Returns true if a bucket is small enough to be written inline
     /// and if it contains no subbuckets. Otherwise returns false.
     fn inlineable(&self) -> bool {
-        // TODO: root node is none? init bucket time?
-        // if self.root_node.is_none() || !self.root_node.unwrap().is_leaf() {
-        //     return false;
-        // }
-        //
-        // let mut size = PAGE_HEADER_SIZE;
-        // let node = self.root_node.clone().unwrap();
-        //
-        // for inode in &*node.0.inodes.borrow() {
-        //     if inode.flags & BUCKET_LEAF_FLAG != 0 {
-        //         return false;
-        //     }
-        //
-        //     size += LEAF_PAGE_ELEMENT_SIZE + inode.key.len() + inode.value.len();
-        //     if size > self.max_inline_bucket_size() {
-        //         return false;
-        //     }
-        // }
+        if self.root_node.is_none() || !self.root_node.as_ref().unwrap().is_leaf() {
+            kv_log_macro::warn!("{:#?} bucket cann't inlineable", self.local_bucket);
+            return false;
+        }
+
+        let mut size = PAGE_HEADER_SIZE;
+        let node = self.root_node.clone().unwrap();
+
+        for inode in &*node.0.inodes.borrow() {
+            if inode.flags & BUCKET_LEAF_FLAG != 0 {
+                return false;
+            }
+
+            size += LEAF_PAGE_ELEMENT_SIZE + inode.key.len() + inode.value.len();
+            if size > self.max_inline_bucket_size() {
+                return false;
+            }
+        }
 
         true
     }
@@ -747,7 +747,6 @@ impl Bucket {
 
         // Otherwise, create a bucket and cache it.
         let child = self.open_bucket(value.unwrap());
-        info!("<<<<<< {}", child.root_node.is_some());
         let mut buckets = self.buckets.borrow_mut();
         let bucket = match buckets.entry(key.unwrap()) {
             std::collections::hash_map::Entry::Vacant(e) => e.insert(child),

@@ -265,6 +265,7 @@ impl TX {
     pub(crate) fn close(&self) -> Result<()> {
         let db = self.db()?;
         let tx = db.remove_tx(self)?;
+        *tx.0.db.write() = WeakDB::new();
         tx.0.root.try_write().unwrap().clear();
         tx.0.pages.try_write().unwrap().clear();
         Ok(())
@@ -279,10 +280,10 @@ impl TX {
         } else if !self.writable() {
             return Err(Error::TxReadOnly);
         }
-        info!(
-            "ready to commit : {:?}",
-            self.bucket("bucket".as_ref()).unwrap()
-        );
+        // info!(
+        //     "ready to commit : {:?}",
+        //     self.bucket("bucket".as_ref()).unwrap()
+        // );
         let mut db = self.db()?;
         {
             let start_time = std::time::SystemTime::now();
@@ -630,6 +631,24 @@ impl TX {
     }
 }
 
+impl Drop for TX {
+    fn drop(&mut self) {
+        let count = Arc::strong_count(&self.0);
+        // one for the reference, and one that is owned by db
+        if count > 2 {
+            return;
+        }
+        warn!("tx count reference has to {}", Arc::strong_count(&self.0));
+        if let Ok(_db) = self.db() {
+            if self.0.writeable {
+                self.commit().unwrap();
+            } else {
+                self.rollback().unwrap();
+            }
+        }
+    }
+}
+
 /// TxStats represents statistics about the actions performed by the transaction.
 #[derive(Default, Debug, Clone)]
 pub struct TxStats {
@@ -701,7 +720,6 @@ impl TxBuilder {
             check: false,
         }
     }
-
     pub(crate) fn set_db(mut self, db: WeakDB) -> Self {
         self.db = db;
         self
@@ -798,8 +816,33 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn commit_entry() {
-        // let mut db =
+    fn commit_some() {
+        let mut db = crate::test_util::mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        {
+            let mut bucket = tx.create_bucket(b"bucket").unwrap();
+        }
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn commit_empty() {
+        let mut db = crate::test_util::mock_db().build().unwrap();
+        assert!(db.0.rw_tx.try_read().unwrap().is_none());
+
+        {
+            let tx = db.begin_rw_tx().unwrap();
+            assert_eq!(Arc::strong_count(&tx.0), 2);
+            assert!(tx.db().unwrap().0.rw_tx.try_read().unwrap().is_some());
+        }
+
+        assert!(db.0.rw_tx.try_read().unwrap().is_none());
+
+        db.view(|tx| {
+            assert_eq!(tx.db().unwrap().0.txs.try_read().unwrap().len(), 1);
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]
