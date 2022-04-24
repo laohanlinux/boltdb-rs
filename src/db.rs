@@ -450,10 +450,10 @@ impl<'a> DB {
     pub fn page(&self, id: PgId) -> MappedRwLockReadGuard<Page> {
         let page_size = self.0.page_size;
         let pos = id as usize * page_size as usize;
-        debug!(
-            "ready to load page from mmap, id: {}, pos:{}, page_size:{}",
-            id, pos, page_size
-        );
+        // debug!(
+        //     "ready to load page from mmap, id: {}, pos:{}, page_size:{}",
+        //     id, pos, page_size
+        // );
         let mmap = self.0.mmap.read_recursive();
         RwLockReadGuard::map(mmap, |mmap| Page::from_slice(&mmap.as_ref()[pos..]))
     }
@@ -510,8 +510,8 @@ impl<'a> DB {
                 return Ok(p);
             }
         }
-
-        p.id = tx.id();
+        info!("allocate memory, count: {}, tx: {}", count, tx.id());
+        p.id = tx.pgid();
 
         // Resize mmap() if we're at the end
         let minsz = (p.id + 1 + count) * self.0.page_size as u64;
@@ -522,8 +522,8 @@ impl<'a> DB {
             }
         }
 
-        // Move the page id high water mark
-        tx.set_pgid(tx.id() + count as u64)?;
+        // Move the page id high watermark
+        tx.set_pgid(tx.pgid() + count as u64)?;
         Ok(p)
     }
 
@@ -631,7 +631,7 @@ impl<'a> DB {
         debug!("succeed to init root page");
         self.write_at(0, std::io::Cursor::new(&mut buf));
         self.sync()?;
-        debug!("succeed to init db");
+        debug!("succeed to init db, waker pgid: {:?}, top-pgid: {}", 4, 3);
         Ok(())
     }
 

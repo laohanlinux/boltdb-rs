@@ -5,6 +5,7 @@ use crate::page::OwnedPage;
 use crate::page::FREE_LIST_PAGE_FLAG;
 use crate::{error::Error, error::Result, Bucket, Page, PageInfo, PgId};
 use kv_log_macro::{info, warn};
+use log::debug;
 use parking_lot::lock_api::MutexGuard;
 use parking_lot::{
     MappedRwLockReadGuard, MappedRwLockWriteGuard, Mutex, RawMutex, RawRwLock, RwLock,
@@ -319,7 +320,7 @@ impl TX {
 
         let (free_list_size, page_size) = {
             // Free the freelist and allocate new pages for it. This will overestimate
-            // the size of the freelist but not understimate the size (which would to bad).
+            // the size of the freelist but not underestimate the size (which would to bad).
             let page = db.page(free_list_pgid);
             let mut free_list = db.0.free_list.try_write().unwrap();
             free_list.free(tx_pgid as u64, &page);
@@ -329,7 +330,7 @@ impl TX {
 
             (free_list_size, page_size)
         };
-
+        debug!("_______> {}", self.pgid());
         {
             let page = self.allocate((free_list_size / page_size) as u64 + 1);
             if let Err(err) = page {
@@ -343,7 +344,7 @@ impl TX {
             db.0.free_list.try_write().unwrap().write(page);
             self.0.meta.try_write().unwrap().free_list = page.id;
 
-            // If the high water mark has moved up then attemp to grow the database.
+            // If the high watermark has moved up then attemp to grow the database.
             if self.pgid() > tx_pgid as u64 {
                 if let Err(e) = db.grow((tx_pgid + 1) * page_size as u64) {
                     self.rollback()?;

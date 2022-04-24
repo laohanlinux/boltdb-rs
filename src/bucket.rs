@@ -632,11 +632,6 @@ impl Bucket {
             // write it inline into the parent bucket's page. Otherwise spill it
             // like a normal bucket and make the parent value a pointer to the page.
             let value = if child.inlineable() {
-                println!(
-                    "+++++++ {:?} {}",
-                    child.local_bucket.root,
-                    child.root_node.is_some()
-                );
                 child.free();
                 child.write()
             } else {
@@ -701,8 +696,18 @@ impl Bucket {
     /// Returns true if a bucket is small enough to be written inline
     /// and if it contains no subbuckets. Otherwise returns false.
     fn inlineable(&self) -> bool {
+        let can_inlineable = self.__inlineable();
+        kv_log_macro::info!(
+            "{:?} bucket(root_node: {:?}) can inlineable: {}",
+            self.local_bucket,
+            self.root_node,
+            can_inlineable
+        );
+        can_inlineable
+    }
+
+    fn __inlineable(&self) -> bool {
         if self.root_node.is_none() || !self.root_node.as_ref().unwrap().is_leaf() {
-            kv_log_macro::warn!("{:#?} bucket cann't inlineable", self.local_bucket);
             return false;
         }
 
