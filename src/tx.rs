@@ -264,6 +264,9 @@ impl TX {
 
     /// Closes transaction (so subsequent user of it will resolve in error)
     pub(crate) fn close(&self) -> Result<()> {
+        defer_lite::defer! {
+            kv_log_macro::info!("close transaction");
+        }
         let db = self.db()?;
         let tx = db.remove_tx(self)?;
         *tx.0.db.write() = WeakDB::new();
@@ -281,10 +284,6 @@ impl TX {
         } else if !self.writable() {
             return Err(Error::TxReadOnly);
         }
-        // info!(
-        //     "ready to commit : {:?}",
-        //     self.bucket("bucket".as_ref()).unwrap()
-        // );
         let mut db = self.db()?;
         {
             let start_time = std::time::SystemTime::now();
@@ -330,7 +329,6 @@ impl TX {
 
             (free_list_size, page_size)
         };
-        debug!("_______> {}", self.pgid());
         {
             let page = self.allocate((free_list_size / page_size) as u64 + 1);
             if let Err(err) = page {
@@ -344,9 +342,11 @@ impl TX {
             db.0.free_list.try_write().unwrap().write(page);
             self.0.meta.try_write().unwrap().free_list = page.id;
 
-            // If the high watermark has moved up then attemp to grow the database.
+            // If the high watermark has moved up then attempt to grow the database.
+            // TODO: Why?
             if self.pgid() > tx_pgid as u64 {
                 if let Err(e) = db.grow((tx_pgid + 1) * page_size as u64) {
+                    info!("set a higher watermark");
                     self.rollback()?;
                     return Err(e);
                 }
@@ -394,7 +394,7 @@ impl TX {
                 h();
             }
         }
-
+        info!("finished to commit transaction");
         Ok(())
     }
 
@@ -531,6 +531,9 @@ impl TX {
 
     /// Writes the meta to disk.
     pub(crate) fn write_meta(&mut self) -> Result<()> {
+        defer_lite::defer! {
+            kv_log_macro::info!("write meta page");
+        }
         let mut db = self.db()?;
         let mut buffer = vec![0u8; db.page_size() as usize];
         let mut page = Page::from_slice_mut(&mut buffer);

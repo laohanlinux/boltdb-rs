@@ -194,7 +194,9 @@ impl FreeList {
     // become free.
     pub(crate) fn write(&mut self, page: &mut Page) {
         // Combine the old free PgIds and PgIds waiting on an open transaction.
-
+        defer_lite::defer! {
+            kv_log_macro::info!("write free list info into a new page");
+        }
         // Update the header flag.
         page.flags |= FREE_LIST_PAGE_FLAG;
 

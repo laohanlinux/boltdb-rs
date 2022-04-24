@@ -491,15 +491,7 @@ impl<'a> DB {
     }
 
     pub(crate) fn allocate(&mut self, count: u64, tx: &mut TX) -> Result<OwnedPage> {
-        let mut p = if count == 1 {
-            let mut page_pool = self.0.page_pool.lock();
-            page_pool
-                .pop()
-                .or_else(|| Some(OwnedPage::new(self.0.page_size)))
-                .unwrap()
-        } else {
-            OwnedPage::new(self.0.page_size * count as usize)
-        };
+        let mut p = OwnedPage::new(self.0.page_size * count as usize);
 
         p.over_flow = count as u32 - 1;
 
@@ -507,10 +499,14 @@ impl<'a> DB {
         {
             if let Some(free_list_pid) = self.0.free_list.write().allocate(count as usize) {
                 p.id = free_list_pid;
+                info!(
+                    "allocate memory from free cache, count: {}, tx: {}",
+                    count,
+                    tx.id()
+                );
                 return Ok(p);
             }
         }
-        info!("allocate memory, count: {}, tx: {}", count, tx.id());
         p.id = tx.pgid();
 
         // Resize mmap() if we're at the end
@@ -524,6 +520,12 @@ impl<'a> DB {
 
         // Move the page id high watermark
         tx.set_pgid(tx.pgid() + count as u64)?;
+        info!(
+            "allocate new memory, pid:{}, count: {}, tx: {}",
+            p.id,
+            count,
+            tx.id()
+        );
         Ok(p)
     }
 
