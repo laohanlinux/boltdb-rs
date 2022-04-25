@@ -820,16 +820,6 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn commit_some() {
-        let mut db = crate::test_util::mock_db().build().unwrap();
-        let mut tx = db.begin_rw_tx().unwrap();
-        {
-            let mut bucket = tx.create_bucket(b"bucket").unwrap();
-        }
-        tx.commit().unwrap();
-    }
-
-    #[test]
     fn commit_empty() {
         let mut db = crate::test_util::mock_db().build().unwrap();
         assert!(db.0.rw_tx.try_read().unwrap().is_none());
@@ -841,12 +831,17 @@ mod tests {
         }
 
         assert!(db.0.rw_tx.try_read().unwrap().is_none());
+    }
 
-        db.view(|tx| {
-            assert_eq!(tx.db().unwrap().0.txs.try_read().unwrap().len(), 1);
-            Ok(())
-        })
-        .unwrap();
+    #[test]
+    fn commit_some() {
+        let mut db = crate::test_util::mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        {
+            let mut bucket = tx.create_bucket(b"bucket").unwrap();
+            bucket.put(b"key", b"value".to_vec()).unwrap();
+        }
+        tx.commit().unwrap();
     }
 
     #[test]

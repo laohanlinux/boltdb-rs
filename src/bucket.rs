@@ -224,6 +224,7 @@ impl Bucket {
             if id != 0 {
                 return Err(Error::Unexpected("inline bucket no-zero page access"));
             }
+            // TODO: when happen
             if let Some(ref node) = self.root_node {
                 debug!("return a inline root_node");
                 return Ok(PageNode::from(node.clone()));
@@ -292,9 +293,9 @@ impl Bucket {
                 .unwrap()
                 .put(key, key, value, 0, BUCKET_LEAF_FLAG)?;
 
-            use kv_log_macro::debug;
-            debug!(
-                "insert bucket into node {}",
+            kv_log_macro::debug!(
+                "insert bucket({}) into node, nodes-sz: {}",
+                String::from_utf8_lossy(key),
                 self.nodes.borrow().keys().len()
             );
             // TODO: why
