@@ -398,6 +398,7 @@ impl<'a> DB {
             };
 
             unsafe {
+                kv_log_macro::info!("free db rw_lock, has db ref: {}", tx.db().is_ok());
                 self.0.rw_lock.raw().unlock();
             }
             let mut stats = self.0.stats.write();
@@ -725,6 +726,26 @@ impl<'a> DB {
         if self.0.check_mode.contains(CheckMode::CLOSE) {
             let strict = self.0.check_mode.contains(CheckMode::STRICT);
             let tx = self.begin_tx()?;
+            if let Err(e) = tx.check_sync() {
+                if strict {
+                    return Err(e);
+                }
+            }
+        }
+        self.0.opened.store(false, Ordering::Release);
+        self.0
+            .file
+            .try_read()
+            .ok_or(Unexpected("Can't acquire file lock"))?
+            .get_ref()
+            .unlock()
+            .map_err(|_| Unexpected("Can't acquire file lock"))?;
+        if self.0.auto_remove {
+            if let Some(path) = &self.0.path {
+                if path.exists() {
+                    std::fs::remove_file(path).map_err(|_| Unexpected("Can't remove file"))?;
+                }
+            }
         }
         Ok(())
     }
@@ -737,6 +758,8 @@ impl Drop for DB {
             // debug!("db strong ref count {}", strong_count);
             return;
         }
+
+        debug!("drop db");
         self.cleanup().unwrap();
     }
 }

@@ -245,6 +245,7 @@ impl Bucket {
     }
 
     pub fn clear(&mut self) {
+        debug!("close bucket");
         self.buckets.borrow_mut().clear();
         self.nodes.borrow_mut().clear();
         self.page = None;

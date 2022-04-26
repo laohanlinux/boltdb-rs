@@ -20,7 +20,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Weak};
 use std::thread::spawn;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Represents the internal transaction identifier
 pub type TxId = u64;
@@ -265,13 +265,14 @@ impl TX {
     /// Closes transaction (so subsequent user of it will resolve in error)
     pub(crate) fn close(&self) -> Result<()> {
         defer_lite::defer! {
-            kv_log_macro::info!("close transaction");
+            kv_log_macro::info!("close transaction, strong-count: {}", Arc::strong_count(&self.0));
         }
         let db = self.db()?;
         let tx = db.remove_tx(self)?;
         *tx.0.db.write() = WeakDB::new();
         tx.0.root.try_write().unwrap().clear();
         tx.0.pages.try_write().unwrap().clear();
+        kv_log_macro::debug!("remove tx, {}", Arc::strong_count(&self.0));
         Ok(())
     }
 
@@ -358,7 +359,6 @@ impl TX {
                 self.rollback()?;
                 return Err(e.into());
             }
-
             // If strict mode is enabled then perform a consistency check.
             // Only the first consistency error is reported in the panic.
             if self.0.check.swap(false, Ordering::AcqRel) {
@@ -389,6 +389,7 @@ impl TX {
 
         // Finalize the transaction.
         self.close()?;
+        info!("after close: {}", Arc::strong_count(&self.0));
         {
             for h in &*self.0.commit_handlers.try_lock().unwrap() {
                 h();
@@ -437,6 +438,10 @@ impl TX {
     ///
     /// In case of checking thread panic will also return Error
     pub fn check_sync(&self) -> Result<()> {
+        debug!("ready to check sync");
+        defer_lite::defer! {
+            kv_log_macro::info!("succeed to check sync");
+        }
         let (sender, ch) = mpsc::channel::<String>();
         let tx = self.clone();
         let handle = spawn(move || tx.__check(sender));
@@ -510,13 +515,16 @@ impl TX {
             })
             .collect::<Vec<_>>();
         pages.sort_by(|a, b| a.0.cmp(&b.0));
-
+        kv_log_macro::debug!(
+            "ready to write dirty pages: {:?}",
+            pages.iter().map(|(pid, _)| pid).collect::<Vec<_>>()
+        );
         let mut db = self.db()?;
         let page_size = db.page_size();
         for (id, p) in &pages {
-            let size = (p.over_flow + 1) as usize + page_size;
+            let size = (p.over_flow + 1) as usize * page_size;
             let offset = *id as u64 * page_size as u64;
-            let buffer = p.as_slice();
+            let buffer = unsafe { std::slice::from_raw_parts(p.as_ptr(), size) };
             let cursor = std::io::Cursor::new(buffer);
             db.write_at(offset, cursor)?;
         }
@@ -531,8 +539,9 @@ impl TX {
 
     /// Writes the meta to disk.
     pub(crate) fn write_meta(&mut self) -> Result<()> {
+        let meta_info = format!("{:?}", self.meta_mut());
         defer_lite::defer! {
-            kv_log_macro::info!("write meta page");
+            kv_log_macro::info!("write meta page: {}", meta_info);
         }
         let mut db = self.db()?;
         let mut buffer = vec![0u8; db.page_size() as usize];
@@ -642,8 +651,16 @@ impl Drop for TX {
         if count > 2 {
             return;
         }
-        warn!("tx count reference has to {}", Arc::strong_count(&self.0));
+        let trace_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        warn!(
+            "tx count reference has to {}, trace-id: {}",
+            count, trace_id
+        );
         if let Ok(_db) = self.db() {
+            warn!("has db, trace-id: {}", trace_id);
             if self.0.writeable {
                 self.commit().unwrap();
             } else {
@@ -842,6 +859,7 @@ mod tests {
             bucket.put(b"key", b"value".to_vec()).unwrap();
         }
         tx.commit().unwrap();
+        kv_log_macro::debug!("0---asdasdasdasd");
     }
 
     #[test]
