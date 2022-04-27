@@ -364,6 +364,7 @@ impl TX {
             if self.0.check.swap(false, Ordering::AcqRel) {
                 let strict = db.0.check_mode.contains(CheckMode::STRICT);
                 if let Err(e) = self.check_sync() {
+                    kv_log_macro::error!("failed to check sync, {:?}", e);
                     if strict {
                         self.rollback()?;
                         return Err(e);
@@ -410,6 +411,7 @@ impl TX {
     }
 
     pub(crate) fn __rollback(&self) -> Result<()> {
+        kv_log_macro::debug!("ready to __rollback");
         let db = self.db()?;
         if self.0.check.swap(false, Ordering::AcqRel) {
             let strict = db.0.check_mode.contains(CheckMode::STRICT);
@@ -480,8 +482,51 @@ impl TX {
         reachable: &mut HashMap<PgId, bool>,
         freed: &HashMap<PgId, bool>,
         ch: &mpsc::Sender<String>,
-    ) -> mpsc::Receiver<String> {
-        todo!()
+    ) {
+        defer_lite::defer! {
+            kv_log_macro::debug!("succeed to check bucket");
+        }
+        if b.local_bucket.root == 0 {
+            return;
+        }
+        let meta_pgid = self.pgid();
+        let handler = |p: &Page, _pgid: usize| {
+            if p.id > meta_pgid {
+                ch.send(format!("page {}: out of bounds: {}", p.id, meta_pgid))
+                    .unwrap();
+            }
+            for i in 0..=p.over_flow {
+                let id = p.id + u64::from(i);
+                if reachable.contains_key(&id) {
+                    ch.send(format!("page {}: multiple reference", id)).unwrap();
+                }
+                reachable.insert(id, true);
+            }
+
+            let page_type_is_valid = matches!(
+                p.flags,
+                crate::page::BRANCH_PAGE_FLAG | crate::page::LEAF_PAGE_FLAG
+            );
+            if freed.contains_key(&p.id) {
+                ch.send(format!("page {}: reachable freed", p.id)).unwrap();
+            } else if !page_type_is_valid {
+                ch.send(format!("page {}: invalid type: {}", p.id, p.flags))
+                    .unwrap();
+            }
+        };
+
+        b.tx()
+            .unwrap()
+            .for_each_page(b.local_bucket.root, 0, Box::new(handler));
+
+        b.for_each(|k, v| -> Result<()> {
+            let child = b.bucket(k);
+            if let Some(child) = child {
+                self.check_bucket(child, reachable, freed, ch);
+            }
+            Ok(())
+        })
+        .unwrap();
     }
 
     /// Returns a contiguous block of memory starting at a given page.
@@ -615,6 +660,7 @@ impl TX {
     }
 
     fn __check(&self, ch: mpsc::Sender<String>) {
+        kv_log_macro::debug!("ready to __check");
         let mut freed = HashMap::<PgId, bool>::new();
         let all_pgids = self
             .db()
@@ -631,16 +677,33 @@ impl TX {
             freed.insert(*id, true);
         }
 
+        // check meta
         let mut reachable = HashMap::new();
         reachable.insert(0, true);
         reachable.insert(1, true);
+
+        // check free list
         let freelist_pgid = self.0.meta.try_read().unwrap().free_list;
         let freelist_overflow = unsafe { &*self.page(freelist_pgid).unwrap() }.over_flow;
         for i in 0..=freelist_overflow {
             reachable.insert(freelist_pgid + u64::from(i), true);
         }
 
-        // FIXME: todo it
+        // check bucekt
+        self.check_bucket(
+            &self.0.root.try_read().unwrap(),
+            &mut reachable,
+            &freed,
+            &ch,
+        );
+
+        for i in 0..self.0.meta.try_read().unwrap().pg_id {
+            let is_reachable = reachable.contains_key(&i);
+            let is_freed = freed.contains_key(&i);
+            if !is_reachable && !is_freed {
+                ch.send(format!("page {}: unreachable unfreed", i)).unwrap();
+            }
+        }
     }
 }
 

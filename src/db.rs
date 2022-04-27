@@ -639,6 +639,7 @@ impl<'a> DB {
     }
 
     pub(crate) fn write_at<T: Read>(&mut self, pos: u64, mut buf: T) -> Result<()> {
+        defer_lite::defer! {kv_log_macro::info!("succeed to write db disk, pos: {}", pos);}
         let mut file = self.0.file.write();
         file.seek(SeekFrom::Start(pos))
             .map_err(|_| Unexpected("Can't seek to position"))?;
