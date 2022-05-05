@@ -163,7 +163,7 @@ impl Bucket {
     pub(crate) fn rebalance(&mut self) {
         let pid = self.local_bucket.root;
         info!(
-            "ready to rebalance, pid:{}, nodes:{}, bucekts: {}",
+            "ready to rebalance bucket, pid:{}, nodes:{}, buckets: {}",
             pid,
             self.nodes.borrow().len(),
             self.buckets.borrow().len()

@@ -560,10 +560,7 @@ impl TX {
             })
             .collect::<Vec<_>>();
         pages.sort_by(|a, b| a.0.cmp(&b.0));
-        kv_log_macro::debug!(
-            "ready to write dirty pages: {:?}",
-            pages.iter().map(|(pid, _)| pid).collect::<Vec<_>>()
-        );
+        kv_log_macro::debug!("ready to write dirty pages: {:?}", pages);
         let mut db = self.db()?;
         let page_size = db.page_size();
         for (id, p) in &pages {

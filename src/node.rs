@@ -99,10 +99,10 @@ impl Node {
     /// Attempts to combine the node with sibling nodes if the node fill
     /// size is below a threshold or if there are not enough keys.
     pub fn rebalance(&mut self) {
-        warn!("need not to rebalance: {:?}", self.0);
         {
             let selfsize = self.size();
             if !self.0.unbalanced.load(Ordering::Acquire) {
+                warn!("need not to rebalance: {:?}", self.0);
                 return;
             }
             self.0.unbalanced.store(false, Ordering::Relaxed);
@@ -116,9 +116,10 @@ impl Node {
             };
 
             if selfsize > threshold && self.0.inodes.borrow().len() > self.min_keys() as usize {
+                warn!("need not to rebalance: {:?}", self.0);
                 return;
             }
-
+            warn!("need to rebalance: {:?}", self.0);
             // Root node has special handling
             if self.parent().is_none() {
                 let mut inodes = self.0.inodes.borrow_mut();
@@ -469,11 +470,11 @@ impl Node {
     pub(crate) fn write(&self, page: &mut Page) {
         // Initialize page.
         if self.is_leaf() {
-            page.flags != LEAF_PAGE_FLAG;
+            page.flags |= LEAF_PAGE_FLAG;
         } else {
-            page.flags != BRANCH_PAGE_FLAG;
+            page.flags |= BRANCH_PAGE_FLAG;
         }
-
+        info!("write node page: {:?}", page);
         // TODO: Why?
         if self.0.inodes.borrow().len() >= 0xFFFF {
             panic!(
