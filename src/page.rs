@@ -3,6 +3,7 @@ use crate::free_list::FreeList;
 use crate::must_align;
 use std::borrow::{Borrow, BorrowMut};
 use std::fmt::{Debug, Display, Formatter};
+use std::intrinsics::copy_nonoverlapping;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ops::RangeBounds;
@@ -202,7 +203,15 @@ impl Page {
     #[inline]
     pub(crate) fn copy_from_meta(&mut self, meta: &Meta) {
         self.count = 0;
-        self.flags = BRANCH_PAGE_FLAG;
+        self.flags = META_PAGE_FLAG;
+        let sbytes = meta.as_slice();
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                meta.as_slice_no_checksum().as_ptr(),
+                self.get_data_mut_ptr(),
+                sbytes.len(),
+            )
+        }
     }
 
     #[inline]

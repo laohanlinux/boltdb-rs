@@ -489,6 +489,8 @@ impl TX {
         if b.local_bucket.root == 0 {
             return;
         }
+        debug!("<<<<<<<<<<<<, {:?}", b.local_bucket);
+
         let meta_pgid = self.pgid();
         let handler = |p: &Page, _pgid: usize| {
             if p.id > meta_pgid {
@@ -519,14 +521,14 @@ impl TX {
             .unwrap()
             .for_each_page(b.local_bucket.root, 0, Box::new(handler));
 
-        b.for_each(|k, v| -> Result<()> {
-            let child = b.bucket(k);
-            if let Some(child) = child {
-                self.check_bucket(child, reachable, freed, ch);
-            }
-            Ok(())
-        })
-        .unwrap();
+        // b.for_each(|k, v| -> Result<()> {
+        //     let child = b.bucket(k);
+        //     if let Some(child) = child {
+        //         self.check_bucket(child, reachable, freed, ch);
+        //     }
+        //     Ok(())
+        // })
+        // .unwrap();
     }
 
     /// Returns a contiguous block of memory starting at a given page.
@@ -678,7 +680,7 @@ impl TX {
         let mut reachable = HashMap::new();
         reachable.insert(0, true);
         reachable.insert(1, true);
-
+        debug!("----> {:?}, {:?}", freed, reachable);
         // check free list
         let freelist_pgid = self.0.meta.try_read().unwrap().free_list;
         let freelist_overflow = unsafe { &*self.page(freelist_pgid).unwrap() }.over_flow;

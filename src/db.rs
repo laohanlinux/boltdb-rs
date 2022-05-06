@@ -255,7 +255,7 @@ impl<'a> DB {
             stats.tx_n += 1;
             stats.open_tx_n = txs_len;
         }
-
+        debug!("start a read only transaction, tid:{}", tx.id());
         Ok(TxGuard {
             tx,
             db: std::marker::PhantomData,
@@ -834,8 +834,6 @@ impl Meta {
         }
         // Page id is either going to be 0 or 1 which we can determine by the transaction ID.
         p.id = self.tx_id % 2;
-        p.flags |= META_PAGE_FLAG;
-
         // Calculate the checksum
         self.check_sum = self.sum64();
         p.copy_from_meta(self);
@@ -849,13 +847,13 @@ impl Meta {
     }
 
     #[inline]
-    fn as_slice(&self) -> &[u8] {
+    pub(crate) fn as_slice(&self) -> &[u8] {
         let ptr = self as *const Meta as *const u8;
         unsafe { from_raw_parts(ptr, self.byte_size()) }
     }
 
     #[inline]
-    fn as_slice_no_checksum(&self) -> &[u8] {
+    pub(crate) fn as_slice_no_checksum(&self) -> &[u8] {
         let ptr = self as *const Meta as *const u8;
         unsafe { from_raw_parts(ptr, memoffset::offset_of!(Meta, check_sum)) }
     }
