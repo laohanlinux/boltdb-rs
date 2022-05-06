@@ -440,7 +440,6 @@ impl TX {
     ///
     /// In case of checking thread panic will also return Error
     pub fn check_sync(&self) -> Result<()> {
-        debug!("ready to check sync");
         defer_lite::defer! {
             kv_log_macro::info!("succeed to check sync");
         }
@@ -483,14 +482,14 @@ impl TX {
         freed: &HashMap<PgId, bool>,
         ch: &mpsc::Sender<String>,
     ) {
+        let b_root = b.local_bucket.root;
+        let is_inline_page = b.page.is_some();
         defer_lite::defer! {
-            kv_log_macro::debug!("succeed to check bucket");
+            kv_log_macro::debug!("succeed to check bucket: {}, inline: {}", b_root, is_inline_page);
         }
         if b.local_bucket.root == 0 {
             return;
         }
-        debug!("<<<<<<<<<<<<, {:?}", b.local_bucket);
-
         let meta_pgid = self.pgid();
         let handler = |p: &Page, _pgid: usize| {
             if p.id > meta_pgid {
@@ -521,14 +520,15 @@ impl TX {
             .unwrap()
             .for_each_page(b.local_bucket.root, 0, Box::new(handler));
 
-        // b.for_each(|k, v| -> Result<()> {
-        //     let child = b.bucket(k);
-        //     if let Some(child) = child {
-        //         self.check_bucket(child, reachable, freed, ch);
-        //     }
-        //     Ok(())
-        // })
-        // .unwrap();
+        // check subbucket
+        b.for_each(|k, v| -> Result<()> {
+            let child = b.bucket(k);
+            if let Some(child) = child {
+                self.check_bucket(child, reachable, freed, ch);
+            }
+            Ok(())
+        })
+        .unwrap();
     }
 
     /// Returns a contiguous block of memory starting at a given page.
@@ -659,7 +659,6 @@ impl TX {
     }
 
     fn __check(&self, ch: mpsc::Sender<String>) {
-        kv_log_macro::debug!("ready to __check");
         let mut freed = HashMap::<PgId, bool>::new();
         let all_pgids = self
             .db()
@@ -680,7 +679,6 @@ impl TX {
         let mut reachable = HashMap::new();
         reachable.insert(0, true);
         reachable.insert(1, true);
-        debug!("----> {:?}, {:?}", freed, reachable);
         // check free list
         let freelist_pgid = self.0.meta.try_read().unwrap().free_list;
         let freelist_overflow = unsafe { &*self.page(freelist_pgid).unwrap() }.over_flow;
@@ -696,6 +694,8 @@ impl TX {
             &ch,
         );
 
+        // check page from 0 to hight watermask
+        // every page must be found at freed or reachable
         for i in 0..self.0.meta.try_read().unwrap().pg_id {
             let is_reachable = reachable.contains_key(&i);
             let is_freed = freed.contains_key(&i);
@@ -921,7 +921,36 @@ mod tests {
             bucket.put(b"key", b"value".to_vec()).unwrap();
         }
         tx.commit().unwrap();
-        kv_log_macro::debug!("0---asdasdasdasd");
+    }
+
+    #[test]
+    fn commit_multiple() {
+        let n_commits = 5;
+        let n_values = 1000;
+        let mut db = crate::test_util::mock_db().build().unwrap();
+        for i in 0..n_commits {
+            let mut tx = db.begin_rw_tx().unwrap();
+            let mut bucket = tx.create_bucket_if_not_exists(b"bucket").unwrap();
+            for n in 0..n_values {
+                bucket
+                    .put(format!("key-{}-{}", i, n).as_bytes(), b"value".to_vec())
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn delete_bucket() {
+        let mut db = crate::test_util::mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        {
+            drop(tx.create_bucket(b"bucket").unwrap());
+            drop(tx.bucket(b"bucket").unwrap());
+
+            tx.delete_bucket(b"bucket").unwrap();
+            tx.bucket(b"bucket").err().unwrap();
+        }
+        tx.commit().unwrap();
     }
 
     #[test]

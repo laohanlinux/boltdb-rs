@@ -376,21 +376,18 @@ impl Node {
     // Removes a key from the node.
     pub(crate) fn del(&mut self, key: &[u8]) {
         // Find index of key.
-        match self
+        let index = match self
             .0
             .inodes
             .borrow()
             .binary_search_by(|inode| inode.key.cmp(&key.to_vec()))
         {
-            Ok(index) => {
-                // Delete inode from the node.
-                self.0.inodes.borrow_mut().remove(index);
-                // Mark the node as needing rebalancing.
-                self.0.unbalanced.store(true, Ordering::Release);
-            }
+            Ok(index) => index,
             // Exit if the key isn't found.
             _ => return,
-        }
+        };
+        self.0.inodes.borrow_mut().remove(index);
+        self.0.unbalanced.store(true, Ordering::Release);
     }
 
     // Inserts a key/value.
