@@ -741,23 +741,20 @@ impl Node {
 
     // Adds the node's underlying `page` to the freelist.
     pub(crate) fn free(&mut self) {
-        // let pgid = self.0.pgid.borrow().clone();
-        // if pgid != 0 {
-        //     let mut bucket = self.bucket_mut().unwrap();
-        //     let tx = bucket.tx();
-        //     let tx_id = tx.id();
-        //     let page = unsafe {&*tx.page(pgid).unwrap().unwrap()};
-        //     // bucket
-        //     //     .tx
-        //     //     .db
-        //     //     .0
-        //     //     .free_list
-        //     //     .free(bucket.tx.meta.tx_id, &bucket.tx.page(pgid));
-        //     self.0.pgid.replace(0);
-        // }
-    }
+        if *self.0.pgid.borrow() == 0 {
+            return;
+        }
+        {
+            let bucketmut = self.bucket_mut().unwrap();
+            let tx = bucketmut.tx().unwrap();
+            let txid = tx.id();
+            let page = unsafe { &*tx.page(*self.0.pgid.borrow()).unwrap() };
+            let db = tx.db().unwrap();
+            db.0.free_list.write().free(txid, &page);
+        }
 
-    fn node_builder(bucket: *const Bucket) {}
+        *self.0.pgid.borrow_mut() = 0;
+    }
 
     fn cmp_by_key(a: &Node, b: &Node) -> std::cmp::Ordering {
         a.0.inodes.borrow()[0].key.cmp(&b.0.inodes.borrow()[0].key)

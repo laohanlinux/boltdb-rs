@@ -451,10 +451,6 @@ impl<'a> DB {
     pub fn page(&self, id: PgId) -> MappedRwLockReadGuard<Page> {
         let page_size = self.0.page_size;
         let pos = id as usize * page_size as usize;
-        // debug!(
-        //     "ready to load page from mmap, id: {}, pos:{}, page_size:{}",
-        //     id, pos, page_size
-        // );
         let mmap = self.0.mmap.read_recursive();
         RwLockReadGuard::map(mmap, |mmap| Page::from_slice(&mmap.as_ref()[pos..]))
     }

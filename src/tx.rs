@@ -954,6 +954,9 @@ mod tests {
     }
 
     #[test]
+    /// ensure that writes produce idempotent file
+
+    #[test]
     fn test_tx_commit_err_tx_closed() {}
 
     // #[test]

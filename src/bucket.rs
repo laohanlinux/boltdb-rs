@@ -326,7 +326,7 @@ impl Bucket {
     }
 
     // DeleteBucket deletes a bucket at the given key.
-    // Returns an error if the bucket does not exists, or if the key represents a non-bucket value.
+    // Returns an error if the bucket does not exist, or if the key represents a non-bucket value.
     pub fn delete_bucket(&mut self, key: &[u8]) -> Result<()> {
         {
             let tx = self.tx()?;
