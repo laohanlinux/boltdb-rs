@@ -895,7 +895,10 @@ impl<'a> DerefMut for RWTxGuard<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::DBBuilder;
+    use crate::test_util::{mock_db, mock_tx};
     use crate::tx::{TxBuilder, TxInner, TX};
+    use std::io::Read;
     use std::sync::Arc;
 
     #[test]
@@ -955,6 +958,83 @@ mod tests {
 
     #[test]
     /// ensure that writes produce idempotent file
+    fn commit_hash_ensure() {
+        use fnv::FnvHasher;
+        use std::hash::Hasher;
+        use std::io::Write;
+        use std::io::{Seek, SeekFrom};
+        use std::sync::Arc;
+
+        for _ in 0..20 {
+            let mut db = crate::test_util::mock_db()
+                .set_auto_remove(true)
+                .build()
+                .unwrap();
+            let mut tx = db.begin_rw_tx().unwrap();
+            {
+                let mut bucket = tx.create_bucket_if_not_exists(b"bucket").unwrap();
+                bucket.put(b"donald", b"trump".to_vec()).unwrap();
+                bucket.put(b"barack", b"obama".to_vec()).unwrap();
+                bucket.put(b"thomas", b"jefferson".to_vec()).unwrap();
+            }
+            tx.commit().unwrap();
+
+            let mut file = db.0.file.try_write().unwrap();
+            file.flush().unwrap();
+            file.seek(SeekFrom::Start(0)).unwrap();
+
+            let mut hasher = FnvHasher::default();
+            let mut buf = vec![0u8; db.page_size()];
+            while let Ok(()) = file.get_ref().read_exact(&mut buf) {
+                hasher.write(&buf);
+            }
+            let hash = hasher.finish();
+            assert_eq!(hash, 9680149046811131486);
+        }
+    }
+
+    #[test]
+    /// ensure that data actually written to disk
+    fn commit_ensure() {
+        let path = {
+            let mut db = crate::test_util::mock_db()
+                .set_auto_remove(false)
+                .build()
+                .unwrap();
+            let mut tx = db.begin_rw_tx().unwrap();
+            {
+                let mut bucket = tx.create_bucket(b"bucket").unwrap();
+                bucket.put(b"donald", b"trump".to_vec()).unwrap();
+                bucket.put(b"barack", b"obama".to_vec()).unwrap();
+                bucket.put(b"thomas", b"jefferson".to_vec()).unwrap();
+            }
+            tx.commit().unwrap();
+            db.path().unwrap()
+        };
+
+        let db = DBBuilder::new(path)
+            .set_auto_remove(true)
+            .set_read_only(false)
+            .build()
+            .unwrap();
+        db.view(|tx| -> crate::error::Result<()> {
+            let bucket = tx.bucket(b"bucket").unwrap();
+            assert_eq!(bucket.get(b"donald").expect("no donald"), b"trump");
+            assert_eq!(bucket.get(b"barack").expect("no barack"), b"obama");
+            assert_eq!(bucket.get(b"thomas").expect("no thomas"), b"jefferson");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn rollback_empty() {
+        let db = mock_db().build().unwrap();
+        assert!(db.0.rw_tx.try_read().unwrap().is_none());
+
+        let tx = db.begin_tx().unwrap();
+        tx.rollback().unwrap();
+    }
 
     #[test]
     fn test_tx_commit_err_tx_closed() {}
