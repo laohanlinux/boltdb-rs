@@ -102,7 +102,7 @@ impl Node {
         {
             let selfsize = self.size();
             if !self.0.unbalanced.load(Ordering::Acquire) {
-                warn!("need not to rebalance: {:?}", self.0);
+                warn!("need not to rebalance: {:?}", self.0.pgid);
                 return;
             }
             self.0.unbalanced.store(false, Ordering::Relaxed);
@@ -486,7 +486,6 @@ impl Node {
         if page.count == 0 {
             return;
         }
-
         // Loop over each item and write it to the page.
         let mut b_ptr = unsafe {
             let offset = self.page_element_size() * self.0.inodes.borrow().len();

@@ -13,6 +13,7 @@ use crate::node::{Node, WeakNode};
 use crate::page::{BUCKET_LEAF_FLAG, LEAF_PAGE_FLAG};
 use crate::{Bucket, Page, PgId};
 use either::Either;
+use kv_log_macro::info;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::marker::PhantomData;
@@ -41,7 +42,10 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
 
     /// returns mutable reference to bucket which is cursor created from
     pub(crate) fn mut_bucket(&mut self) -> &mut Bucket {
-        unsafe { &mut *((&*self.bucket) as *const Bucket as *mut Bucket) }
+        unsafe {
+            #[allow(clippy::cast_ref_to_mut)]
+            &mut *((&*self.bucket) as *const Bucket as *mut Bucket)
+        }
     }
 
     /// Recursively performs a binary search against a given page/node until it finds a given key.
@@ -196,6 +200,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             match el_ref.upgrade() {
                 Either::Left(p) => {
                     let id = p.id;
+                    info!("asdasdasdasdasdasdasdasdasdasdasdasdasdasdasdasd");
                     // root node has not parent node
                     self.mut_bucket().node(id, WeakNode::new())
                 }

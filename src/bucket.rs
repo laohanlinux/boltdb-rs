@@ -226,7 +226,7 @@ impl Bucket {
             }
             // TODO: when happen
             if let Some(ref node) = self.root_node {
-                debug!("return a inline root_node");
+                // debug!("return a inline root_node");
                 return Ok(PageNode::from(node.clone()));
             }
             debug!("return a inline root page");
@@ -318,9 +318,11 @@ impl Bucket {
 
         match other_self.create_bucket(key) {
             Ok(b) => Ok(b),
-            Err(Error::BucketExists) => self
-                .bucket_mut(key)
-                .ok_or_else(|| Error::Unexpected("can't create bucket")),
+            Err(Error::BucketExists) => {
+                info!("has exists the bucket: {}", String::from_utf8_lossy(key));
+                self.bucket_mut(key)
+                    .ok_or_else(|| Error::Unexpected("can't create bucket"))
+            }
             v => v,
         }
     }
@@ -699,12 +701,12 @@ impl Bucket {
     /// and if it contains no subbuckets. Otherwise returns false.
     fn inlineable(&self) -> bool {
         let can_inlineable = self.__inlineable();
-        kv_log_macro::info!(
-            "{:?} bucket(root_node: {:?}) can inlineable: {}",
-            self.local_bucket,
-            self.root_node,
-            can_inlineable
-        );
+        // kv_log_macro::info!(
+        //     "bucket(root_node: {:?}) can inlineable: {}",
+        //     self.local_bucket,
+        //     // self.root_node,
+        //     can_inlineable
+        // );
         can_inlineable
     }
 
