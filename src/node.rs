@@ -207,7 +207,7 @@ impl Node {
                 .append(&mut target.0.inodes.borrow_mut());
             {
                 let mut parent = self.parent().unwrap();
-                parent.del(&target.0.key.borrow().as_ref());
+                parent.del(target.0.key.borrow().as_ref());
                 parent.remove_child(&target);
             }
 
@@ -220,8 +220,8 @@ impl Node {
         } else {
             for pgid in target.0.inodes.borrow().iter().map(|i| i.pg_id) {
                 if let Some(child) = self.bucket_mut().unwrap().nodes.borrow_mut().get_mut(&pgid) {
-                    let mut parent = child.parent().unwrap();
-                    parent.remove_child(&child);
+                    let parent = child.parent().unwrap();
+                    parent.remove_child(child);
                     *child.0.parent.borrow_mut() = WeakNode::from(&target);
                     parent.0.children.borrow_mut().push(child.clone());
                 }
@@ -235,7 +235,7 @@ impl Node {
             {
                 let mut parent = self.parent().unwrap();
                 parent.del(&self.0.key.borrow());
-                parent.remove_child(&self);
+                parent.remove_child(self);
             }
             self.bucket_mut()
                 .unwrap()
@@ -348,7 +348,7 @@ impl Node {
     // Returns the next node with the same parent.
     fn next_sibling(&self) -> Option<Node> {
         match self.parent() {
-            Some(mut parent) => {
+            Some(parent) => {
                 let index = parent.child_index(self);
                 // self is the last node at the level
                 if index >= parent.num_children() as isize - 1 {
@@ -406,9 +406,9 @@ impl Node {
                 pg_id,
                 bucket.tx().unwrap().meta_mut().pg_id
             )));
-        } else if old_key.len() <= 0 {
+        } else if old_key.is_empty() {
             return Err(Error::PutFailed("zero-length old key".to_string()));
-        } else if new_key.len() <= 0 {
+        } else if new_key.is_empty() {
             return Err(Error::PutFailed("zero-length new key".to_string()));
         }
 
@@ -433,7 +433,7 @@ impl Node {
 
     // Initializes the node from a page.
     pub(crate) fn read(&mut self, p: &Page) {
-        let mut node = self.0.borrow_mut();
+        let node = self.0.borrow_mut();
         *node.pgid.borrow_mut() = p.id;
         node.is_leaf
             .store(p.flags & LEAF_PAGE_FLAG != 0, Ordering::Release);
@@ -587,7 +587,7 @@ impl Node {
                 }
 
                 let page = tx.allocate((node.size() / db.page_size()) as u64 + 1)?;
-                let mut page = unsafe { &mut *page };
+                let page = unsafe { &mut *page };
                 {
                     // Write the node.
                     let id = page.id;
@@ -596,7 +596,7 @@ impl Node {
                         panic!("pgid ({}) above high water marl ({})", id, txid);
                     }
                     *node.0.pgid.borrow_mut() = id;
-                    node.write(&mut page);
+                    node.write(page);
                     node.0.spilled.store(true, Ordering::Release);
                 }
             }
@@ -681,7 +681,7 @@ impl Node {
         // Determine the threshold before starting a new node.
         let fill_parent = self
             .bucket()
-            .ok_or_else(|| BucketEmpty)?
+            .ok_or(BucketEmpty)?
             .fill_percent
             .min(MIN_FILL_PERCENT)
             .max(MAX_FILL_PERCENT);
@@ -704,7 +704,7 @@ impl Node {
         // Only the first block has pgid of older(use old memory space), thew second block is set to 0
         *next.0.inodes.borrow_mut() = nodes;
         self.bucket_mut()
-            .ok_or_else(|| BucketEmpty)?
+            .ok_or( BucketEmpty)?
             .tx()
             .unwrap()
             .stats()
@@ -749,7 +749,7 @@ impl Node {
             let txid = tx.id();
             let page = unsafe { &*tx.page(*self.0.pgid.borrow()).unwrap() };
             let db = tx.db().unwrap();
-            db.0.free_list.write().free(txid, &page);
+            db.0.free_list.write().free(txid, page);
         }
 
         *self.0.pgid.borrow_mut() = 0;
@@ -822,7 +822,7 @@ pub(crate) struct Inode {
     pub(crate) value: Key,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive( Default)]
 pub(crate) struct Inodes {
     pub(crate) inner: Vec<Inode>,
 }

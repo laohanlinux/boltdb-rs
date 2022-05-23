@@ -3,7 +3,6 @@ use crate::free_list::FreeList;
 use crate::must_align;
 use std::borrow::{Borrow, BorrowMut};
 use std::fmt::{Debug, Display, Formatter};
-use std::intrinsics::copy_nonoverlapping;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ops::RangeBounds;
@@ -254,23 +253,8 @@ impl Page {
         }
         size
     }
-
-    fn to_vec(self) -> Vec<u8> {
-        let v: Vec<u8> = self.into();
-        v
-    }
-
-    pub(crate) fn to_owned(self) -> Self {
-        self
-    }
 }
 
-impl Into<Vec<u8>> for Page {
-    fn into(self) -> Vec<u8> {
-        let ptr = &self as *const Page as *const u8;
-        unsafe { from_raw_parts(ptr, self.byte_size()).to_vec() }
-    }
-}
 
 impl From<Vec<u8>> for Page {
     fn from(vec: Vec<u8>) -> Self {
@@ -456,12 +440,6 @@ impl OwnedPage {
         Self { page: buf }
     }
 
-    // return page size
-    #[inline]
-    pub(crate) fn size(&self) -> usize {
-        self.page.len()
-    }
-
     /// reserve capacity of underlying vector to size
     #[allow(dead_code)]
     pub(crate) fn reserve(&mut self, size: usize) {
@@ -480,17 +458,23 @@ impl OwnedPage {
     pub(crate) fn as_mut_ptr(&mut self) -> *mut u8 {
         self.page.as_mut_ptr()
     }
-
-    /// Returns binary serialized buffer of a page
+ 
+    /// Returns binary serialized buffer pf a page 
     #[inline]
     pub(crate) fn buf(&self) -> &[u8] {
         &self.page
     }
 
-    /// Returns binary serliazied muttable buffer of a page
+    /// Returns binary serialized muttable buffer of a page 
     #[inline]
     pub(crate) fn buf_mut(&mut self) -> &mut [u8] {
         &mut self.page
+    }
+
+    /// Returns page size 
+    #[inline]
+    pub(crate) fn size(&self) -> usize {
+        self.page.len()
     }
 }
 
@@ -527,7 +511,7 @@ impl std::fmt::Debug for OwnedPage {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.debug_struct("OwnedPage")
             .field("size", &self.page.len())
-            .field("page", &self as &Page)
+            .field("page", self as &Page)
             .finish()
     }
 }

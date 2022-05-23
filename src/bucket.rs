@@ -200,7 +200,7 @@ impl Bucket {
 
         // Use the page into the node and cache it.
         if let Some(page) = &self.page {
-            node.read(&page);
+            node.read(page);
         } else {
             // Read the page into the node and cache it.
             let page = self.tx().unwrap().page(pg_id).unwrap();
@@ -305,9 +305,8 @@ impl Bucket {
             // to be treated as a regular, non-inline bucket for the rest of the tx.
             self.page = None;
         }
-
         self.bucket_mut(key)
-            .ok_or_else(|| Error::Unexpected("cannot find bucket"))
+            .ok_or(Error::Unexpected("cannot find bucket"))
     }
 
     // Creates a new bucket if it doesn't already exist and returns a reference to it.
@@ -321,7 +320,7 @@ impl Bucket {
             Err(Error::BucketExists) => {
                 info!("has exists the bucket: {}", String::from_utf8_lossy(key));
                 self.bucket_mut(key)
-                    .ok_or_else(|| Error::Unexpected("can't create bucket"))
+                    .ok_or(Error::Unexpected("can't create bucket"))
             }
             v => v,
         }
@@ -346,7 +345,7 @@ impl Bucket {
         let mut c = self.cursor()?;
         {
             let item = c.seek(key)?;
-            if item.key.as_deref().map(|v| &*v).unwrap() != key {
+            if item.key.map(|v| &*v).unwrap() != key {
                 return Err(Error::BucketNotFound);
             }
             if !item.is_bucket() {
@@ -446,7 +445,7 @@ impl Bucket {
         if (Some(key) == item.key) && item.is_bucket() {
             return Err(Error::IncompatibleValue);
         }
-        c.node().unwrap().put(key, key, value, 0, 0);
+        let _ = c.node().unwrap().put(key, key, value, 0, 0);
         Ok(())
     }
 
@@ -462,6 +461,10 @@ impl Bucket {
         }
         let mut c = self.cursor()?;
         let item = c.seek(key)?;
+
+        if item.is_bucket() {
+            return Err(Error::IncompatibleValue);
+        }
         c.node().unwrap().del(key);
         Ok(())
     }
@@ -555,7 +558,7 @@ impl Bucket {
         self.for_each_page_node(|page, _| match page {
             Either::Left(page) => {
                 let txid = tx.id();
-                db.0.free_list.write().free(txid, &page);
+                db.0.free_list.write().free(txid, page);
             }
             Either::Right(node) => node.clone().free(),
         });
@@ -575,7 +578,7 @@ impl Bucket {
     pub(crate) fn for_each_page<'a>(&self, mut handler: Box<dyn FnMut(&Page, usize) + 'a>) {
         // If we have an inline page then just use that.
         if let Some(ref inline_page) = self.page {
-            handler(&inline_page, 0);
+            handler(inline_page, 0);
             return;
         }
 
@@ -652,7 +655,7 @@ impl Bucket {
             }
             // Update parent node.
             let mut c = mutself.cursor()?;
-            let item = c.seek(&name)?;
+            let item = c.seek(name)?;
             if item.key != Some(name.as_slice()) {
                 return Err(Error::Unexpected2(format!(
                     "misplaced bucket header: {:?} -> {:?}",
@@ -666,7 +669,7 @@ impl Bucket {
                     item.flags
                 )));
             }
-            c.node()?.put(&name, &name, value, 0, BUCKET_LEAF_FLAG);
+            let _ = c.node()?.put(name, name, value, 0, BUCKET_LEAF_FLAG);
         }
 
         // ignore if there's not a materialized root node.

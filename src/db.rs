@@ -800,7 +800,7 @@ pub struct Meta {
     /// transaction id
     pub(crate) tx_id: TxId,
     /// meta check_sum
-    check_sum: u64,
+    pub(crate) check_sum: u64,
 }
 
 impl Meta {

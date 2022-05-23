@@ -1,7 +1,7 @@
 use crate::cursor::Cursor;
 use crate::db::{CheckMode, Meta, WeakDB, DB};
 use crate::error::Error::Unexpected;
-use crate::page::OwnedPage;
+use crate::page::{OwnedPage, META_PAGE_FLAG};
 use crate::page::FREE_LIST_PAGE_FLAG;
 use crate::{error::Error, error::Result, Bucket, Page, PageInfo, PgId};
 use kv_log_macro::{info, warn};
@@ -169,7 +169,7 @@ impl TX {
             .root
             .try_read()
             .ok_or(Error::Unexpected("can't acquire bucket"))?;
-        RwLockReadGuard::try_map(bucket, |b| b.bucket(&key.to_vec()))
+        RwLockReadGuard::try_map(bucket, |b| b.bucket(key))
             .map_err(|_| Error::Unexpected("can't get bucket"))
     }
 
@@ -179,7 +179,7 @@ impl TX {
             .root
             .try_write()
             .ok_or(Error::Unexpected("can't acquire bucket"))?;
-        RwLockWriteGuard::try_map(bucket, |b| b.bucket_mut(&key.to_vec()))
+        RwLockWriteGuard::try_map(bucket, |b| b.bucket_mut(key))
             .map_err(|_| Error::Unexpected("can't get mut bucket"))
     }
 
@@ -240,15 +240,39 @@ impl TX {
     /// first argument of function is bucket's key, second is bucket itself.
     pub fn for_each<E: Into<Error>>(
         &self,
-        mut handler: Box<dyn FnMut(&[u8], Option<&Bucket>)>,
+        mut handler: impl FnMut(&[u8], Option<&Bucket>) -> Result<()>,
     ) -> Result<()> {
-        todo!()
+        let root = self.0.root.try_write().unwrap();
+        root.for_each(|key, _v|  {
+            handler(key, root.bucket(key))
+        })
     }
 
     /// Writes the entries database to a writer.
     /// If err == nil then exactly tx.Size() bytes will be written into the writer.
     pub fn write_to<W: Write>(&self, mut w: W) -> Result<i64> {
-        todo!()
+        let db = self.db()?;
+        let page_size = db.page_size();
+        let mut file = db.0.file.try_write().ok_or("cannot obtain file write access")?;
+        let mut written = 0;
+        let mut page = OwnedPage::new(page_size);
+        page.flags = META_PAGE_FLAG;
+
+        // first page 
+        {
+            *page.meta_mut() = self.0.meta.try_read().unwrap().clone();
+            page.meta_mut().check_sum = page.meta().sum64();
+            w.write_all(page.buf())?;
+            written += page.size();
+        }
+
+        // second page 
+        {
+            page.id = 1;
+            page.meta_mut().tx_id -=1;
+            page.meta_mut().check_sum = page.meta().sum64();
+        }
+        Ok(0)
     }
 
     /// Copies the entries database to file at the given path.
