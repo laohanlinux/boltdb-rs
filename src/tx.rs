@@ -14,13 +14,15 @@ use parking_lot::{
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Write, Read};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Weak};
 use std::thread::spawn;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::io::SeekFrom;
+use std::io::Seek;
 
 /// Represents the internal transaction identifier
 pub type TxId = u64;
@@ -271,8 +273,15 @@ impl TX {
             page.id = 1;
             page.meta_mut().tx_id -=1;
             page.meta_mut().check_sum = page.meta().sum64();
+            w.write_all(page.buf())?;
+            written += page.size();
         }
-        Ok(0)
+
+        file.seek(SeekFrom::Start(page_size as u64 *2))?;
+
+        let size = self.size() as u64 - (page_size as u64 *2);
+        written += std::io::copy(&mut Read::by_ref(&mut file.get_mut()).take(size), &mut w)? as usize;
+        Ok(written as i64)
     }
 
     /// Copies the entries database to file at the given path.
@@ -347,7 +356,7 @@ impl TX {
             // the size of the freelist but not underestimate the size (which would to bad).
             let page = db.page(free_list_pgid);
             let mut free_list = db.0.free_list.try_write().unwrap();
-            free_list.free(tx_pgid as u64, &page);
+            free_list.free(txid as u64, &page);
 
             let free_list_size = free_list.size();
             let page_size = db.page_size() as usize;
@@ -381,7 +390,7 @@ impl TX {
             let write_start_time = std::time::SystemTime::now();
             if let Err(e) = self.write() {
                 self.rollback()?;
-                return Err(e.into());
+                return Err(e);
             }
             // If strict mode is enabled then perform a consistency check.
             // Only the first consistency error is reported in the panic.
