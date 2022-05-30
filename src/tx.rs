@@ -1,4 +1,3 @@
-use crate::cursor::Cursor;
 use crate::db::{CheckMode, Meta, WeakDB, DB};
 use crate::error::Error::Unexpected;
 use crate::page::{OwnedPage, META_PAGE_FLAG};
@@ -26,8 +25,6 @@ use std::io::Seek;
 
 /// Represents the internal transaction identifier
 pub type TxId = u64;
-
-pub(crate) type CommitHandler = Box<dyn FnOnce() + Send>;
 
 pub(crate) struct TxInner {
     /// is transaction writable
@@ -112,14 +109,14 @@ impl TX {
         self.0
             .meta
             .try_write()
-            .ok_or(Error::Unexpected("pgid locked"))?
+            .ok_or("pgid locked")?
             .pg_id = id;
         Ok(())
     }
 
     /// Returns a reference to the page with a given id.
     /// If page has been written to then a temporary buffered page is returned.
-    /// Use &Page reference to return
+    /// Why not use &Page reference to return? here can avoid to owner limit
     pub(crate) fn page(&self, id: PgId) -> Result<*const Page> {
         // check the dirty pages first.
         {
@@ -146,18 +143,17 @@ impl TX {
             .ok_or(Error::DatabaseGone)
     }
 
+    // return current transaction id
     pub(crate) fn id(&self) -> TxId {
         self.0.meta.try_read().unwrap().tx_id
     }
 
+    // return current waker id
     pub(crate) fn pgid(&self) -> PgId {
         self.0.meta.try_read().unwrap().pg_id
     }
 
-    pub(crate) fn on_commit(&mut self, handler: Box<dyn Fn()>) {
-        self.0.commit_handlers.lock().push(handler)
-    }
-
+    // return the db size by use waker id cal
     pub(crate) fn size(&self) -> i64 {
         self.pgid() as i64 * self.db().unwrap().page_size() as i64
     }
@@ -170,7 +166,7 @@ impl TX {
             .0
             .root
             .try_read()
-            .ok_or(Error::Unexpected("can't acquire bucket"))?;
+            .ok_or("can't acquire bucket")?;
         RwLockReadGuard::try_map(bucket, |b| b.bucket(key))
             .map_err(|_| Error::Unexpected("can't get bucket"))
     }
@@ -201,7 +197,7 @@ impl TX {
             .0
             .root
             .try_write()
-            .ok_or(Error::Unexpected("can't create bucket"))?;
+            .ok_or("can't create bucket")?;
         RwLockWriteGuard::try_map(bucket, |b| b.create_bucket(key).ok())
             .map_err(|_| Error::Unexpected("can't create bucket"))
     }
@@ -220,7 +216,7 @@ impl TX {
             .0
             .root
             .try_write()
-            .ok_or(Error::Unexpected("Can't acquire bucket"))?;
+            .ok_or("Can't acquire bucket")?;
 
         RwLockWriteGuard::try_map(bucket, |b| b.create_bucket_if_not_exists(key).ok())
             .map_err(|_| Error::Unexpected("Can't get bucket"))
@@ -305,7 +301,6 @@ impl TX {
         *tx.0.db.write() = WeakDB::new();
         tx.0.root.try_write().unwrap().clear();
         tx.0.pages.try_write().unwrap().clear();
-        kv_log_macro::debug!("remove tx, {}", Arc::strong_count(&self.0));
         Ok(())
     }
 
