@@ -85,7 +85,7 @@ impl Debug for TxInner {
 /// `Read-Only` transactions can be user for retrieving values for keys and creating cursors.
 /// `Read/Write` transactions can create and remove buckets and create and remove keys.
 ///
-/// *IMPORTANT*: You must commit or rollback transactions when you are done with
+/// *IMPORTANT*: You must commit or rollback transactions when you are done withtx.rs
 /// Them. Pages can not be reclaimed by the writer until no more transactions
 /// are using them. A long running read transaction can cause the database to
 /// quickly grow.
@@ -315,11 +315,12 @@ impl TX {
         }
         let mut db = self.db()?;
         {
-            let start_time = std::time::SystemTime::now();
+            let start_time = SystemTime::now();
+            // rebalance
             self.0.root.try_write().unwrap().rebalance();
             let mut stats = self.0.stats.lock();
             if stats.rebalance > 0 {
-                stats.rebalance_time += std::time::SystemTime::now()
+                stats.rebalance_time += SystemTime::now()
                     .duration_since(start_time)
                     .map_err(|_| Unexpected("Cann't get system time"))?;
             }
@@ -327,12 +328,12 @@ impl TX {
 
         {
             // spill
-            let start_time = std::time::SystemTime::now();
+            let start_time = SystemTime::now();
             {
                 let mut root = self.0.root.try_write().unwrap();
                 root.spill()?;
             }
-            self.0.stats.try_lock().unwrap().spill_time = std::time::SystemTime::now()
+            self.0.stats.try_lock().unwrap().spill_time = SystemTime::now()
                 .duration_since(start_time)
                 .map_err(|_| Unexpected("Cann't get system time"))?;
         }
@@ -382,7 +383,7 @@ impl TX {
             }
 
             // Write dirty pages to disk.
-            let write_start_time = std::time::SystemTime::now();
+            let write_start_time = SystemTime::now();
             if let Err(e) = self.write() {
                 self.rollback()?;
                 return Err(e);

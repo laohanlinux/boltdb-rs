@@ -1,3 +1,5 @@
+use kv_log_macro::debug;
+
 use crate::page::{Page, PgId, PgIds, FREE_LIST_PAGE_FLAG, PAGE_HEADER_SIZE};
 use crate::tx::TxId;
 use std::collections::{HashMap, HashSet};
@@ -114,6 +116,7 @@ impl FreeList {
             assert!(!self.cache.contains(&id), "page {} already freed", id);
             // add to the free list and cache.
             ids.push(id);
+            debug!("free page: {}", id);
             self.cache.insert(id);
         }
     }
