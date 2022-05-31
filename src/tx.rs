@@ -949,7 +949,7 @@ mod tests {
 
     #[test]
     fn commit_some() {
-        let mut db = crate::test_util::mock_db().build().unwrap();
+        let mut db = crate::test_util::mock_db2("c_s".to_owned()).build().unwrap();
         let mut tx = db.begin_rw_tx().unwrap();
         {
             let mut bucket = tx.create_bucket(b"bucket").unwrap();
@@ -960,9 +960,9 @@ mod tests {
 
     #[test]
     fn commit_multiple() {
-        let n_commits = 2;
+        let n_commits = 1;
         let n_values = 1;
-        let mut db = crate::test_util::mock_db().build().unwrap();
+        let mut db = crate::test_util::mock_db2("tt.db".to_owned()).build().unwrap();
         for i in 0..n_commits {
             let mut tx = db.begin_rw_tx().unwrap();
             let mut bucket = tx.create_bucket_if_not_exists(b"bucket").unwrap();

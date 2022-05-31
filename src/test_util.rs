@@ -22,6 +22,14 @@ pub(crate) fn mock_db() -> DBBuilder {
 }
 
 #[cfg(test)]
+pub(crate) fn mock_db2(str: String) -> DBBuilder {
+    mock_log();
+    DBBuilder::new(str)
+        .set_read_only(false)
+        .set_check_mode(CheckMode::PARANOID)
+}
+
+#[cfg(test)]
 pub(crate) fn temp_file() -> PathBuf {
     temp_dir().join(format!("{}.boltdb.db", rand::random::<u64>()))
 }

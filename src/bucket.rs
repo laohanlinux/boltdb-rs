@@ -445,8 +445,7 @@ impl Bucket {
         if (Some(key) == item.key) && item.is_bucket() {
             return Err(Error::IncompatibleValue);
         }
-        let _ = c.node().unwrap().put(key, key, value, 0, 0);
-        Ok(())
+        c.node().unwrap().put(key, key, value, 0, 0)
     }
 
     /// Removes a key from the bucket.
