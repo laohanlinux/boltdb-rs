@@ -98,6 +98,7 @@ impl Node {
 
     /// Attempts to combine the node with sibling nodes if the node fill
     /// size is below a threshold or if there are not enough keys.
+    /// The node will be reclaimed to free-list with freelist.free() after merge by it's sibling
     pub fn rebalance(&mut self) {
         {
             let selfsize = self.size();
@@ -542,6 +543,7 @@ impl Node {
 
     /// Writes the nodes to dirty pages and splits nodes as it goes.
     /// Returns an error if dirty pages cannot be allocated.
+    /// *Note* The oldest(first node) will be free into freelist by free.free()
     pub fn spill(&mut self) -> Result<()> {
         if self.0.spilled.load(Ordering::Acquire) {
             return Ok(());
@@ -586,7 +588,9 @@ impl Node {
                     }
                 }
 
-                let page = tx.allocate((node.size() / db.page_size()) as u64 + 1)?;
+                // Advoid allocate a hole page, when the node size equals to page_size
+                let allocate_size = (node.size() + db.page_size()) / db.page_size();
+                let page = tx.allocate(allocate_size as u64)?;
                 let page = unsafe { &mut *page };
                 {
                     // Write the node.
@@ -704,7 +708,7 @@ impl Node {
         // Only the first block has pgid of older(use old memory space), thew second block is set to 0
         *next.0.inodes.borrow_mut() = nodes;
         self.bucket_mut()
-            .ok_or( BucketEmpty)?
+            .ok_or(BucketEmpty)?
             .tx()
             .unwrap()
             .stats()
@@ -717,7 +721,7 @@ impl Node {
     // This is only be called from `split`.
     fn split_index(&self, threshold: usize) -> (usize, usize) {
         let mut size = PAGE_HEADER_SIZE;
-        let mut index: usize = 0;
+        let mut index = 0;
 
         // Loop until we only have the minimum number of keys required for the second page.
         let inodes = self.0.inodes.borrow();

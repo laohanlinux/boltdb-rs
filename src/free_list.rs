@@ -66,12 +66,11 @@ impl FreeList {
     // Returns the starting page id of contiguous list of pages of a given size.
     // If a contiguous block cannot be found then 0 is returned.
     pub(crate) fn allocate(&mut self, n: usize) -> Option<PgId> {
-        if self.ids.len() == 0 {
+        if self.ids.is_empty() {
             return None;
         }
         let mut initial = 0;
         let mut prev_id = 0;
-        let mut drain: Vec<u64> = vec![];
 
         for (i, id) in self.ids.iter().enumerate() {
             assert!(*id >= 1, "invalid page allocation: {}", id);
@@ -82,18 +81,12 @@ impl FreeList {
             }
 
             // If we found a contiguous block then remove it and return it.
-            if (*id - initial) + 1 == n as PgId {
+            if (*id - initial + 1) == n as PgId {
                 // If we're allocating off the beginning then take the fast path
                 // and just adjust the existing slice. This will use extra memory
                 // temporarily but the append() in the free() will realloc the slice
                 // as is necessary.
-                let mut cur = self.clone();
-                if (i + 1) == n {
-                    drain = self.ids.drain(..=i);
-                } else {
-                    drain = self.ids.drain((*id - initial + 1) as usize..=i);
-                }
-
+                let drain = self.ids.drain(i + 1 -n ..=i);
                 // Remove from the free cache
                 for id in drain {
                     self.cache.remove(&id);
@@ -110,7 +103,7 @@ impl FreeList {
     pub(crate) fn free(&mut self, tx_id: TxId, page: &Page) {
         assert!(page.id > 1, "can't free page 0 or 1: {}", page.id);
         // free page and all its overflow pages.
-        let ids = self.pending.entry(tx_id).or_insert(PgIds::new());
+        let ids = self.pending.entry(tx_id).or_insert(PgIds::default());
         for id in page.id..=(page.id + page.over_flow as u64) {
             // verify that page is not already free.
             assert!(!self.cache.contains(&id), "page {} already freed", id);
@@ -126,8 +119,7 @@ impl FreeList {
         let mut m = self
             .pending
             .drain_filter(|key, _| *key <= tx_id)
-            .map(|(_, pg_id)| pg_id.to_vec())
-            .flatten()
+            .flat_map(|(_, pg_id)| pg_id.to_vec())
             .collect::<Vec<_>>();
         m.sort();
         self.ids.extend_from_slice(PgIds::from(m));
@@ -164,7 +156,7 @@ impl FreeList {
 
         // Copy the list of page ids from the free list.
         if count == 0 {
-            self.ids = PgIds::new();
+            self.ids = PgIds::default();
         } else {
             unsafe {
                 self.ids = PgIds::from(page.pg_ids()[idx..count].to_vec());
@@ -230,13 +222,11 @@ impl FreeList {
     // free.
     pub(crate) fn reload(&mut self, page: &Page) {
         // TODO: FIXME
-
         // Build a cache of only pending pages.
         let page_cache = self
             .pending
             .values()
-            .map(|pgids| pgids.as_slice())
-            .flatten()
+            .flat_map(|pgids| pgids.iter())
             .collect::<HashSet<_>>();
         // Check each page in the free_list and build a new available free_list
         // with any pages not in the pending lists.
@@ -260,8 +250,7 @@ impl FreeList {
         self.cache.extend(
             self.pending
                 .values()
-                .map(|pgids| pgids.as_slice())
-                .flatten()
+                .flat_map(|pgids| pgids.iter())
                 .collect::<HashSet<_>>(),
         );
     }
@@ -348,7 +337,7 @@ mod tests {
         let tests = vec![(3, 3), (1, 6), (3, 0), (2, 12), (1, 7), (0, 0), (0, 0)];
         for (input, got) in tests {
             let exp = free_list.allocate(input);
-            assert_eq!(exp.or(Some(0)).unwrap(), got);
+            assert_eq!(exp.unwrap_or(0), got);
         }
 
         assert_eq!(PgIds::from(vec![9, 18]), free_list.ids);
@@ -356,9 +345,9 @@ mod tests {
         let tests = vec![(1, 9), (1, 18), (1, 0)];
         for (input, got) in tests {
             let exp = free_list.allocate(input);
-            assert_eq!(exp.or(Some(0)).unwrap(), got);
+            assert_eq!(exp.unwrap_or(0), got);
         }
-        assert_eq!(PgIds::new(), free_list.ids);
+        assert_eq!(PgIds::default(), free_list.ids);
     }
 
     // Ensure that a free list can deserialize from a free_list page.

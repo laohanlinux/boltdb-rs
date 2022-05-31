@@ -362,10 +362,6 @@ impl From<Vec<PgId>> for PgIds {
 }
 
 impl PgIds {
-    pub fn new() -> PgIds {
-        PgIds { inner: Vec::new() }
-    }
-
     #[inline]
     pub fn len(&self) -> usize {
         self.inner.len()

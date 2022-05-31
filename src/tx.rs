@@ -369,6 +369,7 @@ impl TX {
             let page = page?;
             let page = unsafe { &mut *page };
 
+            // replace free list page
             db.0.free_list.try_write().unwrap().write(page);
             self.0.meta.try_write().unwrap().free_list = page.id;
 
@@ -561,6 +562,7 @@ impl TX {
     }
 
     /// Returns a contiguous block of memory starting at a given page.
+    /// New pages will stored at commit pharse. 
     pub(crate) fn allocate(&mut self, count: u64) -> Result<*mut Page> {
         let mut db = self.db()?;
         let mut page = db.allocate(count, self)?;
