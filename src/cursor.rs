@@ -13,7 +13,7 @@ use crate::node::{Node, WeakNode};
 use crate::page::{BUCKET_LEAF_FLAG, LEAF_PAGE_FLAG};
 use crate::{Bucket, Page, PgId};
 use either::Either;
-use kv_log_macro::info;
+use kv_log_macro::{info, debug};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::marker::PhantomData;
@@ -484,7 +484,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         {
             let stack = self.stack.borrow();
             let el_ref = stack.last().ok_or(Error::Unexpected("stack empty"))?;
-            if el_ref.index > el_ref.count() {
+            if el_ref.index >= el_ref.count() {
                 //Warnning
                 return Ok(CursorItem::new_null(None, None));
             }
@@ -636,7 +636,11 @@ impl<'a> From<&ElemRef> for CursorItem<'a> {
         unsafe {
             match el_ref.upgrade() {
                 Either::Left(p) => {
+                    let slice = p.as_slice();
+                    debug!("slice: {}, {:?}", p.id, slice);
                     let elem = p.leaf_page_element(el_ref.index);
+                    debug!("ele: {:?}", elem);
+                    debug!("key: {:?}, value: {:?}", elem.key(), elem.value());
                     Self::new(
                         Some(&*(elem.key() as *const [u8])),
                         Some(&*(elem.value() as *const [u8])),

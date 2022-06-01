@@ -960,7 +960,7 @@ mod tests {
 
     #[test]
     fn commit_multiple() {
-        let n_commits = 1;
+        let n_commits = 2;
         let n_values = 1;
         let mut db = crate::test_util::mock_db2("tt.db".to_owned()).build().unwrap();
         for i in 0..n_commits {
@@ -974,7 +974,7 @@ mod tests {
                     .put(format!("key-{}-{}", i, n).as_bytes(), b"value".to_vec())
                     .unwrap();
             }
-            info!("------------");
+            info!("-------------------------------------------------------------");
         }
     }
 

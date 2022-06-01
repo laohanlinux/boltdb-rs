@@ -9,11 +9,11 @@ use either::Either;
 use kv_log_macro::debug;
 use log::info;
 use std::cell::RefCell;
+use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::intrinsics::copy_nonoverlapping;
 use std::sync::Weak;
-use test::RunIgnored::No;
 
 /// The maximum length of a key, in bytes.
 const MAX_KEY_SIZE: usize = 32768;
@@ -511,6 +511,7 @@ impl Bucket {
         if child.local_bucket.root == 0 {
             let data = unsafe {
                 let slice = &value[TopBucket::SIZE..];
+                // cull TopBucket
                 let mut vec = vec![0u8; slice.len()];
                 copy_nonoverlapping(slice.as_ptr(), vec.as_mut_ptr(), slice.len());
                 vec
@@ -630,6 +631,7 @@ impl Bucket {
 
     /// Writes all the nodes for this bucket to dirty pages.
     pub(crate) fn spill(&mut self) -> Result<()> {
+        debug!("ready to spill bucket");
         let mutself = unsafe { &mut *(self as *mut Self) };
 
         // Spill all child buckets first.
@@ -703,12 +705,12 @@ impl Bucket {
     /// and if it contains no subbuckets. Otherwise returns false.
     fn inlineable(&self) -> bool {
         let can_inlineable = self.__inlineable();
-        // kv_log_macro::info!(
-        //     "bucket(root_node: {:?}) can inlineable: {}",
-        //     self.local_bucket,
-        //     // self.root_node,
-        //     can_inlineable
-        // );
+        kv_log_macro::info!(
+            "bucket(root_node: {:?}) can inlineable: {}",
+            self.local_bucket,
+            // self.root_node,
+            can_inlineable
+        );
         can_inlineable
     }
 
@@ -755,13 +757,12 @@ impl Bucket {
 
             (key.map(|k| k.to_vec()), value.map(|v| v.to_vec()))
         };
-
         // Otherwise, create a bucket and cache it.
         let child = self.open_bucket(value.unwrap());
         let mut buckets = self.buckets.borrow_mut();
         let bucket = match buckets.entry(key.unwrap()) {
-            std::collections::hash_map::Entry::Vacant(e) => e.insert(child),
-            std::collections::hash_map::Entry::Occupied(e) => {
+            Vacant(e) => e.insert(child),
+            Occupied(e) => {
                 let c = e.into_mut();
                 *c = child;
                 c

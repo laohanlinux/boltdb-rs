@@ -473,30 +473,30 @@ impl Node {
             page.flags |= BRANCH_PAGE_FLAG;
         }
         info!("write node page: {:?}", page);
+        let inodes = self.0.inodes.borrow_mut();
         // TODO: Why?
-        if self.0.inodes.borrow().len() >= 0xFFFF {
-            panic!(
-                "inode overflow: {} (pg_id={})",
-                self.0.inodes.borrow().len(),
-                page.id
-            );
+        if inodes.len() >= 0xFFFF {
+            panic!("inode overflow: {} (pg_id={})", inodes.len(), page.id);
         }
 
-        page.count = self.0.inodes.borrow().len() as u16;
+        page.count = inodes.len() as u16;
         // Stop here if there are no items to write.
-        if page.count == 0 {
+        if inodes.is_empty() {
             return;
         }
         // Loop over each item and write it to the page.
         let mut b_ptr = unsafe {
-            let offset = self.page_element_size() * self.0.inodes.borrow().len();
+            let offset = self.page_element_size() * inodes.len();
             page.get_data_mut_ptr().add(offset)
         };
-        for (i, item) in self.0.inodes.borrow().iter().enumerate() {
+        let is_leaf = self.is_leaf();
+        let pgid = page.id;
+
+        for (i, item) in inodes.iter().enumerate() {
             assert!(!item.key.is_empty(), "write: zero-length inode key");
 
             // Write the page element.
-            if self.is_leaf() {
+            if is_leaf {
                 let mut element = page.leaf_page_element_mut(i);
                 let element_ptr = element as *const LeafPageElement as *const u8;
                 element.pos = unsafe { b_ptr.sub(element_ptr as usize) } as u32;
@@ -504,13 +504,12 @@ impl Node {
                 element.k_size = item.key.len() as u32;
                 element.v_size = item.value.len() as u32;
             } else {
-                let page_id = page.id;
                 let mut element = page.branch_page_element_mut(i);
                 let element_ptr = element as *const BranchPageElement as *const u8;
                 element.pos = unsafe { b_ptr.sub(element_ptr as usize) } as u32;
                 element.k_size = item.key.len() as u32;
                 element.pgid = item.pg_id;
-                assert_eq!(element.pgid, page_id, "write: circular dependency occurred");
+                assert_eq!(element.pgid, pgid, "write: circular dependency occurred");
             }
 
             // If the length of key+value is larger than the max allocation size
@@ -826,7 +825,7 @@ pub(crate) struct Inode {
     pub(crate) value: Key,
 }
 
-#[derive( Default)]
+#[derive(Default)]
 pub(crate) struct Inodes {
     pub(crate) inner: Vec<Inode>,
 }

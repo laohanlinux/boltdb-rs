@@ -23,7 +23,10 @@ pub(crate) fn mock_db() -> DBBuilder {
 
 #[cfg(test)]
 pub(crate) fn mock_db2(str: String) -> DBBuilder {
+    use std::fs::remove_file;
+
     mock_log();
+    remove_file(&str);
     DBBuilder::new(str)
         .set_read_only(false)
         .set_check_mode(CheckMode::PARANOID)
