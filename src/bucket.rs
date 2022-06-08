@@ -548,8 +548,9 @@ impl Bucket {
 
     /// Recursively frees all pages in the bucket.
     pub fn free(&mut self) {
-        // This is a inline bucket, don't need to free it.
+        // This is an inline bucket, don't need to free it.
         if self.local_bucket.root == 0 {
+            debug!("the bucket is inline root, nothing frees");
             return;
         }
 

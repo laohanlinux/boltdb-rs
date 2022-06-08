@@ -39,11 +39,26 @@ pub(crate) fn temp_file() -> PathBuf {
 
 #[cfg(test)]
 pub(crate) fn mock_log() {
+    use chrono::Local;
     use env_logger::Env;
+    use std::io::Write;
     let env = Env::default()
         .filter_or("MY_LOG_LEVEL", "debug")
         .write_style_or("MY_LOG_STYLE", "always");
-    env_logger::try_init_from_env(env);
+    env_logger::Builder::from_env(env)
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "{} [{}:{}] {} - {}",
+                Local::now().format("%Y-%m-%dT%H:%M:%S"),
+                record.module_path().unwrap_or("unknown"),
+                record.line().unwrap_or(0),
+                record.level(),
+                record.args()
+            )
+        })
+        .try_init();
+    // env_logger::try_init_from_env(env);
 }
 
 #[test]

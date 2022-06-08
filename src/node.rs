@@ -2,11 +2,11 @@ use crate::bucket::{MAX_FILL_PERCENT, MIN_FILL_PERCENT};
 use crate::error::Error::BucketEmpty;
 use crate::error::{Error, Result};
 use crate::page::{
-    BranchPageElement, LeafPageElement, BRANCH_PAGE_ELEMENT_SIZE, BRANCH_PAGE_FLAG,
+    BranchPageElement, LeafPageElement, PageFlag, BRANCH_PAGE_ELEMENT_SIZE, BRANCH_PAGE_FLAG,
     LEAF_PAGE_ELEMENT_SIZE, LEAF_PAGE_FLAG, MIN_KEYS_PER_PAGE, PAGE_HEADER_SIZE,
 };
 use crate::{bucket, search, Bucket, Page, PgId};
-use kv_log_macro::warn;
+use kv_log_macro::{debug, warn};
 use log::info;
 use memoffset::ptr::copy_nonoverlapping;
 use std::borrow::{Borrow, BorrowMut};
@@ -482,6 +482,7 @@ impl Node {
         page.count = inodes.len() as u16;
         // Stop here if there are no items to write.
         if inodes.is_empty() {
+            debug!("inode is empty: {}", page.id);
             return;
         }
         // Loop over each item and write it to the page.
@@ -493,6 +494,7 @@ impl Node {
         let pgid = page.id;
 
         for (i, item) in inodes.iter().enumerate() {
+            debug!("write inode: {}", item.pg_id);
             assert!(!item.key.is_empty(), "write: zero-length inode key");
 
             // Write the page element.
@@ -526,6 +528,7 @@ impl Node {
                 b_ptr = b_ptr.add(v_len);
             }
         }
+        debug!("succeed to write node into page");
         // DEBUG ONLY: n.dump()
     }
 

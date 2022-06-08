@@ -1,6 +1,7 @@
 use crate::db::Meta;
 use crate::free_list::FreeList;
 use crate::must_align;
+use enumflags2::bitflags;
 use std::borrow::{Borrow, BorrowMut};
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
@@ -19,6 +20,16 @@ pub(crate) const BRANCH_PAGE_FLAG: u16 = 0x01;
 pub(crate) const LEAF_PAGE_FLAG: u16 = 0x02;
 pub(crate) const META_PAGE_FLAG: u16 = 0x04;
 pub(crate) const FREE_LIST_PAGE_FLAG: u16 = 0x10;
+
+#[bitflags]
+#[repr(u16)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PageFlag {
+    Branch = 0x01,
+    Leaf = 0x02,
+    Meta = 0x04,
+    FreeList = 0x10,
+}
 
 // u16
 pub(crate) const BUCKET_LEAF_FLAG: u32 = 0x01;
@@ -255,7 +266,6 @@ impl Page {
     }
 }
 
-
 impl From<Vec<u8>> for Page {
     fn from(vec: Vec<u8>) -> Self {
         let page = Page::from_slice(&vec);
@@ -454,20 +464,20 @@ impl OwnedPage {
     pub(crate) fn as_mut_ptr(&mut self) -> *mut u8 {
         self.page.as_mut_ptr()
     }
- 
-    /// Returns binary serialized buffer pf a page 
+
+    /// Returns binary serialized buffer pf a page
     #[inline]
     pub(crate) fn buf(&self) -> &[u8] {
         &self.page
     }
 
-    /// Returns binary serialized muttable buffer of a page 
+    /// Returns binary serialized muttable buffer of a page
     #[inline]
     pub(crate) fn buf_mut(&mut self) -> &mut [u8] {
         &mut self.page
     }
 
-    /// Returns page size 
+    /// Returns page size
     #[inline]
     pub(crate) fn size(&self) -> usize {
         self.page.len()
