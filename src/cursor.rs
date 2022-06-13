@@ -13,7 +13,7 @@ use crate::node::{Node, WeakNode};
 use crate::page::{BUCKET_LEAF_FLAG, LEAF_PAGE_FLAG};
 use crate::{Bucket, Page, PgId};
 use either::Either;
-use kv_log_macro::{info, debug};
+use kv_log_macro::{debug, info};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::marker::PhantomData;
@@ -637,10 +637,10 @@ impl<'a> From<&ElemRef> for CursorItem<'a> {
             match el_ref.upgrade() {
                 Either::Left(p) => {
                     let slice = p.as_slice();
-                    debug!("slice: {}, {:?}", p.id, slice);
+                    // debug!("slice: {}, {:?}", p.id, slice);
                     let elem = p.leaf_page_element(el_ref.index);
-                    debug!("ele: {:?}", elem);
-                    debug!("key: {:?}, value: {:?}", elem.key(), elem.value());
+                    // debug!("ele: {:?}", elem);
+                    // debug!("key: {:?}, value: {:?}", elem.key(), elem.value());
                     Self::new(
                         Some(&*(elem.key() as *const [u8])),
                         Some(&*(elem.value() as *const [u8])),

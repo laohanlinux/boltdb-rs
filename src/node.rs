@@ -30,8 +30,8 @@ pub(crate) struct NodeInner {
     // Just for inner mut
     spilled: AtomicBool,
     unbalanced: AtomicBool,
-    key: RefCell<Key>,
-    pgid: RefCell<PgId>,
+    key: RefCell<Key>,   // be set to inodes[0].key when inodes is not empty
+    pgid: RefCell<PgId>, // be set to 0 when node is leaf node
     parent: RefCell<WeakNode>,
     children: RefCell<Vec<Node>>,
     pub(crate) inodes: RefCell<Vec<Inode>>,
@@ -433,34 +433,43 @@ impl Node {
     }
 
     // Initializes the node from a page.
-    pub(crate) fn read(&mut self, p: &Page) {
-        let node = self.0.borrow_mut();
-        *node.pgid.borrow_mut() = p.id;
-        node.is_leaf
-            .store(p.flags & LEAF_PAGE_FLAG != 0, Ordering::Release);
+    pub(crate) fn read(&mut self, page: &Page) {
+        *self.0.pgid.borrow_mut() = page.id;
+        self.0
+            .is_leaf
+            .store(matches!(page.flags, LEAF_PAGE_FLAG), Ordering::Release);
+        let mut inodes = Vec::<Inode>::with_capacity(page.count as usize);
+        let is_leaf = self.is_leaf();
 
-        for i in 0..(p.count as usize) {
-            let mut inode = &mut node.inodes.borrow_mut()[i];
-            if node.is_leaf() {
-                let elem = p.leaf_page_element(i);
-                inode.flags = elem.flags;
-                inode.key = elem.key().to_vec();
-                inode.value = elem.value().to_vec();
+        for i in 0..page.count as usize {
+            if is_leaf {
+                let elem = page.leaf_page_element(i);
+                let inode = Inode {
+                    flags: elem.flags,
+                    key: elem.key().to_vec(),
+                    value: elem.value().to_vec(),
+                    pg_id: 0, // *Note*
+                };
+                inodes.push(inode);
             } else {
-                let elem = p.branch_page_element(i);
-                inode.pg_id = elem.pgid;
-                inode.key = elem.key().to_vec();
+                let elem = page.branch_page_element(i);
+                let inode = Inode {
+                    flags: 0,
+                    key: elem.key().to_vec(),
+                    value: Vec::new(),
+                    pg_id: elem.pgid,
+                };
+                inodes.push(inode);
             }
-            assert!(!inode.key.is_empty(), "read: zero-length inode key");
         }
 
-        // Save first key so we can find the node in the parent when we spill.
-        if node.inodes.borrow().len() > 0 {
-            *node.key.borrow_mut() = node.inodes.borrow()[0].key.clone();
-            assert!(!node.key.borrow().is_empty(), "read: zero-length inode key");
-        } else {
-            // todo:
-            node.key.borrow_mut().clear();
+        *self.0.inodes.borrow_mut() = inodes;
+
+        {
+            let inodes = self.0.inodes.borrow();
+            if !inodes.is_empty() {
+                *self.0.key.borrow_mut() = inodes[0].key.clone();
+            }
         }
     }
 
@@ -494,7 +503,7 @@ impl Node {
         let pgid = page.id;
 
         for (i, item) in inodes.iter().enumerate() {
-            debug!("write inode: {}", item.pg_id);
+            // debug!("write inode: {}", item.pg_id);
             assert!(!item.key.is_empty(), "write: zero-length inode key");
 
             // Write the page element.

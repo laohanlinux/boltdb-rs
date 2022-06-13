@@ -6,7 +6,7 @@ use crate::page::{OwnedPage, BUCKET_LEAF_FLAG, LEAF_PAGE_ELEMENT_SIZE, PAGE_HEAD
 use crate::tx::{WeakTx, TX};
 use crate::{Page, PgId};
 use either::Either;
-use kv_log_macro::debug;
+use kv_log_macro::{debug, warn};
 use log::info;
 use std::cell::RefCell;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
@@ -178,6 +178,7 @@ impl Bucket {
 
     /// Create a `node` from a `page` and associates it with a given parent.
     pub(crate) fn node(&mut self, pg_id: PgId, parent: WeakNode) -> Node {
+        debug!("load node from page: {}", pg_id);
         // assert!(!self.nodes.is_empty(), "nodes map expected");
         if !self.tx().unwrap().writable() {
             panic!("tx is read-only");
@@ -186,7 +187,7 @@ impl Bucket {
         if let Some(node) = self.nodes.borrow().get(&pg_id) {
             return node.clone();
         }
-        // Otherwise create a node and cache it.
+        // Otherwise, create a node and cache it.
         let mut node = NodeBuilder::new(self as *const Bucket)
             .parent(parent.clone())
             .build();
@@ -203,12 +204,13 @@ impl Bucket {
             node.read(page);
         } else {
             // Read the page into the node and cache it.
-            let page = self.tx().unwrap().page(pg_id).unwrap();
+            let page = unsafe { &*self.tx().unwrap().page(pg_id).unwrap() };
+            // warn!("read node from inline page:  {:?}", page.as_slice());
             unsafe {
-                node.read(&*page);
+                node.read(page);
             }
         }
-        debug!("cache a node: {:?}", node);
+        // debug!("cache a node: {:?}", node);
         self.nodes.borrow_mut().insert(pg_id, node.clone());
         // Update statistics.
         self.tx().unwrap().stats().node_count += 1;

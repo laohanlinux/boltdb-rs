@@ -1,5 +1,6 @@
 use crate::db::{CheckMode, DBBuilder, DB, MAGIC};
 use crate::tx::{TxBuilder, TX};
+use env_logger::WriteStyle;
 use rand::random;
 use std::env::temp_dir;
 use std::path::PathBuf;

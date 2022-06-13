@@ -1,7 +1,7 @@
 use crate::db::{CheckMode, Meta, WeakDB, DB};
 use crate::error::Error::Unexpected;
-use crate::page::{OwnedPage, META_PAGE_FLAG};
 use crate::page::FREE_LIST_PAGE_FLAG;
+use crate::page::{OwnedPage, META_PAGE_FLAG};
 use crate::{error::Error, error::Result, Bucket, Page, PageInfo, PgId};
 use kv_log_macro::{info, warn};
 use log::debug;
@@ -13,15 +13,15 @@ use parking_lot::{
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::fs::OpenOptions;
-use std::io::{Write, Read};
+use std::io::Seek;
+use std::io::SeekFrom;
+use std::io::{Read, Write};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Weak};
 use std::thread::spawn;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::io::SeekFrom;
-use std::io::Seek;
 
 /// Represents the internal transaction identifier
 pub type TxId = u64;
@@ -106,11 +106,7 @@ impl TX {
     }
 
     pub(crate) fn set_pgid(&mut self, id: PgId) -> Result<()> {
-        self.0
-            .meta
-            .try_write()
-            .ok_or("pgid locked")?
-            .pg_id = id;
+        self.0.meta.try_write().ok_or("pgid locked")?.pg_id = id;
         Ok(())
     }
 
@@ -162,11 +158,7 @@ impl TX {
     /// Returns None if the bucket does not exist.
     /// The bucket instance is only valid for the lifetime of the transaction.
     pub fn bucket(&self, key: &[u8]) -> Result<MappedRwLockReadGuard<Bucket>> {
-        let bucket = self
-            .0
-            .root
-            .try_read()
-            .ok_or("can't acquire bucket")?;
+        let bucket = self.0.root.try_read().ok_or("can't acquire bucket")?;
         RwLockReadGuard::try_map(bucket, |b| b.bucket(key))
             .map_err(|_| Error::Unexpected("can't get bucket"))
     }
@@ -193,11 +185,7 @@ impl TX {
         if !self.0.writeable {
             return Err(Error::TxReadOnly);
         }
-        let bucket = self
-            .0
-            .root
-            .try_write()
-            .ok_or("can't create bucket")?;
+        let bucket = self.0.root.try_write().ok_or("can't create bucket")?;
         RwLockWriteGuard::try_map(bucket, |b| b.create_bucket(key).ok())
             .map_err(|_| Error::Unexpected("can't create bucket"))
     }
@@ -212,11 +200,7 @@ impl TX {
         if !self.writable() {
             return Err(Error::TxReadOnly);
         }
-        let bucket = self
-            .0
-            .root
-            .try_write()
-            .ok_or("Can't acquire bucket")?;
+        let bucket = self.0.root.try_write().ok_or("Can't acquire bucket")?;
 
         RwLockWriteGuard::try_map(bucket, |b| b.create_bucket_if_not_exists(key).ok())
             .map_err(|_| Error::Unexpected("Can't get bucket"))
@@ -241,9 +225,7 @@ impl TX {
         mut handler: impl FnMut(&[u8], Option<&Bucket>) -> Result<()>,
     ) -> Result<()> {
         let root = self.0.root.try_write().unwrap();
-        root.for_each(|key, _v|  {
-            handler(key, root.bucket(key))
-        })
+        root.for_each(|key, _v| handler(key, root.bucket(key)))
     }
 
     /// Writes the entries database to a writer.
@@ -251,12 +233,15 @@ impl TX {
     pub fn write_to<W: Write>(&self, mut w: W) -> Result<i64> {
         let db = self.db()?;
         let page_size = db.page_size();
-        let mut file = db.0.file.try_write().ok_or("cannot obtain file write access")?;
+        let mut file =
+            db.0.file
+                .try_write()
+                .ok_or("cannot obtain file write access")?;
         let mut written = 0;
         let mut page = OwnedPage::new(page_size);
         page.flags = META_PAGE_FLAG;
 
-        // first page 
+        // first page
         {
             *page.meta_mut() = self.0.meta.try_read().unwrap().clone();
             page.meta_mut().check_sum = page.meta().sum64();
@@ -264,19 +249,20 @@ impl TX {
             written += page.size();
         }
 
-        // second page 
+        // second page
         {
             page.id = 1;
-            page.meta_mut().tx_id -=1;
+            page.meta_mut().tx_id -= 1;
             page.meta_mut().check_sum = page.meta().sum64();
             w.write_all(page.buf())?;
             written += page.size();
         }
 
-        file.seek(SeekFrom::Start(page_size as u64 *2))?;
+        file.seek(SeekFrom::Start(page_size as u64 * 2))?;
 
-        let size = self.size() as u64 - (page_size as u64 *2);
-        written += std::io::copy(&mut Read::by_ref(&mut file.get_mut()).take(size), &mut w)? as usize;
+        let size = self.size() as u64 - (page_size as u64 * 2);
+        written +=
+            std::io::copy(&mut Read::by_ref(&mut file.get_mut()).take(size), &mut w)? as usize;
         Ok(written as i64)
     }
 
@@ -562,7 +548,7 @@ impl TX {
     }
 
     /// Returns a contiguous block of memory starting at a given page.
-    /// New pages will stored at commit pharse. 
+    /// New pages will stored at commit pharse.
     pub(crate) fn allocate(&mut self, count: u64) -> Result<*mut Page> {
         let mut db = self.db()?;
         let mut page = db.allocate(count, self)?;
@@ -748,12 +734,12 @@ impl Drop for TX {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        warn!(
-            "tx count reference has to {}, trace-id: {}",
-            count, trace_id
-        );
+        // warn!(
+        //     "tx count reference has to {}, trace-id: {}",
+        //     count, trace_id
+        // );
         if let Ok(_db) = self.db() {
-            warn!("has db, trace-id: {}", trace_id);
+            // warn!("has db, trace-id: {}", trace_id);
             if self.0.writeable {
                 self.commit().unwrap();
             } else {
@@ -927,6 +913,7 @@ impl<'a> DerefMut for RWTxGuard<'a> {
 #[cfg(test)]
 mod tests {
     use crate::db::DBBuilder;
+    use crate::error::{Error, Result};
     use crate::test_util::{mock_db, mock_tx};
     use crate::tx::{TxBuilder, TxInner, TX};
     use log::info;
@@ -949,7 +936,9 @@ mod tests {
 
     #[test]
     fn commit_some() {
-        let mut db = crate::test_util::mock_db2("c_s".to_owned()).build().unwrap();
+        let mut db = crate::test_util::mock_db2("c_s".to_owned())
+            .build()
+            .unwrap();
         let mut tx = db.begin_rw_tx().unwrap();
         {
             let mut bucket = tx.create_bucket(b"bucket").unwrap();
@@ -960,21 +949,19 @@ mod tests {
 
     #[test]
     fn commit_multiple() {
-        let n_commits = 2;
-        let n_values = 1;
-        let mut db = crate::test_util::mock_db2("tt.db".to_owned()).build().unwrap();
+        let n_commits = 5;
+        let n_values = 1000;
+        let mut db = crate::test_util::mock_db2("tt.db".to_owned())
+            .build()
+            .unwrap();
         for i in 0..n_commits {
             let mut tx = db.begin_rw_tx().unwrap();
             let mut bucket = tx.create_bucket_if_not_exists(b"bucket").unwrap();
             for n in 0..n_values {
-                if i > 0 && n > 0 {
-                    break;
-                }
                 bucket
                     .put(format!("key-{}-{}", i, n).as_bytes(), b"value".to_vec())
                     .unwrap();
             }
-            info!("-------------------------------------------------------------");
         }
     }
 
@@ -1071,6 +1058,80 @@ mod tests {
 
         let tx = db.begin_tx().unwrap();
         tx.rollback().unwrap();
+    }
+
+    #[test]
+    fn rollback_some() {
+        let mut db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        {
+            let mut bucket = tx.create_bucket(b"bucket").unwrap();
+            bucket.put(b"key", b"value".to_vec()).unwrap();
+        }
+        tx.rollback().unwrap();
+    }
+
+    #[test]
+    fn for_each() {
+        let mut db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        {
+            let mut bucket = tx.create_bucket(b"bucekt").unwrap();
+            bucket.put(b"key", b"value".to_vec());
+            bucket.put(b"keys", b"value".to_vec());
+        }
+        {
+            let mut bucket = tx.create_bucket(b"another bucket").unwrap();
+            bucket.put(b"key", b"value".to_vec()).unwrap();
+            bucket.put(b"keys", b"value".to_vec()).unwrap();
+        }
+
+        let mut bucket_names = vec![];
+        tx.for_each::<Error>(|b, v| -> Result<()> {
+            bucket_names.push(b.to_vec());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(bucket_names.len(), 2);
+        assert!(bucket_names.contains(&b"bucket".to_vec()));
+        assert!(bucket_names.contains(&b"another bucket".to_vec()));
+    }
+
+    #[test]
+    fn check() {
+        let mut db = mock_db().build().unwrap();
+        {
+            let mut tx = db.begin_rw_tx().unwrap();
+            {
+                let mut bucket = tx.create_bucket(b"bucket").unwrap();
+                bucket.put(b"key", b"value".to_vec()).unwrap();
+                bucket.put(b"keys", b"value".to_vec()).unwrap();
+            }
+            {
+                let mut bucket = tx.create_bucket(b"another bucket").unwrap();
+                bucket.put(b"key", b"value".to_vec()).unwrap();
+                bucket.put(b"keys", b"value".to_vec()).unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        {
+            let mut tx = db.begin_rw_tx().unwrap();
+            tx.commit().unwrap();
+        }
+        {
+            let tx = db.begin_tx().unwrap();
+            tx.check_sync().unwrap();
+            tx.rollback().unwrap();
+        }
+    }
+
+    #[test]
+    fn check_corrupted() {
+        let db = DBBuilder::new("./test_data/remark_fail.db")
+            .set_read_only(true)
+            .build()
+            .unwrap();
+        db.begin_tx().unwrap().check_sync().unwrap_err();
     }
 
     #[test]
