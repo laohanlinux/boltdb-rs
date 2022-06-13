@@ -22,6 +22,18 @@ pub(crate) fn mock_db() -> DBBuilder {
         .set_check_mode(CheckMode::PARANOID)
 }
 
+use crate::{bucket::Bucket, tx::WeakTx};
+#[cfg(test)]
+pub(crate) fn mock_bucket(tx: WeakTx) ->Bucket {
+    Bucket::new(tx)
+}
+
+use crate::node::{Node, NodeBuilder};
+#[cfg(test)]
+pub(crate) fn mock_node(bucket: *const Bucket) -> Node {
+    NodeBuilder::new(bucket).build()
+}
+
 #[cfg(test)]
 pub(crate) fn mock_db2(str: String) -> DBBuilder {
     use std::fs::remove_file;

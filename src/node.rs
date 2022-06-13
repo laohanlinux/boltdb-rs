@@ -896,6 +896,54 @@ impl Inodes {
 }
 #[cfg(test)]
 mod tests {
+    use std::{slice::{from_raw_parts, from_raw_parts_mut}, mem::size_of};
+
+    use crate::{page::{OwnedPage, LEAF_PAGE_FLAG, LeafPageElement}, test_util::{mock_tx, mock_bucket, mock_node}, tx::WeakTx};
+
     #[test]
-    fn it_works() {}
+    fn read_page() {
+        let mut page = {
+            let mut page = OwnedPage::new(1024);
+            page.id = 1;
+            page.over_flow = 0;
+            page.flags = LEAF_PAGE_FLAG;
+            page.count = 2;
+            page
+        };
+
+        {
+            let nodes = unsafe {from_raw_parts_mut(page.get_data_mut_ptr() as *mut LeafPageElement, 3)};
+            nodes[0] = LeafPageElement {
+                flags: 0,
+                pos: 32,
+                k_size: 3,
+                v_size: 4,
+            };
+            nodes[1] = LeafPageElement {
+                flags: 0,
+                pos: 23,
+                k_size: 10,
+                v_size: 3,
+            };
+
+            let data = unsafe {from_raw_parts_mut(&mut nodes[2] as *mut LeafPageElement as *mut u8, 1024)};
+            data[..7].copy_from_slice(b"barfooz");
+            data[7..7+13].copy_from_slice(b"helloworldbye");
+        }
+
+        assert!(size_of::<LeafPageElement>() == 16, "{}", size_of::<LeafPageElement>());
+        
+        let tx = mock_tx();
+        let bucket = mock_bucket(WeakTx::from(&tx));
+        let mut n = mock_node(&bucket);
+        n.read(&page);
+        let inodes = n.0.inodes.borrow();
+
+        assert!(n.is_leaf());
+        assert_eq!(inodes.len(), 2);
+        assert_eq!(inodes[0].key, b"bar");
+        assert_eq!(inodes[0].value, b"fooz");
+        assert_eq!(inodes[1].key, b"helloworldbye");
+        assert_eq!(inodes[1].value, b"bye");
+    }
 }
