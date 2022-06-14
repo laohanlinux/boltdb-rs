@@ -659,3 +659,112 @@ impl<'a> From<&ElemRef> for CursorItem<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_util::{mock_db, mock_tx};
+
+    #[test]
+    fn seek_none() {
+        let mut db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        drop(tx.create_bucket(b"blue").unwrap());
+        let c = tx.cursor();
+        let item = c.seek(b"foo");
+        assert!(item.is_ok());
+        assert!(item.unwrap().is_none());
+    }
+
+    #[test]
+    fn seek_some() {
+        let mut db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        drop(tx.create_bucket(b"foo").unwrap());
+        let c = tx.cursor();
+        let item = c.seek(b"foo");
+        assert!(item.is_ok());
+        assert!(item.unwrap().is_some());
+    }
+
+    #[test]
+    fn values_cursor() {
+        let mut db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        {
+            let mut bucket = tx.create_bucket(b"bucket").unwrap();
+            bucket.put(b"petr", b"rachmaninov".to_vec()).unwrap();
+            bucket.put(b"robert", b"plant".to_vec()).unwrap();
+            bucket.put(b"ziggy", b"stardust".to_vec()).unwrap();
+            {
+                let cursor = bucket.cursor().unwrap();
+                assert_eq!(cursor.first().unwrap().key.unwrap(), b"petr");
+            }
+            {
+                let cursor = bucket.cursor().unwrap();
+                assert_eq!(cursor.first().unwrap().key.unwrap(), b"petr");
+                assert_eq!(cursor.next().unwrap().key.unwrap(), b"robert");
+            }
+            {
+                let mut key_names = vec![];
+                let cursor = bucket.cursor().unwrap();
+                {
+                    key_names.push(cursor.first().unwrap().key.unwrap().to_vec());
+                }
+                while let Some(key) = cursor.next().unwrap().key {
+                    key_names.push(key.to_vec());
+                }
+                assert_eq!(key_names.len(), 3);
+                assert!(key_names.contains(&b"petr".to_vec()));
+                assert!(key_names.contains(&b"robert".to_vec()));
+                assert!(key_names.contains(&b"ziggy".to_vec()));
+            }
+
+            // backwards
+            {
+                let cursor = bucket.cursor().unwrap();
+                assert_eq!(cursor.last().unwrap().key.unwrap(), b"ziggy");
+            }
+            {
+                let cursor = bucket.cursor().unwrap();
+                assert_eq!(cursor.last().unwrap().key.unwrap(), b"ziggy");
+                assert_eq!(cursor.prev().unwrap().key.unwrap(), b"robert");
+            }
+
+            {
+                let mut key_names = vec![];
+                let cursor = bucket.cursor().unwrap();
+                {
+                    key_names.push(cursor.last().unwrap().key.unwrap().to_vec());
+                }
+                while let Some(key) = cursor.prev().unwrap().key {
+                    key_names.push(key.to_vec());
+                }
+            }
+
+            {
+                let cursor = bucket.cursor().unwrap();
+                assert_eq!(cursor.last().unwrap().key.unwrap(), b"ziggy");
+                assert_eq!(cursor.prev().unwrap().key.unwrap(), b"robert");
+                assert_eq!(cursor.prev().unwrap().key.unwrap(), b"petr");
+                assert_eq!(cursor.next().unwrap().key.unwrap(), b"robert");
+
+                assert_eq!(cursor.first().unwrap().key.unwrap(), b"petr");
+                assert_eq!(cursor.next().unwrap().key.unwrap(), b"robert");
+                assert_eq!(cursor.next().unwrap().key.unwrap(), b"ziggy");
+                assert_eq!(cursor.prev().unwrap().key.unwrap(), b"robert");
+            }
+            {
+                let cursor = bucket.cursor().unwrap();
+                assert_eq!(cursor.first().unwrap().key.unwrap(), b"petr");
+                assert_eq!(cursor.prev().unwrap().key, None);
+                assert_eq!(cursor.prev().unwrap().key, None);
+            }
+            {
+                let cursor = bucket.cursor().unwrap();
+                assert_eq!(cursor.last().unwrap().key.unwrap(), b"ziggy");
+                assert_eq!(cursor.next().unwrap().key, None);
+                assert_eq!(cursor.next().unwrap().key, None);
+            }
+        }
+    }
+}

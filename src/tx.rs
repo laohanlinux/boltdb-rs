@@ -1,3 +1,4 @@
+use crate::cursor::Cursor;
 use crate::db::{CheckMode, Meta, WeakDB, DB};
 use crate::error::Error::Unexpected;
 use crate::page::FREE_LIST_PAGE_FLAG;
@@ -97,6 +98,15 @@ unsafe impl Sync for TX {}
 unsafe impl Send for TX {}
 
 impl TX {
+    /// Creates a cursor associated with the root bucket.
+    /// All items in the cursor will return a nil value because all items in root bucket are also buckets.
+    /// The cursor is only valid as long as the transaction is open.
+    /// Do not use a cursor after the transaction is closed.
+    pub fn cursor(&self) -> Cursor<RwLockWriteGuard<Bucket>> {
+        self.0.stats.lock().cursor_count += 1;
+        Cursor::new(self.0.root.write())
+    }
+
     pub(crate) fn stats(&self) -> MutexGuard<'_, RawMutex, TxStats> {
         self.0.stats.try_lock().unwrap()
     }

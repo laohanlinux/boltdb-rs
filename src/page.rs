@@ -1,13 +1,16 @@
 use crate::db::Meta;
 use crate::free_list::FreeList;
 use crate::must_align;
+use crate::test_util::mock_log;
 use enumflags2::bitflags;
+use kv_log_macro::debug;
 use std::borrow::{Borrow, BorrowMut};
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ops::RangeBounds;
 use std::ops::{Deref, DerefMut};
+use std::process::id;
 use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
 
 pub(crate) const PAGE_HEADER_SIZE: usize = size_of::<Page>();
@@ -39,7 +42,7 @@ pub type PgId = u64;
 // Page Header
 // |PgId(u64)|flags(u16)|count(u16)|over_flow
 // So, Page Size = count + over_flow*sizeof(Page)
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 #[repr(C)]
 pub struct Page {
     pub(crate) id: PgId,
@@ -266,10 +269,15 @@ impl Page {
     }
 }
 
-impl From<Vec<u8>> for Page {
-    fn from(vec: Vec<u8>) -> Self {
-        let page = Page::from_slice(&vec);
-        page.to_owned()
+impl ToOwned for Page {
+    type Owned = OwnedPage;
+
+    fn to_owned(&self) -> Self::Owned {
+        let ptr = self as *const Page as *const u8;
+        unsafe {
+            let slice = from_raw_parts(ptr, self.byte_size()).to_owned();
+            OwnedPage::from_vec(slice)
+        }
     }
 }
 
@@ -431,7 +439,7 @@ impl PgIds {
 
 #[derive(Clone)]
 #[repr(align(64))]
-pub(crate) struct OwnedPage {
+pub struct OwnedPage {
     page: Vec<u8>,
 }
 
@@ -575,4 +583,90 @@ fn t_page_buffer() {
     };
     let new_page = Page::from_slice(page.as_slice());
     assert_eq!(page.as_slice(), new_page.as_slice());
+}
+
+#[test]
+fn t_new() {
+    let mut buf = vec![0u8; 256];
+    let mut page = Page::from_slice_mut(&mut buf);
+    assert_eq!(page.over_flow, 0);
+    assert_eq!(page.count, 0);
+    assert_eq!(page.id, 0);
+
+    page.id = 25;
+    assert_eq!(page.id, 25);
+
+    page.flags = META_PAGE_FLAG;
+    assert_eq!(page.flags, META_PAGE_FLAG);
+}
+
+#[test]
+fn t_read_leaf_nodes() {
+    let mut page = OwnedPage::new(4096);
+    page.flags = LEAF_PAGE_FLAG;
+    page.count = 2;
+    let mut nodes =
+        unsafe { from_raw_parts_mut(page.get_data_mut_ptr() as *mut LeafPageElement, 3) };
+    nodes[0] = LeafPageElement {
+        flags: 0,
+        pos: 32,
+        k_size: 3,
+        v_size: 4,
+    };
+    nodes[1] = LeafPageElement {
+        flags: 0,
+        pos: 23,
+        k_size: 10,
+        v_size: 3,
+    };
+
+    let data =
+        unsafe { from_raw_parts_mut(&mut nodes[2] as *mut LeafPageElement as *mut u8, 4096) };
+    data[..7].copy_from_slice("barfooz".as_bytes());
+    data[7..7 + 13].copy_from_slice("helloworldbye".as_bytes());
+
+    let el = page.leaf_page_element(0);
+    assert_eq!(el.k_size, 3);
+    assert_eq!(el.v_size, 4);
+    assert_eq!(el.pos, 32);
+
+    let el = page.leaf_page_element(1);
+    assert_eq!(el.k_size, 10);
+    assert_eq!(el.v_size, 3);
+    assert_eq!(el.pos, 23);
+}
+
+#[test]
+fn t_to_owned() {
+    mock_log();
+    let mut buf = vec![0u8; 1024];
+    let mut page = Page::from_slice_mut(&mut buf);
+    page.flags = LEAF_PAGE_FLAG;
+    page.count = 2;
+
+    let nodes = unsafe { from_raw_parts_mut(page.get_data_ptr() as *mut LeafPageElement, 3) };
+    nodes[0] = LeafPageElement {
+        flags: 0,
+        pos: 32,
+        k_size: 3,
+        v_size: 4,
+    };
+    nodes[1] = LeafPageElement {
+        flags: 0,
+        pos: 23,
+        k_size: 10,
+        v_size: 3,
+    };
+
+    let data =
+        unsafe { from_raw_parts_mut(&mut nodes[2] as *mut LeafPageElement as *mut u8, 1024) };
+    data[..7].copy_from_slice("barfooz".as_bytes());
+    data[7..7 + 13].copy_from_slice("helloworldbye".as_bytes());
+
+    let owned = page.to_owned();
+    /// Note: Very interesting
+    assert_eq!(
+        owned.page.len(),
+        PAGE_HEADER_SIZE + LEAF_PAGE_ELEMENT_SIZE + 23 + 10 + 3
+    );
 }

@@ -279,13 +279,11 @@ impl Node {
     // This is an optimization to avoid calculation a large node when we only need
     // to know if it fits inside a certain page size.
     fn size_less_than(&self, v: usize) -> bool {
-        for i in 0..self.0.inodes.borrow().len() {
-            let node = &self.0.inodes.borrow()[i];
-            if self.page_element_size() + node.key.len() + node.value.len() >= v {
-                return false;
-            }
-        }
-        true
+        let (mut sz, elsz) = (PAGE_HEADER_SIZE, self.page_element_size());
+        self.0.inodes.borrow().iter().all(|node| {
+            sz += elsz + node.key.len() + node.value.len();
+            return sz < v;
+        })
     }
 
     // Returns the size of each page element based on type of node.
@@ -689,18 +687,29 @@ impl Node {
     fn split_two(&mut self, page_size: usize) -> Result<Option<Node>> {
         // Ignore the split if the page doesn't have at least enough nodes for
         // two pages or if the nodes can fit in a single page.
-        let inodes = self.0.inodes.borrow();
-        if inodes.len() <= MIN_KEYS_PER_PAGE * 2 || self.size_less_than(page_size) {
-            return Ok(None);
+        {
+            let inodes = self.0.inodes.borrow();
+            if inodes.len() <= MIN_KEYS_PER_PAGE * 2 || self.size_less_than(page_size) {
+                return Ok(None);
+            }
         }
+        let clamp = |n: f64, min: f64, max: f64| -> f64 {
+            if n < min {
+                return min;
+            }
+            if n > max {
+                return max;
+            }
+            return n;
+        };
         // Determine the threshold before starting a new node.
-        let fill_parent = self
-            .bucket()
-            .ok_or(BucketEmpty)?
-            .fill_percent
-            .min(MIN_FILL_PERCENT)
-            .max(MAX_FILL_PERCENT);
+        let fill_parent = clamp(
+            self.bucket().ok_or(BucketEmpty)?.fill_percent,
+            MIN_FILL_PERCENT,
+            MAX_FILL_PERCENT,
+        );
         let threshold = page_size as f64 * fill_parent;
+        // debug!("the threshold is {}", threshold);
 
         // Determine split position and sizes of the two pages.
         let split_index = self.split_index(threshold as usize).0;
@@ -731,26 +740,30 @@ impl Node {
     // It returns the index as well as the size of the first page.
     // This is only be called from `split`.
     fn split_index(&self, threshold: usize) -> (usize, usize) {
-        let mut size = PAGE_HEADER_SIZE;
-        let mut index = 0;
+        let mut rindex = 0;
+        let mut pgsize = PAGE_HEADER_SIZE;
 
-        // Loop until we only have the minimum number of keys required for the second page.
         let inodes = self.0.inodes.borrow();
-        for i in 0..inodes.len() - MIN_KEYS_PER_PAGE {
-            index = i;
-            let inode = &inodes[i];
-            let el_size = self.page_element_size() + inode.key.len() + inode.value.len();
+        let pelsize = self.page_element_size();
+        let max = inodes.len() - MIN_KEYS_PER_PAGE;
 
-            // If we have at least the minimum number of keys and adding another
-            // node would put us over the threshold then exit and return.
-            if i >= MIN_KEYS_PER_PAGE && size + el_size > threshold {
+        for (index, inode) in inodes.iter().enumerate().take(max) {
+            rindex = index;
+            let elsize = pelsize + inode.key.len() + inode.value.len();
+            debug!(
+                "found split, threshold: {}, index: {}, sz: {}",
+                threshold,
+                index,
+                pgsize + elsize
+            );
+            if index >= MIN_KEYS_PER_PAGE && (pgsize + elsize) > threshold {
                 break;
             }
 
-            // Add the element size to the total size.
-            size += el_size;
+            pgsize += elsize;
         }
-        (index, size)
+
+        (rindex, pgsize)
     }
 
     // Adds the node's underlying `page` to the freelist.
@@ -896,9 +909,41 @@ impl Inodes {
 }
 #[cfg(test)]
 mod tests {
-    use std::{slice::{from_raw_parts, from_raw_parts_mut}, mem::size_of};
+    use std::sync::atomic::Ordering;
+    use std::{
+        mem::size_of,
+        slice::{from_raw_parts, from_raw_parts_mut},
+    };
 
-    use crate::{page::{OwnedPage, LEAF_PAGE_FLAG, LeafPageElement}, test_util::{mock_tx, mock_bucket, mock_node}, tx::WeakTx};
+    use crate::node::Node;
+    use crate::test_util::mock_log;
+    use crate::{
+        page::{LeafPageElement, OwnedPage, LEAF_PAGE_FLAG},
+        test_util::{mock_bucket, mock_node, mock_tx},
+        tx::WeakTx,
+    };
+
+    #[test]
+    fn create() {
+        let tx = mock_tx();
+        let bucket = mock_bucket(WeakTx::from(&tx));
+        let mut n = mock_node(&bucket);
+        n.put(b"baz", b"baz", [1, 22, 3].to_vec(), 0, 0);
+        n.put(b"foo", b"foo", b"barack".to_vec(), 0, 0);
+        n.put(b"bar", b"bar", b"bill".to_vec(), 0, 0);
+        n.put(b"foo", b"fold", b"donald".to_vec(), 0, 1);
+        let inodes = n.0.inodes.borrow();
+        assert_eq!(inodes.len(), 3);
+
+        assert_eq!(inodes[0].key, b"bar");
+        assert_eq!(inodes[0].value, b"bill".to_vec());
+
+        assert_eq!(inodes[1].key, b"baz");
+        assert_eq!(inodes[1].value, [1, 22, 3].to_vec());
+
+        assert_eq!(inodes[2].key, b"fold");
+        assert_eq!(inodes[2].value, b"donald".to_vec());
+    }
 
     #[test]
     fn read_page() {
@@ -912,7 +957,8 @@ mod tests {
         };
 
         {
-            let nodes = unsafe {from_raw_parts_mut(page.get_data_mut_ptr() as *mut LeafPageElement, 3)};
+            let nodes =
+                unsafe { from_raw_parts_mut(page.get_data_mut_ptr() as *mut LeafPageElement, 3) };
             nodes[0] = LeafPageElement {
                 flags: 0,
                 pos: 32,
@@ -926,13 +972,19 @@ mod tests {
                 v_size: 3,
             };
 
-            let data = unsafe {from_raw_parts_mut(&mut nodes[2] as *mut LeafPageElement as *mut u8, 1024)};
+            let data = unsafe {
+                from_raw_parts_mut(&mut nodes[2] as *mut LeafPageElement as *mut u8, 1024)
+            };
             data[..7].copy_from_slice(b"barfooz");
-            data[7..7+13].copy_from_slice(b"helloworldbye");
+            data[7..7 + 13].copy_from_slice(b"helloworldbye");
         }
 
-        assert!(size_of::<LeafPageElement>() == 16, "{}", size_of::<LeafPageElement>());
-        
+        assert!(
+            size_of::<LeafPageElement>() == 16,
+            "{}",
+            size_of::<LeafPageElement>()
+        );
+
         let tx = mock_tx();
         let bucket = mock_bucket(WeakTx::from(&tx));
         let mut n = mock_node(&bucket);
@@ -943,7 +995,149 @@ mod tests {
         assert_eq!(inodes.len(), 2);
         assert_eq!(inodes[0].key, b"bar");
         assert_eq!(inodes[0].value, b"fooz");
-        assert_eq!(inodes[1].key, b"helloworldbye");
+        assert_eq!(inodes[1].key, b"helloworld");
         assert_eq!(inodes[1].value, b"bye");
+    }
+
+    #[test]
+    fn write_page() {
+        let tx = mock_tx();
+        let bucket = mock_bucket(WeakTx::from(&tx));
+        let mut n = mock_node(&bucket);
+        n.0.is_leaf.store(true, Ordering::Release);
+        n.put(b"susy", b"susy", b"que".to_vec(), 0, LEAF_PAGE_FLAG as u32);
+        n.put(
+            b"ricki",
+            b"ricki",
+            b"lake".to_vec(),
+            0,
+            LEAF_PAGE_FLAG as u32,
+        );
+
+        n.put(
+            b"john",
+            b"john",
+            b"johnson".to_vec(),
+            0,
+            LEAF_PAGE_FLAG as u32,
+        );
+
+        let mut page = {
+            let mut page = OwnedPage::new(4096);
+            page.id = 1;
+            page.over_flow = 0;
+            page.flags = LEAF_PAGE_FLAG;
+            page
+        };
+        n.write(&mut page);
+
+        let nodes = unsafe {
+            std::slice::from_raw_parts_mut(page.get_data_mut_ptr() as *mut LeafPageElement, 3)
+        };
+        assert_eq!(nodes[0].k_size, 4);
+        assert_eq!(nodes[0].v_size, 7);
+        assert_eq!(nodes[0].pos, 48);
+        assert_eq!(nodes[1].k_size, 5);
+        assert_eq!(nodes[1].v_size, 4);
+        assert_eq!(nodes[1].pos, 43);
+        assert_eq!(nodes[2].k_size, 4);
+        assert_eq!(nodes[2].v_size, 3);
+        assert_eq!(nodes[2].pos, 36);
+
+        let mut n2 = mock_node(&bucket);
+        n2.read(&page);
+        let inodes = n2.0.inodes.borrow();
+        assert!(n2.is_leaf());
+        assert_eq!(inodes.len(), 3);
+        assert_eq!(inodes[0].key, b"john",);
+        assert_eq!(inodes[0].value, b"johnson");
+        assert_eq!(inodes[1].key, b"ricki");
+        assert_eq!(inodes[1].value, b"lake");
+        assert_eq!(inodes[2].key, b"susy");
+        assert_eq!(inodes[2].value, b"que");
+    }
+
+    #[test]
+    fn split_two() {
+        mock_log();
+        let tx = mock_tx();
+        let bucket = mock_bucket(WeakTx::from(&tx));
+        let mut n = mock_node(&bucket);
+        n.0.is_leaf.store(true, Ordering::Release);
+        n.put(b"00000001", b"00000001", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000002", b"00000002", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000003", b"00000003", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000004", b"00000004", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000005", b"00000005", b"0123456701234567".to_vec(), 0, 0);
+        // threshold: 0.5 * 100 = 50, MIN_KEYS_PER_PAGE(NOTE): 2
+        // Split between 2 & 3.
+        // page_header = 16, elementHeader = 32 * 3, (kv) = (8 + 16) * 3
+        // = 136
+        let next = n.split_two(100).unwrap();
+
+        assert!(next.is_some());
+    }
+
+    #[test]
+    fn split_two_fail() {
+        mock_log();
+        let tx = mock_tx();
+        let bucket = mock_bucket(WeakTx::from(&tx));
+        let mut n = mock_node(&bucket);
+        n.0.is_leaf.store(true, Ordering::Release);
+        n.put(b"00000001", b"00000001", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000002", b"00000002", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000003", b"00000003", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000004", b"00000004", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000005", b"00000005", b"0123456701234567".to_vec(), 0, 0);
+
+        // Split between 2 & 3.
+        let next = n.split_two(4096).unwrap();
+
+        assert!(next.is_none());
+    }
+
+    #[test]
+    fn split() {
+        let tx = mock_tx();
+        let bucket = mock_bucket(WeakTx::from(&tx));
+        let mut n = mock_node(&bucket);
+        n.0.is_leaf.store(true, Ordering::Release);
+        n.put(b"00000001", b"00000001", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000002", b"00000002", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000003", b"00000003", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000004", b"00000004", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000005", b"00000005", b"0123456701234567".to_vec(), 0, 0);
+
+        // Split between 2 & 3.
+        let parent = n.split(100).unwrap();
+
+        assert!(parent.is_some());
+        let parent = parent.unwrap();
+        let pchildren = parent.0.children.borrow();
+        assert_eq!(pchildren.len(), 2);
+        assert_eq!(pchildren[1].0.inodes.borrow().len(), 3);
+        assert_eq!(pchildren[0].0.inodes.borrow().len(), 2);
+    }
+
+    #[test]
+    fn split_big() {
+        let tx = mock_tx();
+        let bucket = mock_bucket(WeakTx::from(&tx));
+        let mut n = mock_node(&bucket);
+        n.0.is_leaf.store(true, Ordering::Release);
+        for i in 1..1000 {
+            let key = format!("{:08}", i);
+            n.put(
+                &key.as_bytes(),
+                &key.as_bytes(),
+                b"0123456701234567".to_vec(),
+                0,
+                0,
+            );
+        }
+        let parent = n.split(4096).unwrap().unwrap();
+
+        assert_eq!(parent.0.children.borrow().len(), 19);
     }
 }
