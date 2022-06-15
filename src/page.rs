@@ -1,7 +1,6 @@
 use crate::db::Meta;
 use crate::free_list::FreeList;
 use crate::must_align;
-use crate::test_util::mock_log;
 use enumflags2::bitflags;
 use kv_log_macro::debug;
 use std::borrow::{Borrow, BorrowMut};
@@ -638,7 +637,7 @@ fn t_read_leaf_nodes() {
 
 #[test]
 fn t_to_owned() {
-    mock_log();
+    crate::test_util::mock_log();
     let mut buf = vec![0u8; 1024];
     let mut page = Page::from_slice_mut(&mut buf);
     page.flags = LEAF_PAGE_FLAG;

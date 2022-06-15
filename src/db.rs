@@ -398,7 +398,7 @@ impl<'a> DB {
             };
 
             unsafe {
-                kv_log_macro::info!("free db rw_lock, has db ref: {}", tx.db().is_ok());
+                log::info!(is_ok = tx.db().is_ok(); "free db rw_lock, has db ref");
                 self.0.rw_lock.raw().unlock();
             }
             let mut stats = self.0.stats.write();

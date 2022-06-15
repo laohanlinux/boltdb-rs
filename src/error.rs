@@ -104,4 +104,14 @@ impl From<&'static str> for Error {
     }
 }
 
+// TODO: FIXME: implement
+impl PartialEq for Error {
+    fn eq(&self, other: &Self) -> bool {
+        match self {
+            Self::IncompatibleValue if Self::IncompatibleValue == *other => true,
+            _ => false,
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;

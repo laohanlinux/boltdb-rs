@@ -1,8 +1,17 @@
 use crate::db::{CheckMode, DBBuilder, DB, MAGIC};
+use crate::page::PAGE_HEADER_SIZE;
 use crate::tx::{TxBuilder, TX};
+use crate::Page;
+use bitflags::_core::borrow::Borrow;
+use log::{info, kv::source::as_map, kv::Source};
 use rand::random;
+use std::borrow::BorrowMut;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::env::temp_dir;
+use std::fmt::{format, Pointer};
 use std::path::PathBuf;
+use std::ptr::NonNull;
 
 #[cfg(test)]
 pub(crate) fn mock_tx() -> TX {
@@ -50,31 +59,49 @@ pub(crate) fn temp_file() -> PathBuf {
 }
 
 #[cfg(test)]
-pub(crate) fn mock_json_log() {
-    
-}
+pub(crate) fn mock_json_log() {}
 
 #[cfg(test)]
 pub(crate) fn mock_log() {
     use chrono::Local;
     use env_logger::Env;
+    use log::kv::source::AsMap;
+    use log::kv::{Error, Key, ToKey, ToValue, Value};
+    use serde::{Deserialize, Serialize};
     use std::io::Write;
+
+    #[derive(Serialize, Deserialize)]
+    struct JsonLog {
+        level: log::Level,
+        ts: String,
+        module: String,
+        msg: String,
+        #[serde(skip_serializing_if = "HashMap::is_empty")]
+        kv: HashMap<String, serde_json::Value>,
+    }
     let env = Env::default()
         .filter_or("MY_LOG_LEVEL", "debug")
         .write_style_or("MY_LOG_STYLE", "always");
     env_logger::Builder::from_env(env)
         .format(|buf, record| {
-            writeln!(
-                buf,
-                "{} [{}:{}] {} - {}",
-                Local::now().format("%Y-%m-%dT%H:%M:%S"),
-                record.module_path().unwrap_or("unknown"),
-                record.line().unwrap_or(0),
-                record.level(),
-                record.args()
-            )
+            let mut l = JsonLog {
+                ts: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+                module: record.file().unwrap_or("unknown").to_string()
+                    + ":"
+                    + &*record.line().unwrap_or(0).to_string(),
+                level: record.level(),
+                msg: record.args().to_string(),
+                kv: Default::default(),
+            };
+            let kv: AsMap<&dyn Source> = as_map(record.key_values());
+            if let Ok(kv) = serde_json::to_string(&kv) {
+                let mut h: HashMap<String, serde_json::Value> = serde_json::from_str(&kv).unwrap();
+                l.kv.extend(h.into_iter());
+            }
+            writeln!(buf, "{}", serde_json::to_string(&l).unwrap())
         })
         .try_init();
+    log::info!( is_ok = true; "start init log");
     // env_logger::try_init_from_env(env);
 }
 
@@ -121,38 +148,20 @@ fn panic_while_update() {
     .unwrap();
 }
 
-#[test]
-fn dd() {
-    let v = vec![98, 117, 99, 107, 101, 116];
-    println!("{}", String::from_utf8_lossy(&v));
+fn insert(h: &mut HashMap<i32, Vec<u8>>) -> *mut Page {
+    let mut v = vec![0u8; PAGE_HEADER_SIZE];
+    let page = unsafe { v.as_mut_ptr() as *mut Page };
+    h.insert(1, v);
+    page
 }
 
-#[cfg(test)]
-mod other {
-    use crate::page::PAGE_HEADER_SIZE;
-    use crate::Page;
-    use bitflags::_core::borrow::Borrow;
-    use std::borrow::BorrowMut;
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-    use std::ptr::NonNull;
-
-    fn insert2(h: &mut HashMap<i32, Vec<u8>>) -> *mut Page {
-        let mut v = vec![0u8; PAGE_HEADER_SIZE];
-        let page = unsafe { v.as_mut_ptr() as *mut Page };
-        h.insert(1, v);
-        page
-    }
-
-    #[test]
-    fn double_ref() {
-        let mut h = HashMap::default();
-        let mut page = insert2(&mut h);
-        let page = unsafe { &mut *page };
-
-        println!("{:?}", h.get(&1).unwrap());
-
-        page.id = 200;
-        println!("{:?}", h.get(&1).unwrap());
-    }
+#[test]
+fn double_ref() {
+    let mut h = HashMap::default();
+    let mut page = insert(&mut h);
+    let page = unsafe { &mut *page };
+    let v1 = h.get(&1).unwrap().clone();
+    page.id = 200;
+    let v2 = h.get(&1).unwrap().clone();
+    assert_ne!(v1, v2);
 }

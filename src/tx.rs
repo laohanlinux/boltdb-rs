@@ -4,8 +4,7 @@ use crate::error::Error::Unexpected;
 use crate::page::FREE_LIST_PAGE_FLAG;
 use crate::page::{OwnedPage, META_PAGE_FLAG};
 use crate::{error::Error, error::Result, Bucket, Page, PageInfo, PgId};
-use kv_log_macro::{info, warn};
-use log::debug;
+use log::{debug, info, warn};
 use parking_lot::lock_api::MutexGuard;
 use parking_lot::{
     MappedRwLockReadGuard, MappedRwLockWriteGuard, Mutex, RawMutex, RawRwLock, RwLock,
@@ -612,7 +611,7 @@ impl TX {
     pub(crate) fn write_meta(&mut self) -> Result<()> {
         let meta_info = format!("{:?}", self.meta_mut());
         defer_lite::defer! {
-            kv_log_macro::info!("write meta page: {}", meta_info);
+            info!(meta=meta_info; "write meta page");
         }
         let mut db = self.db()?;
         let mut buffer = vec![0u8; db.page_size() as usize];
