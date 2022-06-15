@@ -50,6 +50,11 @@ pub(crate) fn temp_file() -> PathBuf {
 }
 
 #[cfg(test)]
+pub(crate) fn mock_json_log() {
+    
+}
+
+#[cfg(test)]
 pub(crate) fn mock_log() {
     use chrono::Local;
     use env_logger::Env;

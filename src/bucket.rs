@@ -295,12 +295,7 @@ impl Bucket {
                 .node()
                 .unwrap()
                 .put(key, key, value, 0, BUCKET_LEAF_FLAG)?;
-
-            kv_log_macro::debug!(
-                "insert bucket({}) into node, nodes-sz: {}",
-                String::from_utf8_lossy(key),
-                self.nodes.borrow().keys().len()
-            );
+            kv_log_macro::info!("insert a new bucket into node", {nodes_sz: self.nodes.borrow().keys().len()});
             // TODO: why
             // since subbuckets are not allowed on inline buckets, we need to
             // dereference the inline page, if it exists. This will cause the bucket

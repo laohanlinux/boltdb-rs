@@ -767,4 +767,35 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn t_bucket_cursor() {
+        let mut db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        {
+            let mut bucket = tx.create_bucket(b"bucket").unwrap();
+            bucket.put(b"key", b"value".to_vec()).unwrap();
+            bucket.put(b"keys", b"value".to_vec()).unwrap();
+        }
+
+        {
+            let mut bucket =tx.create_bucket(b"another bucket").unwrap();
+            bucket.put(b"key", b"value".to_vec()).unwrap();
+            bucket.put(b"keys", b"value".to_vec()).unwrap();
+        }
+
+        {
+            let mut bucket_names = vec![];
+            let cursor = tx.cursor();
+            {
+                bucket_names.push(cursor.first().unwrap().key.unwrap().to_vec());
+            }
+            while let Some(key) = cursor.next().unwrap().key {
+                bucket_names.push(key.to_vec());
+            }
+            assert_eq!(bucket_names.len(),2);
+            assert!(bucket_names.contains(&b"bucket".to_vec()));
+            assert!(bucket_names.contains(&b"another bucket".to_vec()));
+        }
+    }
 }

@@ -29,3 +29,4 @@ rand = "0.8.4"
 env_logger = "0.9.0"
 temp-file = "0.1.7"
 chrono = "0.4.19"
+json_env_logger = { version = "0.1.1", features = ["chrono", "backtrace"] }
