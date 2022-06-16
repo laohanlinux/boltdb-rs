@@ -199,10 +199,8 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             let el_ref = self.stack.borrow()[0].clone();
             match el_ref.upgrade() {
                 Either::Left(p) => {
-                    let id = p.id;
-                    info!("asdasdasdasdasdasdasdasdasdasdasdasdasdasdasdasd");
                     // root node has not parent node
-                    self.mut_bucket().node(id, WeakNode::new())
+                    self.mut_bucket().node(p.id, WeakNode::new())
                 }
                 Either::Right(n) => n.clone(),
             }

@@ -288,9 +288,7 @@ impl TX {
 
     /// Closes transaction (so subsequent user of it will resolve in error)
     pub(crate) fn close(&self) -> Result<()> {
-        defer_lite::defer! {
-            kv_log_macro::info!("close transaction, strong-count: {}", Arc::strong_count(&self.0));
-        }
+        log::info!(strong_count = Arc::strong_count(&self.0); "close transaction");
         let db = self.db()?;
         let tx = db.remove_tx(self)?;
         *tx.0.db.write() = WeakDB::new();
@@ -415,7 +413,6 @@ impl TX {
 
         // Finalize the transaction.
         self.close()?;
-        info!("after close: {}", Arc::strong_count(&self.0));
         {
             for h in &*self.0.commit_handlers.try_lock().unwrap() {
                 h();
@@ -444,7 +441,7 @@ impl TX {
                 if strict {
                     return Err(err);
                 } else {
-                    info!("failed to check sync, {:?}", err);
+                    info!(error=format!("{}", err); "failed to check sync");
                 }
             }
         }

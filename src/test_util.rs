@@ -61,6 +61,20 @@ pub(crate) fn temp_file() -> PathBuf {
 #[cfg(test)]
 pub(crate) fn mock_json_log() {}
 
+
+#[cfg(test)]
+pub(crate) fn color_log_level<'a>(style: &'a mut env_logger::fmt::Style, level: log::Level ) -> env_logger::fmt::StyledValue<'a, &'static str> {
+    use env_logger::fmt::{Color, Style};
+    use log::{Level::Trace, Level::Warn, Level::Info, Level::Debug, Level::Error};
+    match level {
+        Trace => style.set_color(Color::Magenta).value("TRACE"),
+        Warn => style.set_color(Color::Blue).value("WARN"),
+        Info => style.set_color(Color::Green).value("INFO"),
+        Debug => style.set_color(Color::Yellow).value("DEBUG"),
+        Error => style.set_color(Color::Red).value("ERROR"),
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn mock_log() {
     use chrono::Local;
@@ -76,7 +90,7 @@ pub(crate) fn mock_log() {
         ts: String,
         module: String,
         msg: String,
-        #[serde(skip_serializing_if = "HashMap::is_empty")]
+        #[serde(skip_serializing_if = "HashMap::is_empty", flatten)]
         kv: HashMap<String, serde_json::Value>,
     }
     let env = Env::default()
@@ -84,6 +98,7 @@ pub(crate) fn mock_log() {
         .write_style_or("MY_LOG_STYLE", "always");
     env_logger::Builder::from_env(env)
         .format(|buf, record| {
+
             let mut l = JsonLog {
                 ts: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
                 module: record.file().unwrap_or("unknown").to_string()
