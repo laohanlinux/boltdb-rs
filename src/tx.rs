@@ -1082,7 +1082,7 @@ mod tests {
         let mut db = mock_db().build().unwrap();
         let mut tx = db.begin_rw_tx().unwrap();
         {
-            let mut bucket = tx.create_bucket(b"bucekt").unwrap();
+            let mut bucket = tx.create_bucket(b"bucket").unwrap();
             bucket.put(b"key", b"value".to_vec());
             bucket.put(b"keys", b"value".to_vec());
         }
@@ -1094,6 +1094,7 @@ mod tests {
 
         let mut bucket_names = vec![];
         tx.for_each::<Error>(|b, v| -> Result<()> {
+            info!(bucket=String::from_utf8(b.to_vec()).unwrap(); "trace tx iterator");
             bucket_names.push(b.to_vec());
             Ok(())
         })

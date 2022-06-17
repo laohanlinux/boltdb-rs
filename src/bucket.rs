@@ -461,6 +461,7 @@ impl Bucket {
         if item.is_bucket() {
             return Err(Error::IncompatibleValue);
         }
+        info!("it should be not happen");
         c.node().unwrap().del(key);
         Ok(())
     }

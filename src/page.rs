@@ -3,6 +3,8 @@ use crate::free_list::FreeList;
 use crate::must_align;
 use enumflags2::bitflags;
 use kv_log_macro::debug;
+use log::kv::{ToValue, Value};
+use serde::{Deserialize, Serialize};
 use std::borrow::{Borrow, BorrowMut};
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
@@ -41,7 +43,7 @@ pub type PgId = u64;
 // Page Header
 // |PgId(u64)|flags(u16)|count(u16)|over_flow
 // So, Page Size = count + over_flow*sizeof(Page)
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[repr(C)]
 pub struct Page {
     pub(crate) id: PgId,
@@ -49,6 +51,7 @@ pub struct Page {
     pub(crate) count: u16,
     pub(crate) over_flow: u32,
     // PhantomData not occupy real memory
+    #[serde(skip_serializing)]
     pub(crate) ptr: PhantomData<u8>,
 }
 
@@ -293,6 +296,12 @@ impl Display for Page {
         } else {
             write!(f, "unknown<{:0x}>", self.flags)
         }
+    }
+}
+
+impl ToValue for Page {
+    fn to_value(&self) -> Value {
+        todo!()
     }
 }
 

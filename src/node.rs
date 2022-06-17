@@ -479,7 +479,7 @@ impl Node {
         } else {
             page.flags |= BRANCH_PAGE_FLAG;
         }
-        info!("write node page: {:?}", page);
+        info!(_page=log::kv::Value::from_debug(page); "write node page");
         let inodes = self.0.inodes.borrow_mut();
         // TODO: Why?
         if inodes.len() >= 0xFFFF {

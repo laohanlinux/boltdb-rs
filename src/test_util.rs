@@ -1,5 +1,8 @@
+use crate::bucket::Bucket;
 use crate::db::{CheckMode, DBBuilder, DB, MAGIC};
+use crate::node::{Node, NodeBuilder};
 use crate::page::PAGE_HEADER_SIZE;
+use crate::tx::WeakTx;
 use crate::tx::{TxBuilder, TX};
 use crate::Page;
 use bitflags::_core::borrow::Borrow;
@@ -30,13 +33,11 @@ pub(crate) fn mock_db() -> DBBuilder {
         .set_check_mode(CheckMode::PARANOID)
 }
 
-use crate::{bucket::Bucket, tx::WeakTx};
 #[cfg(test)]
 pub(crate) fn mock_bucket(tx: WeakTx) -> Bucket {
     Bucket::new(tx)
 }
 
-use crate::node::{Node, NodeBuilder};
 #[cfg(test)]
 pub(crate) fn mock_node(bucket: *const Bucket) -> Node {
     NodeBuilder::new(bucket).build()
@@ -93,10 +94,11 @@ pub(crate) fn mock_log() {
         #[serde(skip_serializing_if = "HashMap::is_empty", flatten)]
         kv: HashMap<String, serde_json::Value>,
     }
+
     let env = Env::default()
         .filter_or("MY_LOG_LEVEL", "debug")
         .write_style_or("MY_LOG_STYLE", "always");
-    env_logger::Builder::from_env(env)
+    let _ = env_logger::Builder::from_env(env)
         .format(|buf, record| {
 
             let mut l = JsonLog {
@@ -110,7 +112,7 @@ pub(crate) fn mock_log() {
             };
             let kv: AsMap<&dyn Source> = as_map(record.key_values());
             if let Ok(kv) = serde_json::to_string(&kv) {
-                let mut h: HashMap<String, serde_json::Value> = serde_json::from_str(&kv).unwrap();
+                let h: HashMap<String, serde_json::Value> = serde_json::from_str(&kv).unwrap();
                 l.kv.extend(h.into_iter());
             }
             writeln!(buf, "{}", serde_json::to_string(&l).unwrap())
