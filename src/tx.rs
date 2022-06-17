@@ -1085,7 +1085,7 @@ mod tests {
         let mut db = mock_db().build().unwrap();
         let mut tx = db.begin_rw_tx().unwrap();
         {
-            let mut bucket = tx.create_bucket(b"bucekt").unwrap();
+            let mut bucket = tx.create_bucket(b"bucket").unwrap();
             bucket.put(b"key", b"value".to_vec());
             bucket.put(b"keys", b"value".to_vec());
         }
