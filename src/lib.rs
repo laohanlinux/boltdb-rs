@@ -1,7 +1,6 @@
 #![feature(hash_drain_filter)]
 #![feature(drain_filter)]
 #![feature(test)]
-#![feature(explicit_generic_args_with_impl_trait)]
 
 use std::mem::align_of;
 

@@ -1097,6 +1097,7 @@ mod tests {
 
         let mut bucket_names = vec![];
         tx.for_each::<Error>(|b, v| -> Result<()> {
+            info!(bucket=String::from_utf8(b.to_vec()).unwrap(); "trace tx iterator");
             bucket_names.push(b.to_vec());
             Ok(())
         })

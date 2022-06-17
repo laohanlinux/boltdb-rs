@@ -199,10 +199,8 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             let el_ref = self.stack.borrow()[0].clone();
             match el_ref.upgrade() {
                 Either::Left(p) => {
-                    let id = p.id;
-                    info!("asdasdasdasdasdasdasdasdasdasdasdasdasdasdasdasd");
                     // root node has not parent node
-                    self.mut_bucket().node(id, WeakNode::new())
+                    self.mut_bucket().node(p.id, WeakNode::new())
                 }
                 Either::Right(n) => n.clone(),
             }
@@ -779,7 +777,7 @@ mod tests {
         }
 
         {
-            let mut bucket =tx.create_bucket(b"another bucket").unwrap();
+            let mut bucket = tx.create_bucket(b"another bucket").unwrap();
             bucket.put(b"key", b"value".to_vec()).unwrap();
             bucket.put(b"keys", b"value".to_vec()).unwrap();
         }
@@ -793,7 +791,7 @@ mod tests {
             while let Some(key) = cursor.next().unwrap().key {
                 bucket_names.push(key.to_vec());
             }
-            assert_eq!(bucket_names.len(),2);
+            assert_eq!(bucket_names.len(), 2);
             assert!(bucket_names.contains(&b"bucket".to_vec()));
             assert!(bucket_names.contains(&b"another bucket".to_vec()));
         }
