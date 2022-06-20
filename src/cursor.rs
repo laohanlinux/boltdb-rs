@@ -13,6 +13,7 @@ use crate::node::{Node, WeakNode};
 use crate::page::{BUCKET_LEAF_FLAG, LEAF_PAGE_FLAG};
 use crate::{Bucket, Page, PgId};
 use either::Either;
+use kv_log_macro::{debug, info};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::marker::PhantomData;
@@ -41,7 +42,10 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
 
     /// returns mutable reference to bucket which is cursor created from
     pub(crate) fn mut_bucket(&mut self) -> &mut Bucket {
-        unsafe { &mut *((&*self.bucket) as *const Bucket as *mut Bucket) }
+        unsafe {
+            #[allow(clippy::cast_ref_to_mut)]
+            &mut *((&*self.bucket) as *const Bucket as *mut Bucket)
+        }
     }
 
     /// Recursively performs a binary search against a given page/node until it finds a given key.
@@ -54,7 +58,6 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
                 _ => panic!("invalid page type: {}: {}", p.id, p.flags),
             };
         }
-
         let elem_ref = ElemRef {
             el: page_node,
             index: 0,
@@ -182,7 +185,6 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         if self.stack.borrow().is_empty() {
             return Err(Error::StackEmpty);
         }
-
         // If the top of the stack is a leaf node then just return it.
         {
             let stack = self.stack.borrow();
@@ -197,14 +199,16 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             let el_ref = self.stack.borrow()[0].clone();
             match el_ref.upgrade() {
                 Either::Left(p) => {
-                    let id = p.id;
-                    self.mut_bucket().node(id, WeakNode::new())
+                    // root node has not parent node
+                    self.mut_bucket().node(p.id, WeakNode::new())
                 }
                 Either::Right(n) => n.clone(),
             }
         };
 
-        for refi in self.stack.borrow().iter() {
+        // from last second iter because 'n' is the last top.
+        let stacklen = self.stack.borrow().len();
+        for refi in &self.stack.borrow()[..stacklen - 1] {
             assert!(!n.is_leaf(), "expected branch");
             let child = n.child_at(refi.index).map_err(|_| Error::TraverserFailed)?;
             n = child;
@@ -478,7 +482,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         {
             let stack = self.stack.borrow();
             let el_ref = stack.last().ok_or(Error::Unexpected("stack empty"))?;
-            if el_ref.index > el_ref.count() {
+            if el_ref.index >= el_ref.count() {
                 //Warnning
                 return Ok(CursorItem::new_null(None, None));
             }
@@ -629,15 +633,19 @@ impl<'a> From<&ElemRef> for CursorItem<'a> {
 
         unsafe {
             match el_ref.upgrade() {
-                Either::Left(ref p) => {
+                Either::Left(p) => {
+                    let slice = p.as_slice();
+                    // debug!("slice: {}, {:?}", p.id, slice);
                     let elem = p.leaf_page_element(el_ref.index);
+                    // debug!("ele: {:?}", elem);
+                    // debug!("key: {:?}, value: {:?}", elem.key(), elem.value());
                     Self::new(
                         Some(&*(elem.key() as *const [u8])),
                         Some(&*(elem.value() as *const [u8])),
                         elem.flags,
                     )
                 }
-                Either::Right(ref n) => {
+                Either::Right(n) => {
                     let inode = &n.0.inodes.borrow()[el_ref.index];
                     Self::new(
                         Some(&*(inode.key.as_slice() as *const [u8])),
@@ -646,6 +654,146 @@ impl<'a> From<&ElemRef> for CursorItem<'a> {
                     )
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_util::{mock_db, mock_tx};
+
+    #[test]
+    fn seek_none() {
+        let mut db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        drop(tx.create_bucket(b"blue").unwrap());
+        let c = tx.cursor();
+        let item = c.seek(b"foo");
+        assert!(item.is_ok());
+        assert!(item.unwrap().is_none());
+    }
+
+    #[test]
+    fn seek_some() {
+        let mut db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        drop(tx.create_bucket(b"foo").unwrap());
+        let c = tx.cursor();
+        let item = c.seek(b"foo");
+        assert!(item.is_ok());
+        assert!(item.unwrap().is_some());
+    }
+
+    #[test]
+    fn values_cursor() {
+        let mut db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        {
+            let mut bucket = tx.create_bucket(b"bucket").unwrap();
+            bucket.put(b"petr", b"rachmaninov".to_vec()).unwrap();
+            bucket.put(b"robert", b"plant".to_vec()).unwrap();
+            bucket.put(b"ziggy", b"stardust".to_vec()).unwrap();
+            {
+                let cursor = bucket.cursor().unwrap();
+                assert_eq!(cursor.first().unwrap().key.unwrap(), b"petr");
+            }
+            {
+                let cursor = bucket.cursor().unwrap();
+                assert_eq!(cursor.first().unwrap().key.unwrap(), b"petr");
+                assert_eq!(cursor.next().unwrap().key.unwrap(), b"robert");
+            }
+            {
+                let mut key_names = vec![];
+                let cursor = bucket.cursor().unwrap();
+                {
+                    key_names.push(cursor.first().unwrap().key.unwrap().to_vec());
+                }
+                while let Some(key) = cursor.next().unwrap().key {
+                    key_names.push(key.to_vec());
+                }
+                assert_eq!(key_names.len(), 3);
+                assert!(key_names.contains(&b"petr".to_vec()));
+                assert!(key_names.contains(&b"robert".to_vec()));
+                assert!(key_names.contains(&b"ziggy".to_vec()));
+            }
+
+            // backwards
+            {
+                let cursor = bucket.cursor().unwrap();
+                assert_eq!(cursor.last().unwrap().key.unwrap(), b"ziggy");
+            }
+            {
+                let cursor = bucket.cursor().unwrap();
+                assert_eq!(cursor.last().unwrap().key.unwrap(), b"ziggy");
+                assert_eq!(cursor.prev().unwrap().key.unwrap(), b"robert");
+            }
+
+            {
+                let mut key_names = vec![];
+                let cursor = bucket.cursor().unwrap();
+                {
+                    key_names.push(cursor.last().unwrap().key.unwrap().to_vec());
+                }
+                while let Some(key) = cursor.prev().unwrap().key {
+                    key_names.push(key.to_vec());
+                }
+            }
+
+            {
+                let cursor = bucket.cursor().unwrap();
+                assert_eq!(cursor.last().unwrap().key.unwrap(), b"ziggy");
+                assert_eq!(cursor.prev().unwrap().key.unwrap(), b"robert");
+                assert_eq!(cursor.prev().unwrap().key.unwrap(), b"petr");
+                assert_eq!(cursor.next().unwrap().key.unwrap(), b"robert");
+
+                assert_eq!(cursor.first().unwrap().key.unwrap(), b"petr");
+                assert_eq!(cursor.next().unwrap().key.unwrap(), b"robert");
+                assert_eq!(cursor.next().unwrap().key.unwrap(), b"ziggy");
+                assert_eq!(cursor.prev().unwrap().key.unwrap(), b"robert");
+            }
+            {
+                let cursor = bucket.cursor().unwrap();
+                assert_eq!(cursor.first().unwrap().key.unwrap(), b"petr");
+                assert_eq!(cursor.prev().unwrap().key, None);
+                assert_eq!(cursor.prev().unwrap().key, None);
+            }
+            {
+                let cursor = bucket.cursor().unwrap();
+                assert_eq!(cursor.last().unwrap().key.unwrap(), b"ziggy");
+                assert_eq!(cursor.next().unwrap().key, None);
+                assert_eq!(cursor.next().unwrap().key, None);
+            }
+        }
+    }
+
+    #[test]
+    fn t_bucket_cursor() {
+        let mut db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        {
+            let mut bucket = tx.create_bucket(b"bucket").unwrap();
+            bucket.put(b"key", b"value".to_vec()).unwrap();
+            bucket.put(b"keys", b"value".to_vec()).unwrap();
+        }
+
+        {
+            let mut bucket = tx.create_bucket(b"another bucket").unwrap();
+            bucket.put(b"key", b"value".to_vec()).unwrap();
+            bucket.put(b"keys", b"value".to_vec()).unwrap();
+        }
+
+        {
+            let mut bucket_names = vec![];
+            let cursor = tx.cursor();
+            {
+                bucket_names.push(cursor.first().unwrap().key.unwrap().to_vec());
+            }
+            while let Some(key) = cursor.next().unwrap().key {
+                bucket_names.push(key.to_vec());
+            }
+            assert_eq!(bucket_names.len(), 2);
+            assert!(bucket_names.contains(&b"bucket".to_vec()));
+            assert!(bucket_names.contains(&b"another bucket".to_vec()));
         }
     }
 }

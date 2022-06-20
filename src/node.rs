@@ -2,14 +2,18 @@ use crate::bucket::{MAX_FILL_PERCENT, MIN_FILL_PERCENT};
 use crate::error::Error::BucketEmpty;
 use crate::error::{Error, Result};
 use crate::page::{
-    BranchPageElement, LeafPageElement, BRANCH_PAGE_ELEMENT_SIZE, BRANCH_PAGE_FLAG,
+    BranchPageElement, LeafPageElement, PageFlag, BRANCH_PAGE_ELEMENT_SIZE, BRANCH_PAGE_FLAG,
     LEAF_PAGE_ELEMENT_SIZE, LEAF_PAGE_FLAG, MIN_KEYS_PER_PAGE, PAGE_HEADER_SIZE,
 };
 use crate::{bucket, search, Bucket, Page, PgId};
+use kv_log_macro::{debug, warn};
+use log::info;
 use memoffset::ptr::copy_nonoverlapping;
 use std::borrow::{Borrow, BorrowMut};
 use std::cell::{Cell, Ref, RefCell, RefMut};
+use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, RangeBounds};
+use std::path::Display;
 use std::process::id;
 use std::rc::{Rc, Weak};
 use std::slice::Iter;
@@ -19,7 +23,6 @@ use std::sync::Arc;
 pub(crate) type Key = Vec<u8>;
 pub(crate) type Value = Vec<u8>;
 
-#[derive(Debug)]
 pub(crate) struct NodeInner {
     // associated bucket.
     bucket: *const Bucket,
@@ -27,11 +30,27 @@ pub(crate) struct NodeInner {
     // Just for inner mut
     spilled: AtomicBool,
     unbalanced: AtomicBool,
-    key: RefCell<Key>,
-    pgid: RefCell<PgId>,
+    key: RefCell<Key>,   // be set to inodes[0].key when inodes is not empty
+    pgid: RefCell<PgId>, // be set to 0 when node is leaf node
     parent: RefCell<WeakNode>,
     children: RefCell<Vec<Node>>,
     pub(crate) inodes: RefCell<Vec<Inode>>,
+}
+
+impl Debug for NodeInner {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let local_bucket = unsafe { (*self.bucket).local_bucket.root };
+        f.debug_struct("node")
+            .field("bucket", &local_bucket)
+            .field("is_leaf", &self.is_leaf)
+            .field("spilled", &self.spilled)
+            .field("unbalanced", &self.unbalanced)
+            .field("key", &self.key.borrow())
+            .field("pgid", &self.pgid.borrow())
+            .field("children", &self.children.borrow())
+            .field("inodes", &self.inodes.borrow())
+            .finish()
+    }
 }
 
 impl NodeInner {
@@ -66,19 +85,25 @@ impl Node {
     }
 
     // Returns the top-level node this node is attached to.
-    fn root(&self) -> Node {
+    pub(crate) fn root(&self) -> Node {
         match self.parent() {
             Some(ref p) => p.root(),
             None => self.clone(),
         }
     }
 
+    pub fn pg_id(&self) -> PgId {
+        self.0.pgid.borrow().clone()
+    }
+
     /// Attempts to combine the node with sibling nodes if the node fill
     /// size is below a threshold or if there are not enough keys.
+    /// The node will be reclaimed to free-list with freelist.free() after merge by it's sibling
     pub fn rebalance(&mut self) {
         {
             let selfsize = self.size();
             if !self.0.unbalanced.load(Ordering::Acquire) {
+                warn!("need not to rebalance: {:?}", self.0.pgid);
                 return;
             }
             self.0.unbalanced.store(false, Ordering::Relaxed);
@@ -92,9 +117,10 @@ impl Node {
             };
 
             if selfsize > threshold && self.0.inodes.borrow().len() > self.min_keys() as usize {
+                warn!("need not to rebalance: {:?}", self.0);
                 return;
             }
-
+            warn!("need to rebalance: {:?}", self.0);
             // Root node has special handling
             if self.parent().is_none() {
                 let mut inodes = self.0.inodes.borrow_mut();
@@ -104,9 +130,122 @@ impl Node {
                         .unwrap()
                         .node(inodes[0].pg_id, WeakNode::from(self));
                     self.0.is_leaf.store(child.is_leaf(), Ordering::Release);
+                    *inodes = child.0.inodes.borrow_mut().drain(..).collect();
+                    *self.0.children.borrow_mut() =
+                        child.0.children.borrow_mut().drain(..).collect();
+
+                    // Reparent all child nodes being moved.
+                    {
+                        let inode_pgids = inodes.iter().map(|i| i.pg_id);
+                        let bucket = self.bucket_mut().unwrap();
+                        for pgid in inode_pgids {
+                            if let Some(child) = bucket.nodes.borrow_mut().get_mut(&pgid) {
+                                *child.0.parent.borrow_mut() = WeakNode::from(self);
+                            }
+                        }
+                    }
+
+                    *child.0.parent.borrow_mut() = WeakNode::new();
+                    self.bucket_mut()
+                        .unwrap()
+                        .nodes
+                        .borrow_mut()
+                        .remove(&child.0.pgid.borrow());
+                    child.free();
                 }
+
+                return;
             }
         }
+        info!("free");
+        // If node has no keys then just remove it.
+        if self.num_children() == 0 {
+            let key = self.0.key.borrow().clone();
+            let pgid = *self.0.pgid.borrow();
+            let mut parent = self.parent().unwrap();
+            parent.del(&key);
+            parent.remove_child(self);
+            self.bucket_mut().unwrap().nodes.borrow_mut().remove(&pgid);
+            self.free();
+            parent.rebalance();
+            return;
+        }
+
+        assert!(
+            self.parent().unwrap().num_children() > 1,
+            "parent must have at least 2 children"
+        );
+
+        let (use_next_sibling, mut target) = {
+            let use_next_sibling = self.parent().unwrap().child_index(self) == 0;
+            let target = if use_next_sibling {
+                self.next_sibling().unwrap()
+            } else {
+                self.prev_sibling().unwrap()
+            };
+            (use_next_sibling, target)
+        };
+
+        if use_next_sibling {
+            let bucket = self.bucket_mut().unwrap();
+            for pgid in target.0.inodes.borrow().iter().map(|i| i.pg_id) {
+                if let Some(child) = bucket.nodes.borrow_mut().get_mut(&pgid) {
+                    child.parent().unwrap().remove_child(child);
+                    *child.0.parent.borrow_mut() = WeakNode::from(self);
+                    child
+                        .parent()
+                        .unwrap()
+                        .0
+                        .children
+                        .borrow_mut()
+                        .push(child.clone());
+                }
+            }
+
+            self.0
+                .inodes
+                .borrow_mut()
+                .append(&mut target.0.inodes.borrow_mut());
+            {
+                let mut parent = self.parent().unwrap();
+                parent.del(target.0.key.borrow().as_ref());
+                parent.remove_child(&target);
+            }
+
+            self.bucket_mut()
+                .unwrap()
+                .nodes
+                .borrow_mut()
+                .remove(&target.pg_id());
+            target.free();
+        } else {
+            for pgid in target.0.inodes.borrow().iter().map(|i| i.pg_id) {
+                if let Some(child) = self.bucket_mut().unwrap().nodes.borrow_mut().get_mut(&pgid) {
+                    let parent = child.parent().unwrap();
+                    parent.remove_child(child);
+                    *child.0.parent.borrow_mut() = WeakNode::from(&target);
+                    parent.0.children.borrow_mut().push(child.clone());
+                }
+            }
+
+            target
+                .0
+                .inodes
+                .borrow_mut()
+                .append(&mut *self.0.inodes.borrow_mut());
+            {
+                let mut parent = self.parent().unwrap();
+                parent.del(&self.0.key.borrow());
+                parent.remove_child(self);
+            }
+            self.bucket_mut()
+                .unwrap()
+                .nodes
+                .borrow_mut()
+                .remove(&self.pg_id());
+            self.free();
+        }
+        self.parent().unwrap().rebalance();
     }
 
     fn parent(&self) -> Option<Node> {
@@ -139,14 +278,13 @@ impl Node {
     // Returns true if the node is less than a given size.
     // This is an optimization to avoid calculation a large node when we only need
     // to know if it fits inside a certain page size.
+    // TODO: add inodes size cache
     fn size_less_than(&self, v: usize) -> bool {
-        for i in 0..self.0.inodes.borrow().len() {
-            let node = &self.0.inodes.borrow()[i];
-            if self.page_element_size() + node.key.len() + node.value.len() >= v {
-                return false;
-            }
-        }
-        true
+        let (mut sz, elsz) = (PAGE_HEADER_SIZE, self.page_element_size());
+        self.0.inodes.borrow().iter().all(|node| {
+            sz += elsz + node.key.len() + node.value.len();
+            return sz < v;
+        })
     }
 
     // Returns the size of each page element based on type of node.
@@ -210,7 +348,7 @@ impl Node {
     // Returns the next node with the same parent.
     fn next_sibling(&self) -> Option<Node> {
         match self.parent() {
-            Some(mut parent) => {
+            Some(parent) => {
                 let index = parent.child_index(self);
                 // self is the last node at the level
                 if index >= parent.num_children() as isize - 1 {
@@ -238,21 +376,18 @@ impl Node {
     // Removes a key from the node.
     pub(crate) fn del(&mut self, key: &[u8]) {
         // Find index of key.
-        match self
+        let index = match self
             .0
             .inodes
             .borrow()
             .binary_search_by(|inode| inode.key.cmp(&key.to_vec()))
         {
-            Ok(index) => {
-                // Delete inode from the node.
-                self.0.inodes.borrow_mut().remove(index);
-                // Mark the node as needing rebalancing.
-                self.0.unbalanced.store(true, Ordering::Release);
-            }
+            Ok(index) => index,
             // Exit if the key isn't found.
             _ => return,
-        }
+        };
+        self.0.inodes.borrow_mut().remove(index);
+        self.0.unbalanced.store(true, Ordering::Release);
     }
 
     // Inserts a key/value.
@@ -271,19 +406,19 @@ impl Node {
                 pg_id,
                 bucket.tx().unwrap().meta_mut().pg_id
             )));
-        } else if old_key.len() <= 0 {
+        } else if old_key.is_empty() {
             return Err(Error::PutFailed("zero-length old key".to_string()));
-        } else if new_key.len() <= 0 {
+        } else if new_key.is_empty() {
             return Err(Error::PutFailed("zero-length new key".to_string()));
         }
 
         // Find insertion index.
         let mut inodes = self.0.inodes.borrow_mut();
-        let (extra, index) = inodes
-            .binary_search_by(|inode| inode.key.cmp(&old_key.to_vec()))
-            .map(|index| (true, index))
-            .map_err(|index| (false, index))
-            .unwrap();
+        let (extra, index) = match inodes.binary_search_by(|inode| inode.key.cmp(&old_key.to_vec()))
+        {
+            Ok(n) => (true, n),
+            Err(n) => (false, n),
+        };
         // Add capacity and shift nodes if we don't have an exact match and need to insert.
         if !extra {
             inodes.insert(index, Inode::default());
@@ -297,34 +432,43 @@ impl Node {
     }
 
     // Initializes the node from a page.
-    pub(crate) fn read(&mut self, p: &Page) {
-        let mut node = self.0.borrow_mut();
-        *node.pgid.borrow_mut() = p.id;
-        node.is_leaf
-            .store(p.flags & LEAF_PAGE_FLAG != 0, Ordering::Release);
+    pub(crate) fn read(&mut self, page: &Page) {
+        *self.0.pgid.borrow_mut() = page.id;
+        self.0
+            .is_leaf
+            .store(matches!(page.flags, LEAF_PAGE_FLAG), Ordering::Release);
+        let mut inodes = Vec::<Inode>::with_capacity(page.count as usize);
+        let is_leaf = self.is_leaf();
 
-        for i in 0..(p.count as usize) {
-            let mut inode = &mut node.inodes.borrow_mut()[i];
-            if node.is_leaf() {
-                let elem = p.leaf_page_element(i);
-                inode.flags = elem.flags;
-                inode.key = elem.key().to_vec();
-                inode.value = elem.value().to_vec();
+        for i in 0..page.count as usize {
+            if is_leaf {
+                let elem = page.leaf_page_element(i);
+                let inode = Inode {
+                    flags: elem.flags,
+                    key: elem.key().to_vec(),
+                    value: elem.value().to_vec(),
+                    pg_id: 0, // *Note*
+                };
+                inodes.push(inode);
             } else {
-                let elem = p.branch_page_element(i);
-                inode.pg_id = elem.pgid;
-                inode.key = elem.key().to_vec();
+                let elem = page.branch_page_element(i);
+                let inode = Inode {
+                    flags: 0,
+                    key: elem.key().to_vec(),
+                    value: Vec::new(),
+                    pg_id: elem.pgid,
+                };
+                inodes.push(inode);
             }
-            assert!(!inode.key.is_empty(), "read: zero-length inode key");
         }
 
-        // Save first key so we can find the node in the parent when we spill.
-        if node.inodes.borrow().len() > 0 {
-            *node.key.borrow_mut() = node.inodes.borrow()[0].key.clone();
-            assert!(!node.key.borrow().is_empty(), "read: zero-length inode key");
-        } else {
-            // todo:
-            node.key.borrow_mut().clear();
+        *self.0.inodes.borrow_mut() = inodes;
+
+        {
+            let inodes = self.0.inodes.borrow();
+            if !inodes.is_empty() {
+                *self.0.key.borrow_mut() = inodes[0].key.clone();
+            }
         }
     }
 
@@ -332,36 +476,36 @@ impl Node {
     pub(crate) fn write(&self, page: &mut Page) {
         // Initialize page.
         if self.is_leaf() {
-            page.flags != LEAF_PAGE_FLAG;
+            page.flags |= LEAF_PAGE_FLAG;
         } else {
-            page.flags != BRANCH_PAGE_FLAG;
+            page.flags |= BRANCH_PAGE_FLAG;
         }
-
+        info!(_page=log::kv::Value::from_debug(page), inodes_size=self.0.inodes.borrow().len(); "write node page");
+        let inodes = self.0.inodes.borrow_mut();
         // TODO: Why?
-        if self.0.inodes.borrow().len() >= 0xFFFF {
-            panic!(
-                "inode overflow: {} (pg_id={})",
-                self.0.inodes.borrow().len(),
-                page.id
-            );
+        if inodes.len() >= 0xFFFF {
+            panic!("inode overflow: {} (pg_id={})", inodes.len(), page.id);
         }
 
-        page.count = self.0.inodes.borrow().len() as u16;
+        page.count = inodes.len() as u16;
         // Stop here if there are no items to write.
-        if page.count == 0 {
+        if inodes.is_empty() {
+            debug!("inode is empty: {}", page.id);
             return;
         }
-
         // Loop over each item and write it to the page.
         let mut b_ptr = unsafe {
-            let offset = self.page_element_size() * self.0.inodes.borrow().len();
+            let offset = self.page_element_size() * inodes.len();
             page.get_data_mut_ptr().add(offset)
         };
-        for (i, item) in self.0.inodes.borrow().iter().enumerate() {
+        let is_leaf = self.is_leaf();
+        let pgid = page.id;
+
+        for (i, item) in inodes.iter().enumerate() {
             assert!(!item.key.is_empty(), "write: zero-length inode key");
 
             // Write the page element.
-            if self.is_leaf() {
+            if is_leaf {
                 let mut element = page.leaf_page_element_mut(i);
                 let element_ptr = element as *const LeafPageElement as *const u8;
                 element.pos = unsafe { b_ptr.sub(element_ptr as usize) } as u32;
@@ -369,13 +513,12 @@ impl Node {
                 element.k_size = item.key.len() as u32;
                 element.v_size = item.value.len() as u32;
             } else {
-                let page_id = page.id;
                 let mut element = page.branch_page_element_mut(i);
                 let element_ptr = element as *const BranchPageElement as *const u8;
                 element.pos = unsafe { b_ptr.sub(element_ptr as usize) } as u32;
                 element.k_size = item.key.len() as u32;
                 element.pgid = item.pg_id;
-                assert_eq!(element.pgid, page_id, "write: circular dependency occurred");
+                assert_ne!(element.pgid, pgid, "write: circular dependency occurred");
             }
 
             // If the length of key+value is larger than the max allocation size
@@ -392,6 +535,7 @@ impl Node {
                 b_ptr = b_ptr.add(v_len);
             }
         }
+        debug!("succeed to write node into page");
         // DEBUG ONLY: n.dump()
     }
 
@@ -406,28 +550,130 @@ impl Node {
             .map(|idx| self.0.children.borrow_mut().remove(idx));
     }
 
-    // Writes the nodes to dirty pages and splits nodes as it goes.
-    // Returns an error if dirty pages cannot be allocated.
-    fn spill(&mut self) -> Result<()> {
-        // if self.0.spilled.load(Ordering::Acquire) {
-        //     return Ok(());
-        // }
-        //
-        // let page_size = self.bucket().unwrap().tx().db().page_size;
-        // {
-        //     // Why?
-        //     let mut children = self.0.children.borrow_mut().clone();
-        //     children.sort_by_key(|node| node.0.key);
-        //     for child in &mut *children {
-        //         // child.split()?;
-        //     }
-        //     self.0.children.borrow_mut().clear();
-        // }
+    /// Writes the nodes to dirty pages and splits nodes as it goes.
+    /// Returns an error if dirty pages cannot be allocated.
+    /// *Note* The oldest(first node) will be free into freelist by free.free()
+    pub fn spill(&mut self) -> Result<()> {
+        if self.0.spilled.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let page_size = self.bucket().unwrap().tx()?.db()?.page_size();
+        {
+            let mut children = self.0.children.borrow_mut().clone();
+            info!("child size: {}", children.len());
+            children.sort_by(Node::cmp_by_key);
+            for child in &mut *children {
+                child.spill()?;
+            }
+            self.0.children.borrow_mut().clear();
+        }
+
+        let mut node_parent = None;
+        {
+            let mut nodes = match self.split(page_size)? {
+                None => vec![self.clone()],
+                Some(p) => {
+                    info!("found parent node: {}", p.pg_id());
+                    node_parent = Some(p.clone());
+                    p.0.children.borrow().clone()
+                }
+            };
+
+            info!(
+                "after split node, size={}, pid={}",
+                nodes.len(),
+                self.pg_id()
+            );
+            let bucket = self.bucket_mut().unwrap();
+            let mut tx = bucket.tx()?;
+            let db = tx.db()?;
+            let txid = tx.id();
+
+            for node in &mut nodes {
+                {
+                    // Add node's page to the freelist if it's not new.
+                    let node_pgid = *node.0.pgid.borrow_mut();
+                    // TODO *Notes*: if node is new that it's pgid was set to 0
+                    if node_pgid > 0 {
+                        db.0.free_list
+                            .try_write()
+                            .unwrap()
+                            .free(txid, unsafe { &*tx.page(node_pgid)? });
+                        *node.0.pgid.borrow_mut() = 0;
+                    }
+                }
+
+                // Advoid allocate a hole page, when the node size equals to page_size
+                let allocate_size = (node.size() + db.page_size()) / db.page_size();
+                let page = tx.allocate(allocate_size as u64)?;
+                let page = unsafe { &mut *page };
+                {
+                    // Write the node.
+                    let id = page.id;
+                    let txpgid = tx.pgid();
+                    if id >= txpgid {
+                        panic!("pgid ({}) above high water marl ({})", id, txid);
+                    }
+                    *node.0.pgid.borrow_mut() = id;
+                    node.write(page);
+                    node.0.spilled.store(true, Ordering::Release);
+                }
+
+                // Insert into parent inodes.
+                if let Some(p) = node.parent() {
+                    let mut okey = node.0.key.borrow().clone();
+                    let nkey = node.0.inodes.borrow()[0].key.to_vec();
+                    // TODO: Why?, Fix ME
+                    if okey.is_empty() {
+                        okey = nkey.clone();
+                    }
+
+                    let pgid = *node.0.pgid.borrow();
+                    p.put(okey.as_slice(), &nkey, vec![], pgid, 0).unwrap();
+                    *node.0.key.borrow_mut() = nkey;
+                    assert!(
+                        !node.0.key.borrow().is_empty(),
+                        "spill: zero-length node key"
+                    );
+                }
+
+                tx.0.stats.lock().split += 1;
+            }
+        }
+
+        // If the root node split and created a new root then we need to spill that
+        // as well. We'll clear out the children to make sure it doesn't try to respill.
+        // eg: |a|b|c|d|e|f| --after split--> p0|a, d|, p1=|a|b|c|, p2 = |d|e|f|, p0 is a new
+        // parent, so p0 will be split, but p1, p2 don't need split again (`Note`: the current node
+        // will be replaced with new-parent node)
+        {
+            let spill_parent = match node_parent {
+                None => None,
+                Some(p) => {
+                    let pgid_valid = *p.0.pgid.borrow() == 0;
+                    if pgid_valid {
+                        Some(p)
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(parent) = spill_parent {
+                self.0.children.borrow_mut().clear();
+                // setting self as parent to hold strong reference
+                *self = parent;
+                return self.spill();
+            }
+        }
         Ok(())
     }
 
     // Breaks up a node into multiple smaller nodes, if appropriate.
     // This should only be called from the spill() function.
+    //
+    // returns None if no split occurred, or parent Node otherwise (the parent maybe is new if not
+    // exists at before).
     fn split(&mut self, page_size: usize) -> Result<Option<Node>> {
         let mut nodes = vec![self.clone()];
         while let Some(n) = nodes.last().unwrap().clone().split_two(page_size)? {
@@ -435,6 +681,7 @@ impl Node {
         }
 
         if nodes.len() == 1 {
+            warn!("does not split node: {:?}", self.0.key);
             return Ok(None);
         }
 
@@ -443,7 +690,9 @@ impl Node {
                 let mut children = p.0.children.borrow_mut();
                 let index = children.iter().position(|ch| Rc::ptr_eq(&self.0, &ch.0));
                 assert!(index.is_some());
+                // remove old children's reference for parent
                 children.remove(index.unwrap());
+                // reset all nodes parent reference
                 for node in nodes {
                     *node.0.parent.borrow_mut() = WeakNode::from(&p);
                     children.push(node);
@@ -454,10 +703,12 @@ impl Node {
                 Ok(Some(p))
             }
             None => {
+                // generate a new parent and set collection with them.
                 let parent = NodeBuilder::new(self.0.bucket).children(nodes).build();
                 for ch in &mut *parent.0.children.borrow_mut() {
                     *ch.0.parent.borrow_mut() = WeakNode::from(&parent);
                 }
+                debug!("generate a new parent and set collect with them");
                 Ok(Some(parent))
             }
         }
@@ -468,18 +719,29 @@ impl Node {
     fn split_two(&mut self, page_size: usize) -> Result<Option<Node>> {
         // Ignore the split if the page doesn't have at least enough nodes for
         // two pages or if the nodes can fit in a single page.
-        let inodes = self.0.inodes.borrow();
-        if inodes.len() <= MIN_KEYS_PER_PAGE * 2 || self.size_less_than(page_size) {
-            return Ok(None);
+        {
+            let inodes = self.0.inodes.borrow();
+            if inodes.len() <= MIN_KEYS_PER_PAGE * 2 || self.size_less_than(page_size) {
+                return Ok(None);
+            }
         }
+        let clamp = |n: f64, min: f64, max: f64| -> f64 {
+            if n < min {
+                return min;
+            }
+            if n > max {
+                return max;
+            }
+            return n;
+        };
         // Determine the threshold before starting a new node.
-        let fill_parent = self
-            .bucket()
-            .ok_or_else(|| BucketEmpty)?
-            .fill_percent
-            .min(MIN_FILL_PERCENT)
-            .max(MAX_FILL_PERCENT);
+        let fill_parent = clamp(
+            self.bucket().ok_or(BucketEmpty)?.fill_percent,
+            MIN_FILL_PERCENT,
+            MAX_FILL_PERCENT,
+        );
         let threshold = page_size as f64 * fill_parent;
+        // debug!("the threshold is {}", threshold);
 
         // Determine split position and sizes of the two pages.
         let split_index = self.split_index(threshold as usize).0;
@@ -495,10 +757,10 @@ impl Node {
             .borrow_mut()
             .drain(split_index..)
             .collect::<Vec<_>>();
+        // Only the first block has pgid of older(use old memory space), thew second block is set to 0
         *next.0.inodes.borrow_mut() = nodes;
-        // FIXME: add statistics
         self.bucket_mut()
-            .ok_or_else(|| BucketEmpty)?
+            .ok_or(BucketEmpty)?
             .tx()
             .unwrap()
             .stats()
@@ -510,47 +772,52 @@ impl Node {
     // It returns the index as well as the size of the first page.
     // This is only be called from `split`.
     fn split_index(&self, threshold: usize) -> (usize, usize) {
-        let mut size = PAGE_HEADER_SIZE;
-        let mut index: usize = 0;
+        let mut rindex = 0;
+        let mut pgsize = PAGE_HEADER_SIZE;
 
-        // Loop until we only have the minimum number of keys required for the second page.
         let inodes = self.0.inodes.borrow();
-        for i in 0..inodes.len() - MIN_KEYS_PER_PAGE {
-            index = i;
-            let inode = &inodes[i];
-            let el_size = self.page_element_size() + inode.key.len() + inode.value.len();
+        let pelsize = self.page_element_size();
+        let max = inodes.len() - MIN_KEYS_PER_PAGE;
 
-            // If we have at least the minimum number of keys and adding another
-            // node would put us over the threshold then exit and return.
-            if i >= MIN_KEYS_PER_PAGE && size + el_size > threshold {
+        for (index, inode) in inodes.iter().enumerate().take(max) {
+            rindex = index;
+            let elsize = pelsize + inode.key.len() + inode.value.len();
+            debug!(
+                "found split, threshold: {}, index: {}, sz: {}",
+                threshold,
+                index,
+                pgsize + elsize
+            );
+            if index >= MIN_KEYS_PER_PAGE && (pgsize + elsize) > threshold {
                 break;
             }
 
-            // Add the element size to the total size.
-            size += el_size;
+            pgsize += elsize;
         }
-        (index, size)
+
+        (rindex, pgsize)
     }
 
     // Adds the node's underlying `page` to the freelist.
     pub(crate) fn free(&mut self) {
-        // let pgid = self.0.pgid.borrow().clone();
-        // if pgid != 0 {
-        //     let mut bucket = self.bucket_mut().unwrap();
-        //     let tx = bucket.tx();
-        //     let tx_id = tx.id();
-        //     let page = unsafe {&*tx.page(pgid).unwrap().unwrap()};
-        //     // bucket
-        //     //     .tx
-        //     //     .db
-        //     //     .0
-        //     //     .free_list
-        //     //     .free(bucket.tx.meta.tx_id, &bucket.tx.page(pgid));
-        //     self.0.pgid.replace(0);
-        // }
+        if *self.0.pgid.borrow() == 0 {
+            return;
+        }
+        {
+            let bucketmut = self.bucket_mut().unwrap();
+            let tx = bucketmut.tx().unwrap();
+            let txid = tx.id();
+            let page = unsafe { &*tx.page(*self.0.pgid.borrow()).unwrap() };
+            let db = tx.db().unwrap();
+            db.0.free_list.write().free(txid, page);
+        }
+
+        *self.0.pgid.borrow_mut() = 0;
     }
 
-    fn node_builder(bucket: *const Bucket) {}
+    fn cmp_by_key(a: &Node, b: &Node) -> std::cmp::Ordering {
+        a.0.inodes.borrow()[0].key.cmp(&b.0.inodes.borrow()[0].key)
+    }
 }
 
 pub(crate) struct NodeBuilder {
@@ -615,7 +882,7 @@ pub(crate) struct Inode {
     pub(crate) value: Key,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Default)]
 pub(crate) struct Inodes {
     pub(crate) inner: Vec<Inode>,
 }
@@ -674,6 +941,236 @@ impl Inodes {
 }
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
+    use std::{
+        mem::size_of,
+        slice::{from_raw_parts, from_raw_parts_mut},
+    };
+
+    use crate::node::Node;
+    use crate::test_util::mock_log;
+    use crate::{
+        page::{LeafPageElement, OwnedPage, LEAF_PAGE_FLAG},
+        test_util::{mock_bucket, mock_node, mock_tx},
+        tx::WeakTx,
+    };
+
     #[test]
-    fn it_works() {}
+    fn create() {
+        let tx = mock_tx();
+        let bucket = mock_bucket(WeakTx::from(&tx));
+        let mut n = mock_node(&bucket);
+        n.put(b"baz", b"baz", [1, 22, 3].to_vec(), 0, 0);
+        n.put(b"foo", b"foo", b"barack".to_vec(), 0, 0);
+        n.put(b"bar", b"bar", b"bill".to_vec(), 0, 0);
+        n.put(b"foo", b"fold", b"donald".to_vec(), 0, 1);
+        let inodes = n.0.inodes.borrow();
+        assert_eq!(inodes.len(), 3);
+
+        assert_eq!(inodes[0].key, b"bar");
+        assert_eq!(inodes[0].value, b"bill".to_vec());
+
+        assert_eq!(inodes[1].key, b"baz");
+        assert_eq!(inodes[1].value, [1, 22, 3].to_vec());
+
+        assert_eq!(inodes[2].key, b"fold");
+        assert_eq!(inodes[2].value, b"donald".to_vec());
+    }
+
+    #[test]
+    fn read_page() {
+        let mut page = {
+            let mut page = OwnedPage::new(1024);
+            page.id = 1;
+            page.over_flow = 0;
+            page.flags = LEAF_PAGE_FLAG;
+            page.count = 2;
+            page
+        };
+
+        {
+            let nodes =
+                unsafe { from_raw_parts_mut(page.get_data_mut_ptr() as *mut LeafPageElement, 3) };
+            nodes[0] = LeafPageElement {
+                flags: 0,
+                pos: 32,
+                k_size: 3,
+                v_size: 4,
+            };
+            nodes[1] = LeafPageElement {
+                flags: 0,
+                pos: 23,
+                k_size: 10,
+                v_size: 3,
+            };
+
+            let data = unsafe {
+                from_raw_parts_mut(&mut nodes[2] as *mut LeafPageElement as *mut u8, 1024)
+            };
+            data[..7].copy_from_slice(b"barfooz");
+            data[7..7 + 13].copy_from_slice(b"helloworldbye");
+        }
+
+        assert!(
+            size_of::<LeafPageElement>() == 16,
+            "{}",
+            size_of::<LeafPageElement>()
+        );
+
+        let tx = mock_tx();
+        let bucket = mock_bucket(WeakTx::from(&tx));
+        let mut n = mock_node(&bucket);
+        n.read(&page);
+        let inodes = n.0.inodes.borrow();
+
+        assert!(n.is_leaf());
+        assert_eq!(inodes.len(), 2);
+        assert_eq!(inodes[0].key, b"bar");
+        assert_eq!(inodes[0].value, b"fooz");
+        assert_eq!(inodes[1].key, b"helloworld");
+        assert_eq!(inodes[1].value, b"bye");
+    }
+
+    #[test]
+    fn write_page() {
+        let tx = mock_tx();
+        let bucket = mock_bucket(WeakTx::from(&tx));
+        let mut n = mock_node(&bucket);
+        n.0.is_leaf.store(true, Ordering::Release);
+        n.put(b"susy", b"susy", b"que".to_vec(), 0, LEAF_PAGE_FLAG as u32);
+        n.put(
+            b"ricki",
+            b"ricki",
+            b"lake".to_vec(),
+            0,
+            LEAF_PAGE_FLAG as u32,
+        );
+
+        n.put(
+            b"john",
+            b"john",
+            b"johnson".to_vec(),
+            0,
+            LEAF_PAGE_FLAG as u32,
+        );
+
+        let mut page = {
+            let mut page = OwnedPage::new(4096);
+            page.id = 1;
+            page.over_flow = 0;
+            page.flags = LEAF_PAGE_FLAG;
+            page
+        };
+        n.write(&mut page);
+
+        let nodes = unsafe {
+            std::slice::from_raw_parts_mut(page.get_data_mut_ptr() as *mut LeafPageElement, 3)
+        };
+        assert_eq!(nodes[0].k_size, 4);
+        assert_eq!(nodes[0].v_size, 7);
+        assert_eq!(nodes[0].pos, 48);
+        assert_eq!(nodes[1].k_size, 5);
+        assert_eq!(nodes[1].v_size, 4);
+        assert_eq!(nodes[1].pos, 43);
+        assert_eq!(nodes[2].k_size, 4);
+        assert_eq!(nodes[2].v_size, 3);
+        assert_eq!(nodes[2].pos, 36);
+
+        let mut n2 = mock_node(&bucket);
+        n2.read(&page);
+        let inodes = n2.0.inodes.borrow();
+        assert!(n2.is_leaf());
+        assert_eq!(inodes.len(), 3);
+        assert_eq!(inodes[0].key, b"john",);
+        assert_eq!(inodes[0].value, b"johnson");
+        assert_eq!(inodes[1].key, b"ricki");
+        assert_eq!(inodes[1].value, b"lake");
+        assert_eq!(inodes[2].key, b"susy");
+        assert_eq!(inodes[2].value, b"que");
+    }
+
+    #[test]
+    fn split_two() {
+        mock_log();
+        let tx = mock_tx();
+        let bucket = mock_bucket(WeakTx::from(&tx));
+        let mut n = mock_node(&bucket);
+        n.0.is_leaf.store(true, Ordering::Release);
+        n.put(b"00000001", b"00000001", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000002", b"00000002", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000003", b"00000003", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000004", b"00000004", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000005", b"00000005", b"0123456701234567".to_vec(), 0, 0);
+        // threshold: 0.5 * 100 = 50, MIN_KEYS_PER_PAGE(NOTE): 2
+        // Split between 2 & 3.
+        // page_header = 16, elementHeader = 32 * 3, (kv) = (8 + 16) * 3
+        // = 136
+        let next = n.split_two(100).unwrap();
+
+        assert!(next.is_some());
+    }
+
+    #[test]
+    fn split_two_fail() {
+        mock_log();
+        let tx = mock_tx();
+        let bucket = mock_bucket(WeakTx::from(&tx));
+        let mut n = mock_node(&bucket);
+        n.0.is_leaf.store(true, Ordering::Release);
+        n.put(b"00000001", b"00000001", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000002", b"00000002", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000003", b"00000003", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000004", b"00000004", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000005", b"00000005", b"0123456701234567".to_vec(), 0, 0);
+
+        // Split between 2 & 3.
+        let next = n.split_two(4096).unwrap();
+
+        assert!(next.is_none());
+    }
+
+    #[test]
+    fn split() {
+        let tx = mock_tx();
+        let bucket = mock_bucket(WeakTx::from(&tx));
+        let mut n = mock_node(&bucket);
+        n.0.is_leaf.store(true, Ordering::Release);
+        n.put(b"00000001", b"00000001", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000002", b"00000002", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000003", b"00000003", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000004", b"00000004", b"0123456701234567".to_vec(), 0, 0);
+        n.put(b"00000005", b"00000005", b"0123456701234567".to_vec(), 0, 0);
+
+        // Split between 2 & 3.
+        let parent = n.split(100).unwrap();
+
+        assert!(parent.is_some());
+        let parent = parent.unwrap();
+        let pchildren = parent.0.children.borrow();
+        assert_eq!(pchildren.len(), 2);
+        assert_eq!(pchildren[1].0.inodes.borrow().len(), 3);
+        assert_eq!(pchildren[0].0.inodes.borrow().len(), 2);
+    }
+
+    #[test]
+    fn split_big() {
+        let tx = mock_tx();
+        let bucket = mock_bucket(WeakTx::from(&tx));
+        let mut n = mock_node(&bucket);
+        n.0.is_leaf.store(true, Ordering::Release);
+        for i in 1..1000 {
+            let key = format!("{:08}", i);
+            n.put(
+                &key.as_bytes(),
+                &key.as_bytes(),
+                b"0123456701234567".to_vec(),
+                0,
+                0,
+            )
+            .expect("TODO: panic message");
+        }
+        let parent = n.split(4096).unwrap().unwrap();
+
+        assert_eq!(parent.0.children.borrow().len(), 19);
+    }
 }

@@ -1,11 +1,18 @@
 use crate::db::Meta;
 use crate::free_list::FreeList;
 use crate::must_align;
+use enumflags2::bitflags;
+use kv_log_macro::debug;
+use log::info;
+use log::kv::{ToValue, Value};
+use serde::{Deserialize, Serialize};
+use std::borrow::{Borrow, BorrowMut};
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ops::RangeBounds;
-use std::ptr::slice_from_raw_parts;
+use std::ops::{Deref, DerefMut};
+use std::process::id;
 use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
 
 pub(crate) const PAGE_HEADER_SIZE: usize = size_of::<Page>();
@@ -19,6 +26,16 @@ pub(crate) const LEAF_PAGE_FLAG: u16 = 0x02;
 pub(crate) const META_PAGE_FLAG: u16 = 0x04;
 pub(crate) const FREE_LIST_PAGE_FLAG: u16 = 0x10;
 
+#[bitflags]
+#[repr(u16)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PageFlag {
+    Branch = 0x01,
+    Leaf = 0x02,
+    Meta = 0x04,
+    FreeList = 0x10,
+}
+
 // u16
 pub(crate) const BUCKET_LEAF_FLAG: u32 = 0x01;
 
@@ -27,7 +44,7 @@ pub type PgId = u64;
 // Page Header
 // |PgId(u64)|flags(u16)|count(u16)|over_flow
 // So, Page Size = count + over_flow*sizeof(Page)
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[repr(C)]
 pub struct Page {
     pub(crate) id: PgId,
@@ -35,6 +52,7 @@ pub struct Page {
     pub(crate) count: u16,
     pub(crate) over_flow: u32,
     // PhantomData not occupy real memory
+    #[serde(skip_serializing)]
     pub(crate) ptr: PhantomData<u8>,
 }
 
@@ -81,6 +99,7 @@ impl Page {
 
     // Retrieves the branch node by index.
     pub(crate) fn branch_page_element(&self, index: usize) -> &BranchPageElement {
+        debug!("index is {}", index);
         &self.branch_page_elements()[index]
     }
 
@@ -201,7 +220,15 @@ impl Page {
     #[inline]
     pub(crate) fn copy_from_meta(&mut self, meta: &Meta) {
         self.count = 0;
-        self.flags = BRANCH_PAGE_FLAG;
+        self.flags = META_PAGE_FLAG;
+        let sbytes = meta.as_slice();
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                meta.as_slice_no_checksum().as_ptr(),
+                self.get_data_mut_ptr(),
+                sbytes.len(),
+            )
+        }
     }
 
     #[inline]
@@ -234,7 +261,6 @@ impl Page {
                 }
             }
             META_PAGE_FLAG => {
-                // TODO?
                 size += META_PAGE_SIZE;
             }
             FREE_LIST_PAGE_FLAG => {
@@ -244,28 +270,17 @@ impl Page {
         }
         size
     }
-
-    fn to_vec(self) -> Vec<u8> {
-        let v: Vec<u8> = self.into();
-        v
-    }
-
-    pub(crate) fn to_owned(self) -> Self {
-        self
-    }
 }
 
-impl Into<Vec<u8>> for Page {
-    fn into(self) -> Vec<u8> {
-        let ptr = &self as *const Page as *const u8;
-        unsafe { from_raw_parts(ptr, self.byte_size()).to_vec() }
-    }
-}
+impl ToOwned for Page {
+    type Owned = OwnedPage;
 
-impl From<Vec<u8>> for Page {
-    fn from(vec: Vec<u8>) -> Self {
-        let page = Page::from_slice(&vec);
-        page.to_owned()
+    fn to_owned(&self) -> Self::Owned {
+        let ptr = self as *const Page as *const u8;
+        unsafe {
+            let slice = from_raw_parts(ptr, self.byte_size()).to_owned();
+            OwnedPage::from_vec(slice)
+        }
     }
 }
 
@@ -282,6 +297,12 @@ impl Display for Page {
         } else {
             write!(f, "unknown<{:0x}>", self.flags)
         }
+    }
+}
+
+impl ToValue for Page {
+    fn to_value(&self) -> Value {
+        todo!()
     }
 }
 
@@ -368,10 +389,6 @@ impl From<Vec<PgId>> for PgIds {
 }
 
 impl PgIds {
-    pub fn new() -> PgIds {
-        PgIds { inner: Vec::new() }
-    }
-
     #[inline]
     pub fn len(&self) -> usize {
         self.inner.len()
@@ -429,6 +446,99 @@ impl PgIds {
     }
 }
 
+#[derive(Clone)]
+#[repr(align(64))]
+pub struct OwnedPage {
+    page: Vec<u8>,
+}
+
+impl OwnedPage {
+    pub(crate) fn new(size: usize) -> Self {
+        Self {
+            page: vec![0u8; size],
+        }
+    }
+
+    pub(crate) fn from_vec(buf: Vec<u8>) -> Self {
+        Self { page: buf }
+    }
+
+    /// reserve capacity of underlying vector to size
+    #[allow(dead_code)]
+    pub(crate) fn reserve(&mut self, size: usize) {
+        self.page.reserve(size);
+    }
+
+    /// Returns pointer to page structure
+    #[inline]
+    pub(crate) fn as_ptr(&self) -> *const u8 {
+        self.page.as_ptr()
+    }
+
+    /// Returns pointer to page structure
+    #[allow(dead_code)]
+    #[inline]
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.page.as_mut_ptr()
+    }
+
+    /// Returns binary serialized buffer pf a page
+    #[inline]
+    pub(crate) fn buf(&self) -> &[u8] {
+        &self.page
+    }
+
+    /// Returns binary serialized muttable buffer of a page
+    #[inline]
+    pub(crate) fn buf_mut(&mut self) -> &mut [u8] {
+        &mut self.page
+    }
+
+    /// Returns page size
+    #[inline]
+    pub(crate) fn size(&self) -> usize {
+        self.page.len()
+    }
+}
+
+impl Borrow<Page> for OwnedPage {
+    #[inline]
+    fn borrow(&self) -> &Page {
+        unsafe { &*(self.page.as_ptr() as *const Page) }
+    }
+}
+
+impl BorrowMut<Page> for OwnedPage {
+    #[inline]
+    fn borrow_mut(&mut self) -> &mut Page {
+        unsafe { &mut *(self.page.as_mut_ptr() as *mut Page) }
+    }
+}
+
+impl Deref for OwnedPage {
+    type Target = Page;
+    #[inline]
+    fn deref(&self) -> &Page {
+        self.borrow()
+    }
+}
+
+impl DerefMut for OwnedPage {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Page {
+        self.borrow_mut()
+    }
+}
+
+impl std::fmt::Debug for OwnedPage {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("OwnedPage")
+            .field("size", &self.page.len())
+            .field("page", self as &Page)
+            .finish()
+    }
+}
+
 #[test]
 fn t_page_type() {
     assert_eq!(
@@ -482,4 +592,90 @@ fn t_page_buffer() {
     };
     let new_page = Page::from_slice(page.as_slice());
     assert_eq!(page.as_slice(), new_page.as_slice());
+}
+
+#[test]
+fn t_new() {
+    let mut buf = vec![0u8; 256];
+    let mut page = Page::from_slice_mut(&mut buf);
+    assert_eq!(page.over_flow, 0);
+    assert_eq!(page.count, 0);
+    assert_eq!(page.id, 0);
+
+    page.id = 25;
+    assert_eq!(page.id, 25);
+
+    page.flags = META_PAGE_FLAG;
+    assert_eq!(page.flags, META_PAGE_FLAG);
+}
+
+#[test]
+fn t_read_leaf_nodes() {
+    let mut page = OwnedPage::new(4096);
+    page.flags = LEAF_PAGE_FLAG;
+    page.count = 2;
+    let mut nodes =
+        unsafe { from_raw_parts_mut(page.get_data_mut_ptr() as *mut LeafPageElement, 3) };
+    nodes[0] = LeafPageElement {
+        flags: 0,
+        pos: 32,
+        k_size: 3,
+        v_size: 4,
+    };
+    nodes[1] = LeafPageElement {
+        flags: 0,
+        pos: 23,
+        k_size: 10,
+        v_size: 3,
+    };
+
+    let data =
+        unsafe { from_raw_parts_mut(&mut nodes[2] as *mut LeafPageElement as *mut u8, 4096) };
+    data[..7].copy_from_slice("barfooz".as_bytes());
+    data[7..7 + 13].copy_from_slice("helloworldbye".as_bytes());
+
+    let el = page.leaf_page_element(0);
+    assert_eq!(el.k_size, 3);
+    assert_eq!(el.v_size, 4);
+    assert_eq!(el.pos, 32);
+
+    let el = page.leaf_page_element(1);
+    assert_eq!(el.k_size, 10);
+    assert_eq!(el.v_size, 3);
+    assert_eq!(el.pos, 23);
+}
+
+#[test]
+fn t_to_owned() {
+    crate::test_util::mock_log();
+    let mut buf = vec![0u8; 1024];
+    let mut page = Page::from_slice_mut(&mut buf);
+    page.flags = LEAF_PAGE_FLAG;
+    page.count = 2;
+
+    let nodes = unsafe { from_raw_parts_mut(page.get_data_ptr() as *mut LeafPageElement, 3) };
+    nodes[0] = LeafPageElement {
+        flags: 0,
+        pos: 32,
+        k_size: 3,
+        v_size: 4,
+    };
+    nodes[1] = LeafPageElement {
+        flags: 0,
+        pos: 23,
+        k_size: 10,
+        v_size: 3,
+    };
+
+    let data =
+        unsafe { from_raw_parts_mut(&mut nodes[2] as *mut LeafPageElement as *mut u8, 1024) };
+    data[..7].copy_from_slice("barfooz".as_bytes());
+    data[7..7 + 13].copy_from_slice("helloworldbye".as_bytes());
+
+    let owned = page.to_owned();
+    /// Note: Very interesting
+    assert_eq!(
+        owned.page.len(),
+        PAGE_HEADER_SIZE + LEAF_PAGE_ELEMENT_SIZE + 23 + 10 + 3
+    );
 }

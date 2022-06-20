@@ -2,16 +2,18 @@ use crate::cursor::{Cursor, PageNode};
 use crate::db::{Stats, DB};
 use crate::error::{Error, Result};
 use crate::node::{Node, NodeBuilder, WeakNode};
-use crate::page::BUCKET_LEAF_FLAG;
+use crate::page::{OwnedPage, BUCKET_LEAF_FLAG, LEAF_PAGE_ELEMENT_SIZE, PAGE_HEADER_SIZE};
 use crate::tx::{WeakTx, TX};
 use crate::{Page, PgId};
 use either::Either;
+use log::info;
+use log::{debug, warn};
 use std::cell::RefCell;
+use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::intrinsics::copy_nonoverlapping;
 use std::sync::Weak;
-use test::RunIgnored::No;
 
 /// The maximum length of a key, in bytes.
 const MAX_KEY_SIZE: usize = 32768;
@@ -54,6 +56,7 @@ impl TopBucket {
 }
 
 /// Bucket represents a collection of key/value pairs inside the database.
+#[derive(Debug)]
 pub struct Bucket {
     pub(crate) local_bucket: TopBucket,
     // the associated transaction, WeakTx
@@ -61,11 +64,12 @@ pub struct Bucket {
     // subbucket cache
     pub(crate) buckets: RefCell<HashMap<Vec<u8>, Bucket>>,
     // inline page reference
-    pub(crate) page: Option<Page>,
+    pub(crate) page: Option<OwnedPage>,
     // materialized node for the root page
     pub(crate) root_node: Option<Node>,
     // node cache
-    pub(crate) nodes: HashMap<PgId, Node>,
+    // TODO: maybe use refHashMap
+    pub(crate) nodes: RefCell<HashMap<PgId, Node>>,
     // Sets the threshold for filling nodes when they split. By default,
     // the bucket will fill to 50% but it can be useful to increase this
     // amount if you know that your write workloads are mostly append-only.
@@ -74,20 +78,20 @@ pub struct Bucket {
     pub(crate) fill_percent: f64,
 }
 
-impl Debug for Bucket {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        // let tx = self.tx();
-        f.debug_struct("Bucket")
-            .field("bucket", &self.local_bucket)
-            // .field("tx", &tx)
-            .field("buckets", &self.buckets)
-            .field("page", &self.page.as_ref())
-            .field("root_node", &self.root_node)
-            .field("nodes", &self.nodes)
-            .field("fill_percent", &self.fill_percent)
-            .finish()
-    }
-}
+// impl Debug for Bucket {
+//     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+//         // let tx = self.tx();
+//         f.debug_struct("Bucket")
+//             .field("bucket", &self.local_bucket)
+//             // .field("tx", &tx)
+//             .field("buckets", &self.buckets)
+//             .field("page", &self.page.as_ref())
+//             .field("root_node", &self.root_node)
+//             .field("nodes", &self.nodes.borrow())
+//             .field("fill_percent", &self.fill_percent)
+//             .finish()
+//     }
+// }
 
 impl PartialEq for Bucket {
     fn eq(&self, _other: &Self) -> bool {
@@ -157,7 +161,14 @@ impl Bucket {
 
     /// Attempts to balance all nodes
     pub(crate) fn rebalance(&mut self) {
-        for node in self.nodes.values_mut() {
+        let pid = self.local_bucket.root;
+        info!(
+            "ready to rebalance bucket, pid:{}, nodes:{}, buckets: {}",
+            pid,
+            self.nodes.borrow().len(),
+            self.buckets.borrow().len()
+        );
+        for node in self.nodes.borrow_mut().values_mut() {
             node.rebalance();
         }
         for child in self.buckets.borrow_mut().values_mut() {
@@ -167,32 +178,40 @@ impl Bucket {
 
     /// Create a `node` from a `page` and associates it with a given parent.
     pub(crate) fn node(&mut self, pg_id: PgId, parent: WeakNode) -> Node {
-        assert!(!self.nodes.is_empty(), "nodes map expected");
+        debug!("load node from page: {}", pg_id);
+        // assert!(!self.nodes.is_empty(), "nodes map expected");
+        if !self.tx().unwrap().writable() {
+            panic!("tx is read-only");
+        }
         // Retrieve node if it's already been created.
-        if let Some(node) = self.nodes.get(&pg_id) {
+        if let Some(node) = self.nodes.borrow().get(&pg_id) {
             return node.clone();
         }
-        // Otherwise create a node and cache it.
+        // Otherwise, create a node and cache it.
         let mut node = NodeBuilder::new(self as *const Bucket)
             .parent(parent.clone())
             .build();
         if let Some(parent) = parent.upgrade() {
             parent.child_mut().push(node.clone());
         } else {
+            // Why? Ony root node has not parent, so the node is root node
+            // Update it
             self.root_node.replace(node.clone());
         }
-        // Use the page into the node and cache it.
 
+        // Use the page into the node and cache it.
         if let Some(page) = &self.page {
-            node.read(&page);
+            node.read(page);
         } else {
             // Read the page into the node and cache it.
-            let page = self.tx().unwrap().page(pg_id).unwrap();
+            let page = unsafe { &*self.tx().unwrap().page(pg_id).unwrap() };
+            // warn!("read node from inline page:  {:?}", page.as_slice());
             unsafe {
-                node.read(&*page);
+                node.read(page);
             }
         }
-        self.nodes.insert(pg_id, node.clone());
+        // debug!("cache a node: {:?}", node);
+        self.nodes.borrow_mut().insert(pg_id, node.clone());
         // Update statistics.
         self.tx().unwrap().stats().node_count += 1;
         node
@@ -207,16 +226,18 @@ impl Bucket {
             if id != 0 {
                 return Err(Error::Unexpected("inline bucket no-zero page access"));
             }
+            // TODO: when happen
             if let Some(ref node) = self.root_node {
+                // debug!("return a inline root_node");
                 return Ok(PageNode::from(node.clone()));
             }
+            debug!("return a inline root page");
             return Ok(PageNode::from(
-                &*self.page.as_ref().ok_or(Error::Unexpected("page empty"))? as *const Page,
+                &**self.page.as_ref().ok_or("page empty")? as *const Page
             ));
         }
-
         // Check the node cache for non-inline buckets.
-        if let Some(node) = self.nodes.get(&id) {
+        if let Some(node) = self.nodes.borrow().get(&id) {
             return Ok(PageNode::from(node.clone()));
         }
 
@@ -226,8 +247,9 @@ impl Bucket {
     }
 
     pub fn clear(&mut self) {
+        debug!("close bucket");
         self.buckets.borrow_mut().clear();
-        self.nodes.clear();
+        self.nodes.borrow_mut().clear();
         self.page = None;
         self.root_node = None;
     }
@@ -248,13 +270,11 @@ impl Bucket {
                 return Err(Error::BucketNameRequired);
             }
         }
-
         let tx = self.tx.clone();
         {
             // Move cursor to correct position.
             let mut cursor = self.cursor()?;
             let (ckey, _, flags) = cursor.seek_to_item(key)?.unwrap();
-
             // return an error if there is an existing cursor.
             if ckey == Some(key) {
                 if (flags & BUCKET_LEAF_FLAG) != 0 {
@@ -275,16 +295,15 @@ impl Bucket {
                 .node()
                 .unwrap()
                 .put(key, key, value, 0, BUCKET_LEAF_FLAG)?;
-
+            info!(node_size = self.nodes.borrow().keys().len() ; "insert a new bucket into node");
             // TODO: why
             // since subbuckets are not allowed on inline buckets, we need to
             // dereference the inline page, if it exists. This will cause the bucket
             // to be treated as a regular, non-inline bucket for the rest of the tx.
             self.page = None;
         }
-
         self.bucket_mut(key)
-            .ok_or_else(|| Error::Unexpected("cannot find bucket"))
+            .ok_or(Error::Unexpected("cannot find bucket"))
     }
 
     // Creates a new bucket if it doesn't already exist and returns a reference to it.
@@ -295,16 +314,18 @@ impl Bucket {
 
         match other_self.create_bucket(key) {
             Ok(b) => Ok(b),
-            Err(Error::BucketExists) => self
-                .bucket_mut(key)
-                .ok_or_else(|| Error::Unexpected("can't create bucket")),
+            Err(Error::BucketExists) => {
+                info!("has exists the bucket: {}", String::from_utf8_lossy(key));
+                self.bucket_mut(key)
+                    .ok_or(Error::Unexpected("can't create bucket"))
+            }
             v => v,
         }
     }
 
     // DeleteBucket deletes a bucket at the given key.
-    // Returns an error if the bucket does not exists, or if the key represents a non-bucket value.
-    pub fn delete_bucket(&self, key: &[u8]) -> Result<()> {
+    // Returns an error if the bucket does not exist, or if the key represents a non-bucket value.
+    pub fn delete_bucket(&mut self, key: &[u8]) -> Result<()> {
         {
             let tx = self.tx()?;
             if !tx.opened() {
@@ -321,7 +342,7 @@ impl Bucket {
         let mut c = self.cursor()?;
         {
             let item = c.seek(key)?;
-            if item.key.as_deref().map(|v| &*v).unwrap() != key {
+            if item.key.map(|v| &*v).unwrap() != key {
                 return Err(Error::BucketNotFound);
             }
             if !item.is_bucket() {
@@ -342,7 +363,7 @@ impl Bucket {
             }
 
             // Release all bucket pages to free_list.
-            child.nodes.clear();
+            child.nodes.borrow_mut().clear();
             child.root_node = None;
             child.free();
         }
@@ -375,8 +396,11 @@ impl Bucket {
 
     /// Retrieves a nested mutable bucket by name.
     /// Returns None if the bucket does not exist or found item is not bucket.
-    pub fn bucket_mut(&self, key: &[u8]) -> Option<&mut Bucket> {
-        self.__bucket_mut(key).map(|b| unsafe { &mut *b })
+    pub fn bucket_mut(&mut self, key: &[u8]) -> Option<&mut Bucket> {
+        if !self.tx().unwrap().writable() {
+            return None;
+        }
+        self.__bucket(key).map(|b| unsafe { &mut *b })
     }
 
     /// Retrieves the value for a key in the bucket.
@@ -418,8 +442,7 @@ impl Bucket {
         if (Some(key) == item.key) && item.is_bucket() {
             return Err(Error::IncompatibleValue);
         }
-        c.node().unwrap().put(key, key, value, 0, 0);
-        Ok(())
+        c.node().unwrap().put(key, key, value, 0, 0)
     }
 
     /// Removes a key from the bucket.
@@ -434,6 +457,11 @@ impl Bucket {
         }
         let mut c = self.cursor()?;
         let item = c.seek(key)?;
+
+        if item.is_bucket() {
+            return Err(Error::IncompatibleValue);
+        }
+        info!("it should be not happen");
         c.node().unwrap().del(key);
         Ok(())
     }
@@ -481,11 +509,12 @@ impl Bucket {
         if child.local_bucket.root == 0 {
             let data = unsafe {
                 let slice = &value[TopBucket::SIZE..];
+                // cull TopBucket
                 let mut vec = vec![0u8; slice.len()];
                 copy_nonoverlapping(slice.as_ptr(), vec.as_mut_ptr(), slice.len());
                 vec
             };
-            let page = Page::from(data);
+            let page = OwnedPage::from_vec(data);
             child.page = Some(page);
         }
 
@@ -515,8 +544,11 @@ impl Bucket {
         Ok(())
     }
 
+    /// Recursively frees all pages in the bucket.
     pub fn free(&mut self) {
+        // This is an inline bucket, don't need to free it.
         if self.local_bucket.root == 0 {
+            debug!("the bucket is inline root, nothing frees");
             return;
         }
 
@@ -525,7 +557,7 @@ impl Bucket {
         self.for_each_page_node(|page, _| match page {
             Either::Left(page) => {
                 let txid = tx.id();
-                db.0.free_list.write().free(txid, &page);
+                db.0.free_list.write().free(txid, page);
             }
             Either::Right(node) => node.clone().free(),
         });
@@ -545,7 +577,7 @@ impl Bucket {
     pub(crate) fn for_each_page<'a>(&self, mut handler: Box<dyn FnMut(&Page, usize) + 'a>) {
         // If we have an inline page then just use that.
         if let Some(ref inline_page) = self.page {
-            handler(&inline_page, 0);
+            handler(inline_page, 0);
             return;
         }
 
@@ -596,23 +628,261 @@ impl Bucket {
         }
     }
 
-    pub fn __bucket(&self, key: &[u8]) -> Option<*const Bucket> {
-        if let Some(b) = self.buckets.borrow().get(&key.to_vec()) {
-            return Some(b);
+    /// Writes all the nodes for this bucket to dirty pages.
+    pub(crate) fn spill(&mut self) -> Result<()> {
+        let root_node = self
+            .root_node
+            .as_ref()
+            .map(|node| node.pg_id())
+            .unwrap_or(0);
+        debug!(local_bucket = self.local_bucket.root, root_node=root_node; "ready to spill bucket");
+        let mutself = unsafe { &mut *(self as *mut Self) };
+
+        // Spill all child buckets first.
+        for (name, child) in &mut *self.buckets.borrow_mut() {
+            // If the child bucket is small enough and it has no child buckets then
+            // write it inline into the parent bucket's page. Otherwise spill it
+            // like a normal bucket and make the parent value a pointer to the page.
+            let value = if child.inlineable() {
+                child.free();
+                child.write()
+            } else {
+                child.spill()?;
+                // Update the child bucket header in this bucket.
+                let mut vec = vec![0u8; TopBucket::SIZE];
+                let bucket_ptr = vec.as_mut_ptr() as *mut TopBucket;
+                unsafe { copy_nonoverlapping(&child.local_bucket, bucket_ptr, 1) };
+                vec
+            };
+            // Skip writing the bucket if there are no materialized node.
+            if child.root_node.is_none() {
+                continue;
+            }
+            // Update parent node.
+            let mut c = mutself.cursor()?;
+            let item = c.seek(name)?;
+            if item.key != Some(name.as_slice()) {
+                return Err(Error::Unexpected2(format!(
+                    "misplaced bucket header: {:?} -> {:?}",
+                    name,
+                    item.key.as_ref().unwrap()
+                )));
+            }
+            if !item.is_bucket() {
+                return Err(Error::Unexpected2(format!(
+                    "unexpected bucket header flag: {}",
+                    item.flags
+                )));
+            }
+            let _ = c.node()?.put(name, name, value, 0, BUCKET_LEAF_FLAG);
         }
-        None
+
+        // ignore if there's not a materialized root node.
+        if self.root_node.is_none() {
+            return Ok(());
+        }
+
+        {
+            // Spill nodes.
+            let mut root_node = self
+                .root_node
+                .clone()
+                .ok_or(Error::Unexpected("root node empty"))?
+                .root();
+            info!(
+                "start to split node from root_node: {:?}, inodes: {}",
+                root_node.pg_id(),
+                root_node.0.inodes.borrow().len()
+            );
+            root_node.spill()?;
+            self.root_node = Some(root_node);
+
+            let pgid = self.root_node.as_ref().unwrap().pg_id();
+            let txpgid = self.tx()?.pgid();
+            // Update the root node for this bucket.
+            if pgid >= txpgid as u64 {
+                panic!("pgid ({}) above high water mark ({})", pgid, txpgid);
+            }
+
+            self.local_bucket.root = pgid;
+        }
+
+        Ok(())
     }
 
-    pub(crate) fn __bucket_mut(&self, key: &[u8]) -> Option<*mut Bucket> {
-        if let Some(b) = self.buckets.borrow_mut().get_mut(&key.to_vec()) {
+    /// Returns true if a bucket is small enough to be written inline
+    /// and if it contains no subbuckets. Otherwise returns false.
+    fn inlineable(&self) -> bool {
+        let can_inlineable = self.__inlineable();
+        kv_log_macro::info!(
+            "bucket(root_node: {:?}) can inlineable: {}",
+            self.local_bucket,
+            // self.root_node,
+            can_inlineable
+        );
+        can_inlineable
+    }
+
+    fn __inlineable(&self) -> bool {
+        if self.root_node.is_none() || !self.root_node.as_ref().unwrap().is_leaf() {
+            return false;
+        }
+
+        let mut size = PAGE_HEADER_SIZE;
+        let node = self.root_node.clone().unwrap();
+
+        for inode in &*node.0.inodes.borrow() {
+            if inode.flags & BUCKET_LEAF_FLAG != 0 {
+                return false;
+            }
+
+            size += LEAF_PAGE_ELEMENT_SIZE + inode.key.len() + inode.value.len();
+            if size > self.max_inline_bucket_size() {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Returns the maximum total size of a bucket to make it a candidate for inlining.
+    fn max_inline_bucket_size(&self) -> usize {
+        self.tx().unwrap().db().unwrap().page_size() / 4
+    }
+
+    pub fn __bucket(&self, name: &[u8]) -> Option<*mut Bucket> {
+        if let Some(b) = self.buckets.borrow_mut().get_mut(&name.to_vec()) {
             return Some(b);
         }
-        None
+
+        let (key, value) = {
+            let c = self.cursor().unwrap();
+            let (key, value, flags) = c.seek_to_item(name).unwrap().unwrap();
+
+            // Return None if the key doesn't exist or it is not a bucket.
+            if key != Some(name) || (flags & BUCKET_LEAF_FLAG) == 0 {
+                return None;
+            }
+
+            (key.map(|k| k.to_vec()), value.map(|v| v.to_vec()))
+        };
+        // Otherwise, create a bucket and cache it.
+        let child = self.open_bucket(value.unwrap());
+        let mut buckets = self.buckets.borrow_mut();
+        let bucket = match buckets.entry(key.unwrap()) {
+            Vacant(e) => e.insert(child),
+            Occupied(e) => {
+                let c = e.into_mut();
+                *c = child;
+                c
+            }
+        };
+        info!(
+            "loader a bucket {:?}, root: {:?}, root_node: {}",
+            String::from_utf8_lossy(name),
+            bucket.local_bucket,
+            bucket.root_node.is_some()
+        );
+        Some(bucket)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::error::Error;
+    use crate::error::Error::IncompatibleValue;
+    use crate::test_util::mock_db;
+
     #[test]
-    fn it_works() {}
+    fn create() {
+        let mut db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        assert!(tx.bucket(b"foo").is_err());
+        let mut bucket = tx.create_bucket(b"foo").unwrap();
+        assert!(bucket.get(b"bar").is_none());
+
+        bucket.put(b"foo", b"jaja".to_vec()).unwrap();
+        assert!(bucket.get(b"foo").is_some());
+        assert_eq!(bucket.get(b"foo").unwrap(), b"jaja");
+
+        bucket.create_bucket(b"subbucket").unwrap();
+        assert!(bucket.get(b"subbucket").is_none());
+        assert!(bucket.bucket(b"subbucket").is_some());
+    }
+
+    #[test]
+    fn create_nested_bucket() {
+        let path = {
+            let mut db = mock_db().set_auto_remove(false).build().unwrap();
+            let mut tx = db.begin_rw_tx().unwrap();
+            assert!(tx.bucket(b"foo").is_err());
+
+            tx.create_bucket(b"foo")
+                .unwrap()
+                .create_bucket(b"foob")
+                .unwrap()
+                .create_bucket(b"fooc")
+                .unwrap()
+                .create_bucket(b"food")
+                .unwrap()
+                .create_bucket(b"fooe")
+                .unwrap();
+
+            assert!(tx
+                .bucket(b"foo")
+                .unwrap()
+                .bucket(b"foob")
+                .unwrap()
+                .bucket(b"fooc")
+                .unwrap()
+                .bucket(b"food")
+                .unwrap()
+                .bucket(b"fooe")
+                .is_some());
+
+            tx.commit().unwrap();
+            db.path().unwrap()
+        };
+
+        let db = mock_db().set_path(path).build().unwrap();
+        let tx = db.begin_tx().unwrap();
+        assert!(tx
+            .bucket(b"foo")
+            .unwrap()
+            .bucket(b"foob")
+            .unwrap()
+            .bucket(b"fooc")
+            .unwrap()
+            .bucket(b"food")
+            .unwrap()
+            .bucket(b"fooe")
+            .is_some());
+    }
+
+    #[test]
+    fn delete_value() {
+        let mut db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        {
+            let mut bucket = tx.create_bucket(b"bucket").unwrap();
+            bucket.put(b"haley", b"smith".to_vec()).unwrap();
+            assert_eq!(bucket.get(b"haley").unwrap(), b"smith");
+            bucket.delete(b"haley").unwrap();
+            assert_eq!(bucket.get(b"haley"), None);
+        }
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn delete_bucket_err() {
+        let mut db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        {
+            let mut bucket = tx.create_bucket(b"bucket").unwrap();
+            bucket.create_bucket(b"stan").unwrap();
+            bucket.bucket(b"stan").unwrap();
+            assert_eq!(bucket.delete(b"stan").unwrap_err(), IncompatibleValue);
+        }
+        tx.commit().unwrap();
+    }
 }

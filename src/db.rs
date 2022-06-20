@@ -1,16 +1,16 @@
 use crate::bucket::TopBucket;
 use crate::error::Error;
-use crate::error::Error::{DBOpFailed, Unexpected};
+use crate::error::Error::{DBOpFailed, DatabaseGone, DatabaseOnlyRead, Unexpected};
 use crate::error::Result;
 use crate::free_list::FreeList;
+use crate::page::OwnedPage;
 use crate::page::{FREE_LIST_PAGE_FLAG, LEAF_PAGE_FLAG, META_PAGE_FLAG, META_PAGE_SIZE};
 use crate::tx::{RWTxGuard, TxBuilder, TxGuard, TX};
 use crate::{Bucket, Page, PgId, TxId};
 use bitflags::bitflags;
 use fnv::FnvHasher;
 use fs2::FileExt;
-use kv_log_macro::debug;
-use memmap::Mmap;
+use kv_log_macro::{debug, info};
 use parking_lot::lock_api::{RawMutex, RawRwLock};
 use parking_lot::{MappedMutexGuard, MappedRwLockReadGuard};
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
@@ -91,7 +91,7 @@ pub(crate) struct DBInner {
     pub(crate) free_list: RwLock<FreeList>,
     pub(crate) stats: RwLock<Stats>,
     pub(crate) batch: Mutex<Option<Batch>>,
-    pub(crate) page_pool: Mutex<Vec<Page>>,
+    pub(crate) page_pool: Mutex<Vec<OwnedPage>>,
     read_only: bool,
 }
 
@@ -111,8 +111,7 @@ impl<'a> DB {
             .read(true)
             .write(!opt.read_only)
             .create(!opt.read_only)
-            .open(path.clone())
-            .map_err(|err| Error::Io(Box::new(err)))?;
+            .open(path.clone())?;
         DB::open_file(fp, Some(path), opt)
     }
 
@@ -147,8 +146,7 @@ impl<'a> DB {
             page_size::get()
         } else {
             let mut buf = vec![0u8; 1000];
-            file.read_exact(&mut buf)
-                .map_err(|err| Error::Io(Box::new(err)))?;
+            file.read_exact(&mut buf)?;
             let page = Page::from_slice(&buf);
             if !page.is_meta() {
                 return Err(Unexpected("Database format unknown"));
@@ -255,7 +253,7 @@ impl<'a> DB {
             stats.tx_n += 1;
             stats.open_tx_n = txs_len;
         }
-
+        debug!("start a read only transaction, tid:{}", tx.id());
         Ok(TxGuard {
             tx,
             db: std::marker::PhantomData,
@@ -273,24 +271,24 @@ impl<'a> DB {
     /// to avoid potential blocking of write transasction.
     pub fn begin_rw_tx(&mut self) -> Result<RWTxGuard> {
         if self.read_only() {
-            return Err(Error::DatabaseOnlyRead);
-        }
+            return Err(DatabaseOnlyRead);
+        };
         if !self.opened() {
-            return Err(Error::DatabaseGone);
-        }
+            return Err(DatabaseGone);
+        };
 
         unsafe {
             self.0.rw_lock.raw().lock();
-        }
-
-        let mut rw_tx = self.0.rw_tx.write();
-        let minid = {
-            let txs = self.0.txs.read();
-            txs.iter()
-                .map(|tx| tx.id())
-                .min()
-                .unwrap_or(0xFFFF_FFFF_FFFF_FFFF)
         };
+        let mut rw_tx = self.0.rw_tx.write();
+
+        let txs = self.0.txs.read();
+        let minid = txs
+            .iter()
+            .map(|tx| tx.id())
+            .min()
+            .unwrap_or(0xFFFF_FFFF_FFFF_FFFF);
+        drop(txs);
 
         let tx = TxBuilder::new()
             .set_db(WeakDB::from(self))
@@ -309,6 +307,69 @@ impl<'a> DB {
             tx,
             db: std::marker::PhantomData,
         })
+    }
+
+    /// shorthand for db.begin_rw_tx with addditional guagrantee for panic safery
+    pub fn update<'b>(
+        &mut self,
+        mut handler: impl FnMut(&mut TX) -> Result<()> + 'b,
+    ) -> Result<()> {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        let mut tx = scopeguard::guard(self.begin_rw_tx()?, |mut tx| {
+            let db_exists = tx.db().is_ok();
+            if db_exists {
+                tx.__rollback().unwrap();
+            }
+        });
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            tx.0.managed.store(true, Ordering::Release);
+            let result = handler(&mut tx);
+            tx.0.managed.store(false, Ordering::Release);
+            result
+        }));
+
+        if result.is_err() {
+            tx.__rollback()?;
+            return Err("Panic while update".into());
+        }
+
+        let result = result.unwrap();
+        if let Err(err) = result {
+            tx.rollback()?;
+            return Err(err);
+        }
+
+        tx.commit()
+    }
+
+    /// shorthand for db.begin_tx with additional guarantee for panic safery
+    pub fn view<'b>(&self, handler: impl Fn(&TX) -> Result<()> + 'b) -> Result<()> {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let tx = scopeguard::guard(self.begin_tx()?, |tx| {
+            if tx.db().is_ok() {
+                tx.__rollback().unwrap();
+            }
+        });
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            tx.0.managed.store(true, Ordering::Release);
+            let result = handler(&tx);
+            tx.0.managed.store(false, Ordering::Release);
+            result
+        }));
+
+        if result.is_err() {
+            tx.__rollback()?;
+            return Err(Error::Unexpected("Panic while update"));
+        }
+
+        let result = result.unwrap();
+        if let Err(err) = result {
+            tx.rollback()?;
+            return Err(err);
+        }
+        Ok(())
     }
 
     pub(crate) fn remove_tx(&self, tx: &TX) -> Result<TX> {
@@ -335,6 +396,7 @@ impl<'a> DB {
             };
 
             unsafe {
+                log::info!(is_ok = tx.db().is_ok(); "free db rw_lock, has db ref");
                 self.0.rw_lock.raw().unlock();
             }
             let mut stats = self.0.stats.write();
@@ -387,10 +449,6 @@ impl<'a> DB {
     pub fn page(&self, id: PgId) -> MappedRwLockReadGuard<Page> {
         let page_size = self.0.page_size;
         let pos = id as usize * page_size as usize;
-        debug!(
-            "ready to load page from mmap, id: {}, pos:{}, page_size:{}",
-            id, pos, page_size
-        );
         let mmap = self.0.mmap.read_recursive();
         RwLockReadGuard::map(mmap, |mmap| Page::from_slice(&mmap.as_ref()[pos..]))
     }
@@ -427,18 +485,8 @@ impl<'a> DB {
         panic!("invalid meta pages")
     }
 
-    pub(crate) fn allocate(&mut self, count: u64, tx: &mut TX) -> Result<Page> {
-        let mut p = if count == 1 {
-            let mut page_pool = self.0.page_pool.lock();
-            page_pool
-                .pop()
-                .or_else(|| {
-                    Some(Page::from_slice(&Vec::with_capacity(self.0.page_size)).to_owned())
-                })
-                .unwrap()
-        } else {
-            Page::from_slice(&Vec::with_capacity(self.0.page_size * count as usize)).to_owned()
-        };
+    pub(crate) fn allocate(&mut self, count: u64, tx: &mut TX) -> Result<OwnedPage> {
+        let mut p = OwnedPage::new(self.0.page_size * count as usize);
 
         p.over_flow = count as u32 - 1;
 
@@ -446,11 +494,15 @@ impl<'a> DB {
         {
             if let Some(free_list_pid) = self.0.free_list.write().allocate(count as usize) {
                 p.id = free_list_pid;
+                debug!(
+                    "allocate memory from free cache, count: {}, tx: {}",
+                    count,
+                    tx.id()
+                );
                 return Ok(p);
             }
         }
-
-        p.id = tx.id();
+        p.id = tx.pgid();
 
         // Resize mmap() if we're at the end
         let minsz = (p.id + 1 + count) * self.0.page_size as u64;
@@ -461,8 +513,14 @@ impl<'a> DB {
             }
         }
 
-        // Move the page id high water mark
-        tx.set_pgid(tx.id() + count as u64)?;
+        // Move the page id high watermark
+        tx.set_pgid(tx.pgid() + count as u64)?;
+        debug!(
+            "allocate new memory, pid:{}, count: {}, tx: {}",
+            p.id,
+            count,
+            tx.id()
+        );
         Ok(p)
     }
 
@@ -570,11 +628,12 @@ impl<'a> DB {
         debug!("succeed to init root page");
         self.write_at(0, std::io::Cursor::new(&mut buf));
         self.sync()?;
-        debug!("succeed to init db");
+        debug!("succeed to init db, waker pgid: {:?}, top-pgid: {}", 4, 3);
         Ok(())
     }
 
-    fn write_at<T: Read>(&mut self, pos: u64, mut buf: T) -> Result<()> {
+    pub(crate) fn write_at<T: Read>(&mut self, pos: u64, mut buf: T) -> Result<()> {
+        defer_lite::defer! {kv_log_macro::info!("succeed to write db disk, pos: {}", pos);}
         let mut file = self.0.file.write();
         file.seek(SeekFrom::Start(pos))
             .map_err(|_| Unexpected("Can't seek to position"))?;
@@ -662,6 +721,26 @@ impl<'a> DB {
         if self.0.check_mode.contains(CheckMode::CLOSE) {
             let strict = self.0.check_mode.contains(CheckMode::STRICT);
             let tx = self.begin_tx()?;
+            if let Err(e) = tx.check_sync() {
+                if strict {
+                    return Err(e);
+                }
+            }
+        }
+        self.0.opened.store(false, Ordering::Release);
+        self.0
+            .file
+            .try_read()
+            .ok_or(Unexpected("Can't acquire file lock"))?
+            .get_ref()
+            .unlock()
+            .map_err(|_| Unexpected("Can't acquire file lock"))?;
+        if self.0.auto_remove {
+            if let Some(path) = &self.0.path {
+                if path.exists() {
+                    std::fs::remove_file(path).map_err(|_| Unexpected("Can't remove file"))?;
+                }
+            }
         }
         Ok(())
     }
@@ -671,9 +750,11 @@ impl Drop for DB {
     fn drop(&mut self) {
         let strong_count = Arc::strong_count(&self.0);
         if strong_count > 1 {
-            debug!("db strong ref count {}", strong_count);
+            // debug!("db strong ref count {}", strong_count);
             return;
         }
+
+        debug!("drop db");
         self.cleanup().unwrap();
     }
 }
@@ -717,7 +798,7 @@ pub struct Meta {
     /// transaction id
     pub(crate) tx_id: TxId,
     /// meta check_sum
-    check_sum: u64,
+    pub(crate) check_sum: u64,
 }
 
 impl Meta {
@@ -747,8 +828,6 @@ impl Meta {
         }
         // Page id is either going to be 0 or 1 which we can determine by the transaction ID.
         p.id = self.tx_id % 2;
-        p.flags |= META_PAGE_FLAG;
-
         // Calculate the checksum
         self.check_sum = self.sum64();
         p.copy_from_meta(self);
@@ -762,13 +841,13 @@ impl Meta {
     }
 
     #[inline]
-    fn as_slice(&self) -> &[u8] {
+    pub(crate) fn as_slice(&self) -> &[u8] {
         let ptr = self as *const Meta as *const u8;
         unsafe { from_raw_parts(ptr, self.byte_size()) }
     }
 
     #[inline]
-    fn as_slice_no_checksum(&self) -> &[u8] {
+    pub(crate) fn as_slice_no_checksum(&self) -> &[u8] {
         let ptr = self as *const Meta as *const u8;
         unsafe { from_raw_parts(ptr, memoffset::offset_of!(Meta, check_sum)) }
     }

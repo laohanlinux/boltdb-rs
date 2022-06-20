@@ -1,12 +1,12 @@
 use std::io;
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq)]
 pub enum Error {
     #[error("Invalid Configuration: {0}")]
     Config(String),
     #[error("IO error: {0}")]
-    Io(#[source] Box<io::Error>),
+    Io(String),
     #[error("Empty key")]
     EmptyKey,
     #[error("Key too large")]
@@ -65,6 +65,8 @@ pub enum Error {
     DatabaseGone,
     #[error("{0}")]
     Unexpected(&'static str),
+    #[error("{0}")]
+    Unexpected2(String),
     #[error("database only read")]
     DatabaseOnlyRead,
     // Returned when a DB instance is accessed before it
@@ -91,7 +93,7 @@ pub enum Error {
 impl From<io::Error> for Error {
     #[inline]
     fn from(e: io::Error) -> Self {
-        Error::Io(Box::new(e))
+        Error::Io(e.kind().to_string())
     }
 }
 

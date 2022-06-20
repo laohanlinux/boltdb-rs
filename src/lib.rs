@@ -4,11 +4,12 @@
 
 use std::mem::align_of;
 
+extern crate bitflags;
 extern crate memoffset;
 extern crate test;
-extern crate bitflags;
 
 pub mod bucket;
+pub mod cursor;
 pub mod db;
 mod error;
 pub mod free_list;
@@ -16,9 +17,8 @@ pub mod mmap;
 pub mod node;
 pub mod os;
 pub mod page;
-pub mod tx;
-pub mod cursor;
 mod test_util;
+pub mod tx;
 
 pub(crate) use bucket::Bucket;
 pub use page::{Page, PageInfo, PgId, PgIds};
