@@ -395,10 +395,10 @@ impl<'a> DB {
                 db_tx.take().unwrap()
             };
 
-            //unsafe {
-            //    log::info!(is_ok = tx.db().is_ok(); "free db rw_lock, has db ref");
-            //    self.0.rw_lock.raw().unlock();
-            //}
+            unsafe {
+                log::info!(is_ok = tx.db().is_ok(); "free db rw_lock, has db ref");
+                self.0.rw_lock.raw().unlock();
+            }
             let mut stats = self.0.stats.write();
             stats.free_page_n = free_list_n;
             stats.pending_page_n = free_list_pending_n;
