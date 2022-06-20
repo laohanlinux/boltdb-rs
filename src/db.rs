@@ -111,8 +111,7 @@ impl<'a> DB {
             .read(true)
             .write(!opt.read_only)
             .create(!opt.read_only)
-            .open(path.clone())
-            .map_err(|err| Error::Io(Box::new(err)))?;
+            .open(path.clone())?;
         DB::open_file(fp, Some(path), opt)
     }
 
@@ -147,8 +146,7 @@ impl<'a> DB {
             page_size::get()
         } else {
             let mut buf = vec![0u8; 1000];
-            file.read_exact(&mut buf)
-                .map_err(|err| Error::Io(Box::new(err)))?;
+            file.read_exact(&mut buf)?;
             let page = Page::from_slice(&buf);
             if !page.is_meta() {
                 return Err(Unexpected("Database format unknown"));

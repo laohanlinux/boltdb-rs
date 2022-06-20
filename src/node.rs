@@ -278,6 +278,7 @@ impl Node {
     // Returns true if the node is less than a given size.
     // This is an optimization to avoid calculation a large node when we only need
     // to know if it fits inside a certain page size.
+    // TODO: add inodes size cache
     fn size_less_than(&self, v: usize) -> bool {
         let (mut sz, elsz) = (PAGE_HEADER_SIZE, self.page_element_size());
         self.0.inodes.borrow().iter().all(|node| {
@@ -479,7 +480,7 @@ impl Node {
         } else {
             page.flags |= BRANCH_PAGE_FLAG;
         }
-        info!(_page=log::kv::Value::from_debug(page); "write node page");
+        info!(_page=log::kv::Value::from_debug(page), inodes_size=self.0.inodes.borrow().len(); "write node page");
         let inodes = self.0.inodes.borrow_mut();
         // TODO: Why?
         if inodes.len() >= 0xFFFF {
@@ -501,7 +502,6 @@ impl Node {
         let pgid = page.id;
 
         for (i, item) in inodes.iter().enumerate() {
-            // debug!("write inode: {}", item.pg_id);
             assert!(!item.key.is_empty(), "write: zero-length inode key");
 
             // Write the page element.
@@ -518,7 +518,7 @@ impl Node {
                 element.pos = unsafe { b_ptr.sub(element_ptr as usize) } as u32;
                 element.k_size = item.key.len() as u32;
                 element.pgid = item.pg_id;
-                assert_eq!(element.pgid, pgid, "write: circular dependency occurred");
+                assert_ne!(element.pgid, pgid, "write: circular dependency occurred");
             }
 
             // If the length of key+value is larger than the max allocation size
@@ -561,6 +561,7 @@ impl Node {
         let page_size = self.bucket().unwrap().tx()?.db()?.page_size();
         {
             let mut children = self.0.children.borrow_mut().clone();
+            info!("child size: {}", children.len());
             children.sort_by(Node::cmp_by_key);
             for child in &mut *children {
                 child.spill()?;
@@ -573,11 +574,17 @@ impl Node {
             let mut nodes = match self.split(page_size)? {
                 None => vec![self.clone()],
                 Some(p) => {
+                    info!("found parent node: {}", p.pg_id());
                     node_parent = Some(p.clone());
                     p.0.children.borrow().clone()
                 }
             };
 
+            info!(
+                "after split node, size={}, pid={}",
+                nodes.len(),
+                self.pg_id()
+            );
             let bucket = self.bucket_mut().unwrap();
             let mut tx = bucket.tx()?;
             let db = tx.db()?;
@@ -612,11 +619,34 @@ impl Node {
                     node.write(page);
                     node.0.spilled.store(true, Ordering::Release);
                 }
+
+                // Insert into parent inodes.
+                if let Some(p) = node.parent() {
+                    let mut okey = node.0.key.borrow().clone();
+                    let nkey = node.0.inodes.borrow()[0].key.to_vec();
+                    // TODO: Why?, Fix ME
+                    if okey.is_empty() {
+                        okey = nkey.clone();
+                    }
+
+                    let pgid = *node.0.pgid.borrow();
+                    p.put(okey.as_slice(), &nkey, vec![], pgid, 0).unwrap();
+                    *node.0.key.borrow_mut() = nkey;
+                    assert!(
+                        !node.0.key.borrow().is_empty(),
+                        "spill: zero-length node key"
+                    );
+                }
+
+                tx.0.stats.lock().split += 1;
             }
         }
 
         // If the root node split and created a new root then we need to spill that
         // as well. We'll clear out the children to make sure it doesn't try to respill.
+        // eg: |a|b|c|d|e|f| --after split--> p0|a, d|, p1=|a|b|c|, p2 = |d|e|f|, p0 is a new
+        // parent, so p0 will be split, but p1, p2 don't need split again (`Note`: the current node
+        // will be replaced with new-parent node)
         {
             let spill_parent = match node_parent {
                 None => None,
@@ -651,6 +681,7 @@ impl Node {
         }
 
         if nodes.len() == 1 {
+            warn!("does not split node: {:?}", self.0.key);
             return Ok(None);
         }
 
@@ -677,6 +708,7 @@ impl Node {
                 for ch in &mut *parent.0.children.borrow_mut() {
                     *ch.0.parent.borrow_mut() = WeakNode::from(&parent);
                 }
+                debug!("generate a new parent and set collect with them");
                 Ok(Some(parent))
             }
         }

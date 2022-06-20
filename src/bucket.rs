@@ -6,8 +6,8 @@ use crate::page::{OwnedPage, BUCKET_LEAF_FLAG, LEAF_PAGE_ELEMENT_SIZE, PAGE_HEAD
 use crate::tx::{WeakTx, TX};
 use crate::{Page, PgId};
 use either::Either;
-use kv_log_macro::{debug, warn};
 use log::info;
+use log::{debug, warn};
 use std::cell::RefCell;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::HashMap;
@@ -295,7 +295,7 @@ impl Bucket {
                 .node()
                 .unwrap()
                 .put(key, key, value, 0, BUCKET_LEAF_FLAG)?;
-            kv_log_macro::info!("insert a new bucket into node", {nodes_sz: self.nodes.borrow().keys().len()});
+            info!(node_size = self.nodes.borrow().keys().len() ; "insert a new bucket into node");
             // TODO: why
             // since subbuckets are not allowed on inline buckets, we need to
             // dereference the inline page, if it exists. This will cause the bucket
@@ -630,7 +630,12 @@ impl Bucket {
 
     /// Writes all the nodes for this bucket to dirty pages.
     pub(crate) fn spill(&mut self) -> Result<()> {
-        debug!("ready to spill bucket");
+        let root_node = self
+            .root_node
+            .as_ref()
+            .map(|node| node.pg_id())
+            .unwrap_or(0);
+        debug!(local_bucket = self.local_bucket.root, root_node=root_node; "ready to spill bucket");
         let mutself = unsafe { &mut *(self as *mut Self) };
 
         // Spill all child buckets first.
@@ -684,6 +689,11 @@ impl Bucket {
                 .clone()
                 .ok_or(Error::Unexpected("root node empty"))?
                 .root();
+            info!(
+                "start to split node from root_node: {:?}, inodes: {}",
+                root_node.pg_id(),
+                root_node.0.inodes.borrow().len()
+            );
             root_node.spill()?;
             self.root_node = Some(root_node);
 

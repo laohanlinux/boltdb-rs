@@ -1,12 +1,12 @@
 use std::io;
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq)]
 pub enum Error {
     #[error("Invalid Configuration: {0}")]
     Config(String),
     #[error("IO error: {0}")]
-    Io(#[source] Box<io::Error>),
+    Io(String),
     #[error("Empty key")]
     EmptyKey,
     #[error("Key too large")]
@@ -93,7 +93,7 @@ pub enum Error {
 impl From<io::Error> for Error {
     #[inline]
     fn from(e: io::Error) -> Self {
-        Error::Io(Box::new(e))
+        Error::Io(e.kind().to_string())
     }
 }
 
@@ -101,16 +101,6 @@ impl From<&'static str> for Error {
     #[inline]
     fn from(s: &'static str) -> Self {
         Self::Unexpected(s)
-    }
-}
-
-// TODO: FIXME: implement
-impl PartialEq for Error {
-    fn eq(&self, other: &Self) -> bool {
-        match self {
-            Self::IncompatibleValue if Self::IncompatibleValue == *other => true,
-            _ => false,
-        }
     }
 }
 

@@ -6,7 +6,7 @@ use crate::tx::WeakTx;
 use crate::tx::{TxBuilder, TX};
 use crate::Page;
 use bitflags::_core::borrow::Borrow;
-use log::{info, kv::source::as_map, kv::Source};
+use log::{info, kv::source::as_map, kv::Source, Level};
 use rand::random;
 use std::borrow::BorrowMut;
 use std::cell::RefCell;
@@ -62,11 +62,13 @@ pub(crate) fn temp_file() -> PathBuf {
 #[cfg(test)]
 pub(crate) fn mock_json_log() {}
 
-
 #[cfg(test)]
-pub(crate) fn color_log_level<'a>(style: &'a mut env_logger::fmt::Style, level: log::Level ) -> env_logger::fmt::StyledValue<'a, &'static str> {
+pub(crate) fn color_log_level<'a>(
+    style: &'a mut env_logger::fmt::Style,
+    level: log::Level,
+) -> env_logger::fmt::StyledValue<'a, &'static str> {
     use env_logger::fmt::{Color, Style};
-    use log::{Level::Trace, Level::Warn, Level::Info, Level::Debug, Level::Error};
+    use log::{Level::Debug, Level::Error, Level::Info, Level::Trace, Level::Warn};
     match level {
         Trace => style.set_color(Color::Magenta).value("TRACE"),
         Warn => style.set_color(Color::Blue).value("WARN"),
@@ -96,11 +98,10 @@ pub(crate) fn mock_log() {
     }
 
     let env = Env::default()
-        .filter_or("MY_LOG_LEVEL", "debug")
+        .filter_or("MY_LOG_LEVEL", "error")
         .write_style_or("MY_LOG_STYLE", "always");
     let _ = env_logger::Builder::from_env(env)
         .format(|buf, record| {
-
             let mut l = JsonLog {
                 ts: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
                 module: record.file().unwrap_or("unknown").to_string()
@@ -120,6 +121,11 @@ pub(crate) fn mock_log() {
         .try_init();
     log::info!( is_ok = true; "start init log");
     // env_logger::try_init_from_env(env);
+}
+
+#[cfg(test)]
+pub(crate) fn mock_log_terminal() {
+    console_log::init_with_level(Level::Debug);
 }
 
 #[test]

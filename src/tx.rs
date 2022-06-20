@@ -918,7 +918,7 @@ impl<'a> DerefMut for RWTxGuard<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::db::DBBuilder;
+    use crate::db::{CheckMode, DBBuilder};
     use crate::error::{Error, Result};
     use crate::test_util::{mock_db, mock_tx};
     use crate::tx::{TxBuilder, TxInner, TX};
@@ -955,9 +955,10 @@ mod tests {
 
     #[test]
     fn commit_multiple() {
-        let n_commits = 5;
-        let n_values = 1000;
+        let n_commits = 1;
+        let n_values = 10000;
         let mut db = crate::test_util::mock_db2("tt.db".to_owned())
+            .set_check_mode(CheckMode::NO)
             .build()
             .unwrap();
         for i in 0..n_commits {

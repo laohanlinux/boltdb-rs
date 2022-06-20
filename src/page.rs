@@ -3,6 +3,7 @@ use crate::free_list::FreeList;
 use crate::must_align;
 use enumflags2::bitflags;
 use kv_log_macro::debug;
+use log::info;
 use log::kv::{ToValue, Value};
 use serde::{Deserialize, Serialize};
 use std::borrow::{Borrow, BorrowMut};
@@ -98,6 +99,7 @@ impl Page {
 
     // Retrieves the branch node by index.
     pub(crate) fn branch_page_element(&self, index: usize) -> &BranchPageElement {
+        debug!("index is {}", index);
         &self.branch_page_elements()[index]
     }
 
@@ -259,7 +261,6 @@ impl Page {
                 }
             }
             META_PAGE_FLAG => {
-                // TODO?
                 size += META_PAGE_SIZE;
             }
             FREE_LIST_PAGE_FLAG => {
