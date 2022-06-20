@@ -1166,7 +1166,8 @@ mod tests {
                 b"0123456701234567".to_vec(),
                 0,
                 0,
-            );
+            )
+            .expect("TODO: panic message");
         }
         let parent = n.split(4096).unwrap().unwrap();
 

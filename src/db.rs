@@ -395,10 +395,10 @@ impl<'a> DB {
                 db_tx.take().unwrap()
             };
 
-            unsafe {
-                log::info!(is_ok = tx.db().is_ok(); "free db rw_lock, has db ref");
-                self.0.rw_lock.raw().unlock();
-            }
+            //unsafe {
+            //    log::info!(is_ok = tx.db().is_ok(); "free db rw_lock, has db ref");
+            //    self.0.rw_lock.raw().unlock();
+            //}
             let mut stats = self.0.stats.write();
             stats.free_page_n = free_list_n;
             stats.pending_page_n = free_list_pending_n;
@@ -494,7 +494,7 @@ impl<'a> DB {
         {
             if let Some(free_list_pid) = self.0.free_list.write().allocate(count as usize) {
                 p.id = free_list_pid;
-                info!(
+                debug!(
                     "allocate memory from free cache, count: {}, tx: {}",
                     count,
                     tx.id()
@@ -515,7 +515,7 @@ impl<'a> DB {
 
         // Move the page id high watermark
         tx.set_pgid(tx.pgid() + count as u64)?;
-        info!(
+        debug!(
             "allocate new memory, pid:{}, count: {}, tx: {}",
             p.id,
             count,

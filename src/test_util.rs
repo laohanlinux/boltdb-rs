@@ -159,32 +159,28 @@ fn open_existing() {
 
 #[test]
 fn panic_while_update() {
-    use kv_log_macro::info;
     let mut db = mock_db().build().unwrap();
-
+    // create bucket
     db.update(|tx| {
-        info!("ready to create a bucket");
-        let _ = tx.create_bucket(b"bucket").unwrap();
-        info!("has created a new bucket");
+        tx.create_bucket(b"exists").unwrap();
         Ok(())
     })
     .unwrap();
+    // ensure bucket exits 
+    db.view(|tx|  {
+        assert!(tx.bucket(b"exists").is_ok());
+        Ok(()) 
+    });
+    // panicking
+    db.update(|tx| {
+       tx.create_bucket(b"not exists").unwrap();
+       panic!("oh shi!");
+    }).unwrap_err();
+    // ensure transaction wasn't committed
+    db.view(|tx| {
+        assert!(tx.bucket(b"exists").is_ok());
+        assert!(tx.bucket(b"not exists").is_err());
+        Ok(())
+    }).unwrap();
 }
 
-fn insert(h: &mut HashMap<i32, Vec<u8>>) -> *mut Page {
-    let mut v = vec![0u8; PAGE_HEADER_SIZE];
-    let page = unsafe { v.as_mut_ptr() as *mut Page };
-    h.insert(1, v);
-    page
-}
-
-#[test]
-fn double_ref() {
-    let mut h = HashMap::default();
-    let mut page = insert(&mut h);
-    let page = unsafe { &mut *page };
-    let v1 = h.get(&1).unwrap().clone();
-    page.id = 200;
-    let v2 = h.get(&1).unwrap().clone();
-    assert_ne!(v1, v2);
-}

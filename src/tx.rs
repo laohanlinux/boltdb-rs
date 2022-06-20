@@ -956,7 +956,7 @@ mod tests {
     #[test]
     fn commit_multiple() {
         let n_commits = 1;
-        let n_values = 10000;
+        let n_values = 50000;
         let mut db = crate::test_util::mock_db2("tt.db".to_owned())
             .set_check_mode(CheckMode::NO)
             .build()
