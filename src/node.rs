@@ -5,7 +5,7 @@ use crate::page::{
     BranchPageElement, LeafPageElement, PageFlag, BRANCH_PAGE_ELEMENT_SIZE, BRANCH_PAGE_FLAG,
     LEAF_PAGE_ELEMENT_SIZE, LEAF_PAGE_FLAG, MIN_KEYS_PER_PAGE, PAGE_HEADER_SIZE,
 };
-use crate::{bucket, search, Bucket, Page, PgId};
+use crate::{bucket, Bucket, Page, PgId};
 use kv_log_macro::{debug, warn};
 use log::info;
 use memoffset::ptr::copy_nonoverlapping;
@@ -80,10 +80,6 @@ impl WeakNode {
 pub(crate) struct Node(pub(crate) Rc<NodeInner>);
 
 impl Node {
-    pub(crate) fn new(bucket: Bucket, parent: &Node) -> Node {
-        unimplemented!()
-    }
-
     // Returns the top-level node this node is attached to.
     pub(crate) fn root(&self) -> Node {
         match self.parent() {
@@ -92,36 +88,36 @@ impl Node {
         }
     }
 
-    pub fn pg_id(&self) -> PgId {
+    pub(crate) fn pg_id(&self) -> PgId {
         self.0.pgid.borrow().clone()
     }
 
     /// Attempts to combine the node with sibling nodes if the node fill
     /// size is below a threshold or if there are not enough keys.
     /// The node will be reclaimed to free-list with freelist.free() after merge by it's sibling
-    pub fn rebalance(&mut self) {
+    pub(crate) fn rebalance(&mut self) {
+        // check rebalance
         {
-            let selfsize = self.size();
             if !self.0.unbalanced.load(Ordering::Acquire) {
                 warn!("need not to rebalance: {:?}", self.0.pgid);
                 return;
             }
             self.0.unbalanced.store(false, Ordering::Relaxed);
-
+            let selfsize = self.size();
             // updates stats and get threshold
             let threshold = {
-                let bucket = self.bucket_mut().unwrap();
-                let tx = bucket.tx().unwrap();
+                let tx = self.bucket_mut().unwrap().tx().unwrap();
                 tx.0.stats.lock().rebalance += 1;
                 tx.db().unwrap().page_size() / 4
             };
 
             if selfsize > threshold && self.0.inodes.borrow().len() > self.min_keys() as usize {
-                warn!("need not to rebalance: {:?}", self.0);
                 return;
             }
-            warn!("need to rebalance: {:?}", self.0);
-            // Root node has special handling
+        }
+
+        // Root node has special handling
+        {
             if self.parent().is_none() {
                 let mut inodes = self.0.inodes.borrow_mut();
                 if !self.is_leaf() && inodes.len() == 1 {
@@ -134,7 +130,7 @@ impl Node {
                     *self.0.children.borrow_mut() =
                         child.0.children.borrow_mut().drain(..).collect();
 
-                    // Reparent all child nodes being moved.
+                    // Rebalance all child nodes being moved.
                     {
                         let inode_pgids = inodes.iter().map(|i| i.pg_id);
                         let bucket = self.bucket_mut().unwrap();
@@ -157,7 +153,6 @@ impl Node {
                 return;
             }
         }
-        info!("free");
         // If node has no keys then just remove it.
         if self.num_children() == 0 {
             let key = self.0.key.borrow().clone();
@@ -295,7 +290,6 @@ impl Node {
         BRANCH_PAGE_ELEMENT_SIZE
     }
 
-    // TODO: why?
     // Returns the child node at a given index.
     pub(crate) fn child_at(&self, index: usize) -> Result<Node> {
         if self.is_leaf() {

@@ -10,7 +10,7 @@
 
 use crate::error::{Error, Result};
 use crate::node::{Node, WeakNode};
-use crate::page::{BUCKET_LEAF_FLAG, LEAF_PAGE_FLAG};
+use crate::page::{BRANCH_PAGE_FLAG, BUCKET_LEAF_FLAG, LEAF_PAGE_FLAG};
 use crate::{Bucket, Page, PgId};
 use either::Either;
 use kv_log_macro::{debug, info};
@@ -51,12 +51,8 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
     /// Recursively performs a binary search against a given page/node until it finds a given key.
     fn search(&self, key: &[u8], pg_id: PgId) -> Result<()> {
         let page_node = self.bucket().page_node(pg_id)?;
-        if let Either::Left(p) = page_node.upgrade() {
-            match p.flags {
-                BRANCH_PAGE_FLAG => (),
-                LEAF_PAGE_FLAG => (),
-                _ => panic!("invalid page type: {}: {}", p.id, p.flags),
-            };
+        if let Either::Left(p) = page_node.upgrade() && p.flags != BRANCH_PAGE_FLAG && p.flags != LEAF_PAGE_FLAG{
+            panic!("invalid page type: {}: {}", p.id, p.flags)
         }
         let elem_ref = ElemRef {
             el: page_node,
