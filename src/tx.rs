@@ -1,8 +1,8 @@
 use crate::cursor::Cursor;
 use crate::db::{CheckMode, Meta, WeakDB, DB};
 use crate::error::Error::Unexpected;
-use crate::page::FREE_LIST_PAGE_FLAG;
-use crate::page::{OwnedPage, META_PAGE_FLAG};
+use crate::page::OwnedPage;
+use crate::page::PageFlag;
 use crate::{error::Error, error::Result, Bucket, Page, PageInfo, PgId};
 use log::{debug, info, warn};
 use parking_lot::lock_api::MutexGuard;
@@ -248,7 +248,7 @@ impl TX {
                 .ok_or("cannot obtain file write access")?;
         let mut written = 0;
         let mut page = OwnedPage::new(page_size);
-        page.flags = META_PAGE_FLAG;
+        page.flags = PageFlag::Meta;
 
         // first page
         {
@@ -526,10 +526,7 @@ impl TX {
                 reachable.insert(id, true);
             }
 
-            let page_type_is_valid = matches!(
-                p.flags,
-                crate::page::BRANCH_PAGE_FLAG | crate::page::LEAF_PAGE_FLAG
-            );
+            let page_type_is_valid = matches!(p.flags, PageFlag::Branch | PageFlag::Leaf);
             if freed.contains_key(&p.id) {
                 ch.send(format!("page {}: reachable freed", p.id)).unwrap();
             } else if !page_type_is_valid {
@@ -639,14 +636,14 @@ impl TX {
         let p = db.page(id as u64);
         let mut info = PageInfo {
             id: id as u64,
-            typ: FREE_LIST_PAGE_FLAG,
+            typ: PageFlag::FreeList.bits(),
             count: p.count as usize,
             over_flow_count: p.over_flow as usize,
         };
 
         // Determine the type (or if it's free).
         if !db.0.free_list.try_read().unwrap().freed(&(id as u64)) {
-            info.typ = p.flags;
+            info.typ = p.flags.bits();
         }
 
         Ok(Some(info))

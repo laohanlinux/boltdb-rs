@@ -3,8 +3,8 @@ use crate::error::Error;
 use crate::error::Error::{DBOpFailed, DatabaseGone, DatabaseOnlyRead, Unexpected};
 use crate::error::Result;
 use crate::free_list::FreeList;
-use crate::page::OwnedPage;
-use crate::page::{FREE_LIST_PAGE_FLAG, LEAF_PAGE_FLAG, META_PAGE_FLAG, META_PAGE_SIZE};
+use crate::page::META_PAGE_SIZE;
+use crate::page::{OwnedPage, PageFlag};
 use crate::tx::{RWTxGuard, TxBuilder, TxGuard, TX};
 use crate::{Bucket, Page, PgId, TxId};
 use bitflags::bitflags;
@@ -601,7 +601,7 @@ impl<'a> DB {
         (0..=1).for_each(|i| {
             let mut p = self.page_in_buffer(&mut buf, i);
             p.id = i;
-            p.flags = META_PAGE_FLAG;
+            p.flags = PageFlag::Meta;
             let m = p.meta_mut();
             m.magic = MAGIC;
             m.version = VERSION as u32;
@@ -619,12 +619,12 @@ impl<'a> DB {
         // init free list page.
         let mut page = self.page_in_buffer(&mut buf, 2);
         page.id = 2;
-        page.flags = FREE_LIST_PAGE_FLAG;
+        page.flags = PageFlag::FreeList;
         debug!("succeed to init free list page");
         // init root page
         let mut page = self.page_in_buffer(&mut buf, 3);
         page.id = 3;
-        page.flags = LEAF_PAGE_FLAG;
+        page.flags = PageFlag::Leaf;
         debug!("succeed to init root page");
         self.write_at(0, std::io::Cursor::new(&mut buf));
         self.sync()?;

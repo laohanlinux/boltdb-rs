@@ -2,8 +2,8 @@ use crate::bucket::{MAX_FILL_PERCENT, MIN_FILL_PERCENT};
 use crate::error::Error::BucketEmpty;
 use crate::error::{Error, Result};
 use crate::page::{
-    BranchPageElement, LeafPageElement, PageFlag, BRANCH_PAGE_ELEMENT_SIZE, BRANCH_PAGE_FLAG,
-    LEAF_PAGE_ELEMENT_SIZE, LEAF_PAGE_FLAG, MIN_KEYS_PER_PAGE, PAGE_HEADER_SIZE,
+    BranchPageElement, LeafPageElement, PageFlag, BRANCH_PAGE_ELEMENT_SIZE, LEAF_PAGE_ELEMENT_SIZE,
+    MIN_KEYS_PER_PAGE, PAGE_HEADER_SIZE,
 };
 use crate::{bucket, Bucket, Page, PgId};
 use kv_log_macro::{debug, warn};
@@ -430,7 +430,7 @@ impl Node {
         *self.0.pgid.borrow_mut() = page.id;
         self.0
             .is_leaf
-            .store(matches!(page.flags, LEAF_PAGE_FLAG), Ordering::Release);
+            .store(matches!(page.flags, PageFlag::Leaf), Ordering::Release);
         let mut inodes = Vec::<Inode>::with_capacity(page.count as usize);
         let is_leaf = self.is_leaf();
 
@@ -470,9 +470,9 @@ impl Node {
     pub(crate) fn write(&self, page: &mut Page) {
         // Initialize page.
         if self.is_leaf() {
-            page.flags |= LEAF_PAGE_FLAG;
+            page.flags |= PageFlag::Leaf;
         } else {
-            page.flags |= BRANCH_PAGE_FLAG;
+            page.flags |= PageFlag::Branch;
         }
         info!(_page=log::kv::Value::from_debug(page), inodes_size=self.0.inodes.borrow().len(); "write node page");
         let inodes = self.0.inodes.borrow_mut();
@@ -935,6 +935,7 @@ impl Inodes {
 }
 #[cfg(test)]
 mod tests {
+    use crate::page::PageFlag;
     use std::sync::atomic::Ordering;
     use std::{
         mem::size_of,
@@ -944,7 +945,7 @@ mod tests {
     use crate::node::Node;
     use crate::test_util::mock_log;
     use crate::{
-        page::{LeafPageElement, OwnedPage, LEAF_PAGE_FLAG},
+        page::{LeafPageElement, OwnedPage},
         test_util::{mock_bucket, mock_node, mock_tx},
         tx::WeakTx,
     };
@@ -977,7 +978,7 @@ mod tests {
             let mut page = OwnedPage::new(1024);
             page.id = 1;
             page.over_flow = 0;
-            page.flags = LEAF_PAGE_FLAG;
+            page.flags = PageFlag::Leaf;
             page.count = 2;
             page
         };
@@ -1031,13 +1032,19 @@ mod tests {
         let bucket = mock_bucket(WeakTx::from(&tx));
         let mut n = mock_node(&bucket);
         n.0.is_leaf.store(true, Ordering::Release);
-        n.put(b"susy", b"susy", b"que".to_vec(), 0, LEAF_PAGE_FLAG as u32);
+        n.put(
+            b"susy",
+            b"susy",
+            b"que".to_vec(),
+            0,
+            PageFlag::Leaf.bits() as u32,
+        );
         n.put(
             b"ricki",
             b"ricki",
             b"lake".to_vec(),
             0,
-            LEAF_PAGE_FLAG as u32,
+            PageFlag::Leaf.bits() as u32,
         );
 
         n.put(
@@ -1045,14 +1052,14 @@ mod tests {
             b"john",
             b"johnson".to_vec(),
             0,
-            LEAF_PAGE_FLAG as u32,
+            PageFlag::Leaf.bits() as u32,
         );
 
         let mut page = {
             let mut page = OwnedPage::new(4096);
             page.id = 1;
             page.over_flow = 0;
-            page.flags = LEAF_PAGE_FLAG;
+            page.flags = PageFlag::Leaf;
             page
         };
         n.write(&mut page);

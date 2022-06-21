@@ -1,6 +1,6 @@
 use kv_log_macro::debug;
 
-use crate::page::{Page, PgId, PgIds, FREE_LIST_PAGE_FLAG, PAGE_HEADER_SIZE};
+use crate::page::{Page, PageFlag, PgId, PgIds, PAGE_HEADER_SIZE};
 use crate::tx::TxId;
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
@@ -86,7 +86,7 @@ impl FreeList {
                 // and just adjust the existing slice. This will use extra memory
                 // temporarily but the append() in the free() will realloc the slice
                 // as is necessary.
-                let drain = self.ids.drain(i + 1 -n ..=i);
+                let drain = self.ids.drain(i + 1 - n..=i);
                 // Remove from the free cache
                 for id in drain {
                     self.cache.remove(&id);
@@ -191,10 +191,10 @@ impl FreeList {
         // Combine the old free PgIds and PgIds waiting on an open transaction.
         let pgid = page.id;
         defer_lite::defer! {
-            kv_log_macro::info!("succeed to write free list info into a new page: {}", pgid);
+            log::info!(pid=pgid; "succeed to write free list info into a new page");
         }
         // Update the header flag.
-        page.flags |= FREE_LIST_PAGE_FLAG;
+        page.flags = PageFlag::FreeList;
 
         // The page.count can only hold up to 16k elements so if we overflow that
         // number then we handle it by putting the size in the first element.
@@ -259,7 +259,7 @@ impl FreeList {
 #[cfg(test)]
 mod tests {
     use crate::free_list::FreeList;
-    use crate::page::FREE_LIST_PAGE_FLAG;
+    use crate::page::PageFlag;
     use crate::{Page, PgIds};
     use rand::rngs::ThreadRng;
     use rand::Rng;
@@ -356,7 +356,7 @@ mod tests {
         // Crate a page
         let buf = &mut [0; 4096];
         let mut page = Page::from_slice_mut(buf);
-        page.flags = FREE_LIST_PAGE_FLAG;
+        page.flags = PageFlag::FreeList;
         page.count = 2;
 
         // Insert 2 page ids.
