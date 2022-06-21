@@ -19,22 +19,28 @@ use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
 
 pub(crate) const PAGE_HEADER_SIZE: usize = size_of::<Page>();
 pub(crate) const MIN_KEYS_PER_PAGE: usize = 2;
-pub(crate) const BRANCH_PAGE_ELEMENT_SIZE: usize = size_of::<BranchPageElement>();
 pub(crate) const LEAF_PAGE_ELEMENT_SIZE: usize = size_of::<LeafPageElement>();
 pub(crate) const META_PAGE_SIZE: usize = size_of::<Meta>();
+
+bitflags! {
+    pub struct ElementSize: usize {
+        const Branch = size_of::<BranchPageElement>();
+        const Leaf = size_of::<LeafPageElement>();
+    }
+}
 
 bitflags! {
     /// Defines type of the page
     #[derive(Serialize, Deserialize)]
     pub struct PageFlag: u16 {
         /// Either branch or bucket page
-        const Branch = 0b00001;
+        const Branch = 0x01;
         /// Leaf page
-        const Leaf = 0b00010;
+        const Leaf = 0x02;
         /// Meta page
-        const Meta = 0b00100;
+        const Meta = 0x04;
         /// Freelist page
-        const FreeList = 0b10000;
+        const FreeList = 0x10;
     }
 }
 
@@ -267,7 +273,7 @@ impl Page {
                 let len = branch.len();
                 if len > 0 {
                     let last_branch = branch.last().unwrap();
-                    size += (len - 1) * BRANCH_PAGE_ELEMENT_SIZE;
+                    size += (len - 1) * ElementSize::Branch.bits();
                     size += (last_branch.pos + last_branch.k_size) as usize;
                 }
             }
@@ -276,7 +282,7 @@ impl Page {
                 let len = leaves.len();
                 if len > 0 {
                     let last_leaf = leaves.last().unwrap();
-                    size += (len - 1) * LEAF_PAGE_ELEMENT_SIZE;
+                    size += (len - 1) * ElementSize::Leaf.bits();
                     size += (last_leaf.pos + last_leaf.k_size + last_leaf.v_size) as usize;
                 }
             }
@@ -696,6 +702,6 @@ fn t_to_owned() {
     /// Note: Very interesting
     assert_eq!(
         owned.page.len(),
-        PAGE_HEADER_SIZE + LEAF_PAGE_ELEMENT_SIZE + 23 + 10 + 3
+        PAGE_HEADER_SIZE + ElementSize::Leaf.bits() + 23 + 10 + 3
     );
 }

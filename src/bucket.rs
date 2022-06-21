@@ -2,7 +2,9 @@ use crate::cursor::{Cursor, PageNode};
 use crate::db::{Stats, DB};
 use crate::error::{Error, Result};
 use crate::node::{Node, NodeBuilder, WeakNode};
-use crate::page::{OwnedPage, BUCKET_LEAF_FLAG, LEAF_PAGE_ELEMENT_SIZE, PAGE_HEADER_SIZE};
+use crate::page::{
+    ElementSize, OwnedPage, BUCKET_LEAF_FLAG, LEAF_PAGE_ELEMENT_SIZE, PAGE_HEADER_SIZE,
+};
 use crate::tx::{WeakTx, TX};
 use crate::{Page, PgId};
 use either::Either;
@@ -712,7 +714,7 @@ impl Bucket {
                 return false;
             }
 
-            size += LEAF_PAGE_ELEMENT_SIZE + inode.key.len() + inode.value.len();
+            size += ElementSize::Leaf.bits() + inode.key.len() + inode.value.len();
             if size > self.max_inline_bucket_size() {
                 return false;
             }

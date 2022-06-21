@@ -2,7 +2,7 @@ use crate::bucket::{MAX_FILL_PERCENT, MIN_FILL_PERCENT};
 use crate::error::Error::BucketEmpty;
 use crate::error::{Error, Result};
 use crate::page::{
-    BranchPageElement, LeafPageElement, PageFlag, BRANCH_PAGE_ELEMENT_SIZE, LEAF_PAGE_ELEMENT_SIZE,
+    BranchPageElement, ElementSize, LeafPageElement, PageFlag, LEAF_PAGE_ELEMENT_SIZE,
     MIN_KEYS_PER_PAGE, PAGE_HEADER_SIZE,
 };
 use crate::{bucket, Bucket, Page, PgId};
@@ -285,9 +285,10 @@ impl Node {
     // Returns the size of each page element based on type of node.
     fn page_element_size(&self) -> usize {
         if self.is_leaf() {
-            return LEAF_PAGE_ELEMENT_SIZE;
+            ElementSize::Leaf.bits()
+        } else {
+            ElementSize::Branch.bits()
         }
-        BRANCH_PAGE_ELEMENT_SIZE
     }
 
     // Returns the child node at a given index.
