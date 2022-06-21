@@ -6,8 +6,7 @@ use crate::page::{OwnedPage, BUCKET_LEAF_FLAG, LEAF_PAGE_ELEMENT_SIZE, PAGE_HEAD
 use crate::tx::{WeakTx, TX};
 use crate::{Page, PgId};
 use either::Either;
-use log::info;
-use log::{debug, warn};
+use log::{debug, info, warn};
 use std::cell::RefCell;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::HashMap;
@@ -77,29 +76,6 @@ pub struct Bucket {
     // This is non-persisted across transactions so it must be set in every Tx.
     pub(crate) fill_percent: f64,
 }
-
-// impl Debug for Bucket {
-//     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-//         // let tx = self.tx();
-//         f.debug_struct("Bucket")
-//             .field("bucket", &self.local_bucket)
-//             // .field("tx", &tx)
-//             .field("buckets", &self.buckets)
-//             .field("page", &self.page.as_ref())
-//             .field("root_node", &self.root_node)
-//             .field("nodes", &self.nodes.borrow())
-//             .field("fill_percent", &self.fill_percent)
-//             .finish()
-//     }
-// }
-
-impl PartialEq for Bucket {
-    fn eq(&self, _other: &Self) -> bool {
-        unimplemented!()
-    }
-}
-
-impl Eq for Bucket {}
 
 impl Bucket {
     pub(crate) fn new(tx: WeakTx) -> Self {
@@ -228,10 +204,8 @@ impl Bucket {
             }
             // TODO: when happen
             if let Some(ref node) = self.root_node {
-                // debug!("return a inline root_node");
                 return Ok(PageNode::from(node.clone()));
             }
-            debug!("return a inline root page");
             return Ok(PageNode::from(
                 &**self.page.as_ref().ok_or("page empty")? as *const Page
             ));
