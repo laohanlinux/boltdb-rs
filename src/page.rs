@@ -1,11 +1,9 @@
 use crate::db::Meta;
 use crate::free_list::FreeList;
 use crate::must_align;
-// use enumflags2::{bitflags, BitFlags};
 use bitflags::bitflags;
-use kv_log_macro::debug;
-use log::info;
 use log::kv::{ToValue, Value};
+use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use std::borrow::{Borrow, BorrowMut};
 use std::fmt;
@@ -19,7 +17,6 @@ use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
 
 pub(crate) const PAGE_HEADER_SIZE: usize = size_of::<Page>();
 pub(crate) const MIN_KEYS_PER_PAGE: usize = 2;
-pub(crate) const LEAF_PAGE_ELEMENT_SIZE: usize = size_of::<LeafPageElement>();
 pub(crate) const META_PAGE_SIZE: usize = size_of::<Meta>();
 
 bitflags! {
@@ -312,16 +309,16 @@ impl ToOwned for Page {
 
 impl Display for Page {
     fn fmt(&self, f: &mut Formatter<'_>) -> ::std::fmt::Result {
-        if (self.flags & PageFlag::Branch).bits() != 0 {
+        if (self.flags & PageFlag::Branch).bits != 0 {
             write!(f, "branch")
-        } else if (self.flags & PageFlag::Leaf).bits() != 0 {
+        } else if (self.flags & PageFlag::Leaf).bits != 0 {
             write!(f, "leaf")
-        } else if (self.flags & PageFlag::Meta).bits() != 0 {
+        } else if (self.flags & PageFlag::Meta).bits != 0 {
             write!(f, "meta")
-        } else if (self.flags & PageFlag::FreeList).bits() != 0 {
+        } else if (self.flags & PageFlag::FreeList).bits != 0 {
             write!(f, "freelist")
         } else {
-            write!(f, "unknown<{:0x}>", self.flags.bits())
+            write!(f, "unknown<{:0x}>", self.flags.bits)
         }
     }
 }

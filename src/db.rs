@@ -10,7 +10,7 @@ use crate::{Bucket, Page, PgId, TxId};
 use bitflags::bitflags;
 use fnv::FnvHasher;
 use fs2::FileExt;
-use kv_log_macro::{debug, info};
+use log::{debug, info};
 use parking_lot::lock_api::{RawMutex, RawRwLock};
 use parking_lot::{MappedMutexGuard, MappedRwLockReadGuard};
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
@@ -396,7 +396,7 @@ impl<'a> DB {
             };
 
             unsafe {
-                log::info!(is_ok = tx.db().is_ok(); "free db rw_lock, has db ref");
+                // log::info!(is_ok = tx.db().is_ok(); "free db rw_lock, has db ref");
                 self.0.rw_lock.raw().unlock();
             }
             let mut stats = self.0.stats.write();
@@ -633,7 +633,7 @@ impl<'a> DB {
     }
 
     pub(crate) fn write_at<T: Read>(&mut self, pos: u64, mut buf: T) -> Result<()> {
-        defer_lite::defer! {kv_log_macro::info!("succeed to write db disk, pos: {}", pos);}
+        defer_lite::defer! {log::debug!("succeed to write db disk, pos: {}", pos);}
         let mut file = self.0.file.write();
         file.seek(SeekFrom::Start(pos))
             .map_err(|_| Unexpected("Can't seek to position"))?;

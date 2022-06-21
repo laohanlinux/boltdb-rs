@@ -13,7 +13,7 @@ use crate::node::{Node, WeakNode};
 use crate::page::{PageFlag, BUCKET_LEAF_FLAG};
 use crate::{Bucket, Page, PgId};
 use either::Either;
-use kv_log_macro::{debug, info};
+use log::{debug, info};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::marker::PhantomData;

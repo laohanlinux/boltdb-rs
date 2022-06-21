@@ -98,7 +98,7 @@ pub(crate) fn mock_log() {
     }
 
     let env = Env::default()
-        .filter_or("MY_LOG_LEVEL", "error")
+        .filter_or("MY_LOG_LEVEL", "info")
         .write_style_or("MY_LOG_STYLE", "always");
     let _ = env_logger::Builder::from_env(env)
         .format(|buf, record| {
@@ -166,21 +166,22 @@ fn panic_while_update() {
         Ok(())
     })
     .unwrap();
-    // ensure bucket exits 
-    db.view(|tx|  {
+    // ensure bucket exits
+    db.view(|tx| {
         assert!(tx.bucket(b"exists").is_ok());
-        Ok(()) 
+        Ok(())
     });
     // panicking
     db.update(|tx| {
-       tx.create_bucket(b"not exists").unwrap();
-       panic!("oh shi!");
-    }).unwrap_err();
+        tx.create_bucket(b"not exists").unwrap();
+        panic!("oh shi!");
+    })
+    .unwrap_err();
     // ensure transaction wasn't committed
     db.view(|tx| {
         assert!(tx.bucket(b"exists").is_ok());
         assert!(tx.bucket(b"not exists").is_err());
         Ok(())
-    }).unwrap();
+    })
+    .unwrap();
 }
-

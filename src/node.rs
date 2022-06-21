@@ -2,12 +2,10 @@ use crate::bucket::{MAX_FILL_PERCENT, MIN_FILL_PERCENT};
 use crate::error::Error::BucketEmpty;
 use crate::error::{Error, Result};
 use crate::page::{
-    BranchPageElement, ElementSize, LeafPageElement, PageFlag, LEAF_PAGE_ELEMENT_SIZE,
-    MIN_KEYS_PER_PAGE, PAGE_HEADER_SIZE,
+    BranchPageElement, ElementSize, LeafPageElement, PageFlag, MIN_KEYS_PER_PAGE, PAGE_HEADER_SIZE,
 };
 use crate::{bucket, Bucket, Page, PgId};
-use kv_log_macro::{debug, warn};
-use log::info;
+use log::{debug, info, warn};
 use memoffset::ptr::copy_nonoverlapping;
 use std::borrow::{Borrow, BorrowMut};
 use std::cell::{Cell, Ref, RefCell, RefMut};
@@ -99,7 +97,7 @@ impl Node {
         // check rebalance
         {
             if !self.0.unbalanced.load(Ordering::Acquire) {
-                warn!("need not to rebalance: {:?}", self.0.pgid);
+                // warn!("need not to rebalance: {:?}", self.0.pgid);
                 return;
             }
             self.0.unbalanced.store(false, Ordering::Relaxed);
@@ -475,7 +473,7 @@ impl Node {
         } else {
             page.flags |= PageFlag::Branch;
         }
-        info!(_page=log::kv::Value::from_debug(page), inodes_size=self.0.inodes.borrow().len(); "write node page");
+        // info!(_page=log::kv::Value::from_debug(page), inodes_size=self.0.inodes.borrow().len(); "write node page");
         let inodes = self.0.inodes.borrow_mut();
         // TODO: Why?
         if inodes.len() >= 0xFFFF {
@@ -556,7 +554,6 @@ impl Node {
         let page_size = self.bucket().unwrap().tx()?.db()?.page_size();
         {
             let mut children = self.0.children.borrow_mut().clone();
-            info!("child size: {}", children.len());
             children.sort_by(Node::cmp_by_key);
             for child in &mut *children {
                 child.spill()?;
@@ -569,17 +566,17 @@ impl Node {
             let mut nodes = match self.split(page_size)? {
                 None => vec![self.clone()],
                 Some(p) => {
-                    info!("found parent node: {}", p.pg_id());
+                    // info!("found parent node: {}", p.pg_id());
                     node_parent = Some(p.clone());
                     p.0.children.borrow().clone()
                 }
             };
 
-            info!(
-                "after split node, size={}, pid={}",
-                nodes.len(),
-                self.pg_id()
-            );
+            // info!(
+            //     "after split node, size={}, pid={}",
+            //     nodes.len(),
+            //     self.pg_id()
+            // );
             let bucket = self.bucket_mut().unwrap();
             let mut tx = bucket.tx()?;
             let db = tx.db()?;
@@ -676,7 +673,7 @@ impl Node {
         }
 
         if nodes.len() == 1 {
-            warn!("does not split node: {:?}", self.0.key);
+            // warn!("does not split node: {:?}", self.0.key);
             return Ok(None);
         }
 
@@ -703,7 +700,7 @@ impl Node {
                 for ch in &mut *parent.0.children.borrow_mut() {
                     *ch.0.parent.borrow_mut() = WeakNode::from(&parent);
                 }
-                debug!("generate a new parent and set collect with them");
+                // debug!("generate a new parent and set collect with them");
                 Ok(Some(parent))
             }
         }

@@ -4,7 +4,7 @@ use crate::error::Error::Unexpected;
 use crate::page::OwnedPage;
 use crate::page::PageFlag;
 use crate::{error::Error, error::Result, Bucket, Page, PageInfo, PgId};
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use parking_lot::lock_api::MutexGuard;
 use parking_lot::{
     MappedRwLockReadGuard, MappedRwLockWriteGuard, Mutex, RawMutex, RawRwLock, RwLock,
@@ -387,7 +387,7 @@ impl TX {
             if self.0.check.swap(false, Ordering::AcqRel) {
                 let strict = db.0.check_mode.contains(CheckMode::STRICT);
                 if let Err(e) = self.check_sync() {
-                    kv_log_macro::error!("failed to check sync, {:?}", e);
+                    error!("failed to check sync, {:?}", e);
                     if strict {
                         self.rollback()?;
                         return Err(e);
@@ -433,7 +433,7 @@ impl TX {
     }
 
     pub(crate) fn __rollback(&self) -> Result<()> {
-        kv_log_macro::debug!("ready to __rollback");
+        debug!("ready to __rollback");
         let db = self.db()?;
         if self.0.check.swap(false, Ordering::AcqRel) {
             let strict = db.0.check_mode.contains(CheckMode::STRICT);
@@ -463,7 +463,7 @@ impl TX {
     /// In case of checking thread panic will also return Error
     pub fn check_sync(&self) -> Result<()> {
         defer_lite::defer! {
-            kv_log_macro::info!("succeed to check sync");
+            info!("succeed to check sync");
         }
         let (sender, ch) = mpsc::channel::<String>();
         let tx = self.clone();
@@ -507,7 +507,7 @@ impl TX {
         let b_root = b.local_bucket.root;
         let is_inline_page = b.page.is_some();
         defer_lite::defer! {
-            kv_log_macro::debug!("succeed to check bucket: {}, inline: {}", b_root, is_inline_page);
+            debug!("succeed to check bucket: {}, inline: {}", b_root, is_inline_page);
         }
         if b.local_bucket.root == 0 {
             return;
@@ -582,7 +582,7 @@ impl TX {
             })
             .collect::<Vec<_>>();
         pages.sort_by(|a, b| a.0.cmp(&b.0));
-        kv_log_macro::debug!("ready to write dirty pages: {:?}", pages);
+        debug!("ready to write dirty pages: {:?}", pages);
         let mut db = self.db()?;
         let page_size = db.page_size();
         for (id, p) in &pages {
