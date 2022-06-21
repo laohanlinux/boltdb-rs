@@ -99,6 +99,7 @@ impl Node {
         // check rebalance
         {
             if !self.0.unbalanced.load(Ordering::Acquire) {
+                warn!("need not to rebalance: {:?}", self.0.pgid);
                 return;
             }
             self.0.unbalanced.store(false, Ordering::Relaxed);

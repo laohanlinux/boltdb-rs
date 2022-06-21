@@ -204,8 +204,10 @@ impl Bucket {
             }
             // TODO: when happen
             if let Some(ref node) = self.root_node {
+                // debug!("return a inline root_node");
                 return Ok(PageNode::from(node.clone()));
             }
+            debug!("return a inline root page");
             return Ok(PageNode::from(
                 &**self.page.as_ref().ok_or("page empty")? as *const Page
             ));
