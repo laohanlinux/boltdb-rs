@@ -1,21 +1,23 @@
 use crate::bucket::TopBucket;
-use crate::error::Error;
-use crate::error::Error::{DBOpFailed, DatabaseGone, DatabaseOnlyRead, Unexpected};
+use crate::error::Error::{DBOpFailed, DatabaseGone, DatabaseOnlyRead, Unexpected, Unexpected2};
 use crate::error::Result;
+use crate::error::{is_valid_error, Error};
 use crate::free_list::FreeList;
-use crate::page::OwnedPage;
-use crate::page::{FREE_LIST_PAGE_FLAG, LEAF_PAGE_FLAG, META_PAGE_FLAG, META_PAGE_SIZE};
+use crate::page::META_PAGE_SIZE;
+use crate::page::{OwnedPage, PageFlag};
 use crate::tx::{RWTxGuard, TxBuilder, TxGuard, TX};
 use crate::{Bucket, Page, PgId, TxId};
 use bitflags::bitflags;
 use fnv::FnvHasher;
 use fs2::FileExt;
-use kv_log_macro::{debug, info};
+use log::{debug, error, info};
 use parking_lot::lock_api::{RawMutex, RawRwLock};
 use parking_lot::{MappedMutexGuard, MappedRwLockReadGuard};
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
+use std::fmt::format;
 use std::fs::{File, OpenOptions, Permissions};
 use std::hash::Hasher;
+use std::io::ErrorKind::Uncategorized;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::ops::AddAssign;
 use std::path::{Path, PathBuf};
@@ -124,7 +126,7 @@ impl<'a> DB {
         let needs_initialization = (!std::path::Path::new(path.as_ref().unwrap()).exists())
             || file.metadata().map_err(|_| "Can't read metadata")?.len() == 0;
         if needs_initialization {
-            debug!("need to initialize a new db");
+            info!("need to initialize a new db");
         }
 
         // Lock file that other process using Bolt in read-write mode cannot
@@ -153,10 +155,15 @@ impl<'a> DB {
             }
             page.meta().page_size as usize
         };
-        debug!("page size is {}", page_size);
+        info!("page size is {}", page_size);
         // initialize the database if it doesn't exist.
-        file.allocate(page_size as u64 * 4)
-            .map_err(|_| Unexpected("Cannot allocate 4 required pages"))?;
+        if let Err(err) = file.allocate(page_size as u64 * 4) {
+            if !is_valid_error(err) {
+                return Err(Unexpected2(format!(
+                    "Cannot allocate 4 required pages, error",
+                )));
+            }
+        }
         let mmap = unsafe {
             memmap::MmapOptions::new()
                 .offset(0)
@@ -396,7 +403,7 @@ impl<'a> DB {
             };
 
             unsafe {
-                log::info!(is_ok = tx.db().is_ok(); "free db rw_lock, has db ref");
+                // log::info!(is_ok = tx.db().is_ok(); "free db rw_lock, has db ref");
                 self.0.rw_lock.raw().unlock();
             }
             let mut stats = self.0.stats.write();
@@ -556,9 +563,11 @@ impl<'a> DB {
         }
 
         let mut mmap_size = self.0.mmap_size.lock();
-        file.get_ref()
-            .allocate(size)
-            .map_err(|_| Error::Unexpected("can't allocate space"))?;
+        if let Err(err) = file.get_ref().allocate(size) {
+            if !is_valid_error(err) {
+                return Err(Unexpected2(format!("failed to allocate mmap size")));
+            }
+        }
 
         // TODO: madvise
         let mut mmap_opts = memmap::MmapOptions::new();
@@ -601,7 +610,7 @@ impl<'a> DB {
         (0..=1).for_each(|i| {
             let mut p = self.page_in_buffer(&mut buf, i);
             p.id = i;
-            p.flags = META_PAGE_FLAG;
+            p.flags = PageFlag::Meta;
             let m = p.meta_mut();
             m.magic = MAGIC;
             m.version = VERSION as u32;
@@ -619,12 +628,12 @@ impl<'a> DB {
         // init free list page.
         let mut page = self.page_in_buffer(&mut buf, 2);
         page.id = 2;
-        page.flags = FREE_LIST_PAGE_FLAG;
+        page.flags = PageFlag::FreeList;
         debug!("succeed to init free list page");
         // init root page
         let mut page = self.page_in_buffer(&mut buf, 3);
         page.id = 3;
-        page.flags = LEAF_PAGE_FLAG;
+        page.flags = PageFlag::Leaf;
         debug!("succeed to init root page");
         self.write_at(0, std::io::Cursor::new(&mut buf));
         self.sync()?;
@@ -633,7 +642,7 @@ impl<'a> DB {
     }
 
     pub(crate) fn write_at<T: Read>(&mut self, pos: u64, mut buf: T) -> Result<()> {
-        defer_lite::defer! {kv_log_macro::info!("succeed to write db disk, pos: {}", pos);}
+        defer_lite::defer! {log::debug!("succeed to write db disk, pos: {}", pos);}
         let mut file = self.0.file.write();
         file.seek(SeekFrom::Start(pos))
             .map_err(|_| Unexpected("Can't seek to position"))?;

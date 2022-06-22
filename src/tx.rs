@@ -1,10 +1,10 @@
 use crate::cursor::Cursor;
 use crate::db::{CheckMode, Meta, WeakDB, DB};
 use crate::error::Error::Unexpected;
-use crate::page::FREE_LIST_PAGE_FLAG;
-use crate::page::{OwnedPage, META_PAGE_FLAG};
+use crate::page::OwnedPage;
+use crate::page::PageFlag;
 use crate::{error::Error, error::Result, Bucket, Page, PageInfo, PgId};
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use parking_lot::lock_api::MutexGuard;
 use parking_lot::{
     MappedRwLockReadGuard, MappedRwLockWriteGuard, Mutex, RawMutex, RawRwLock, RwLock,
@@ -248,7 +248,7 @@ impl TX {
                 .ok_or("cannot obtain file write access")?;
         let mut written = 0;
         let mut page = OwnedPage::new(page_size);
-        page.flags = META_PAGE_FLAG;
+        page.flags = PageFlag::Meta;
 
         // first page
         {
@@ -387,7 +387,7 @@ impl TX {
             if self.0.check.swap(false, Ordering::AcqRel) {
                 let strict = db.0.check_mode.contains(CheckMode::STRICT);
                 if let Err(e) = self.check_sync() {
-                    kv_log_macro::error!("failed to check sync, {:?}", e);
+                    error!("failed to check sync, {:?}", e);
                     if strict {
                         self.rollback()?;
                         return Err(e);
@@ -433,7 +433,7 @@ impl TX {
     }
 
     pub(crate) fn __rollback(&self) -> Result<()> {
-        kv_log_macro::debug!("ready to __rollback");
+        debug!("ready to __rollback");
         let db = self.db()?;
         if self.0.check.swap(false, Ordering::AcqRel) {
             let strict = db.0.check_mode.contains(CheckMode::STRICT);
@@ -463,7 +463,7 @@ impl TX {
     /// In case of checking thread panic will also return Error
     pub fn check_sync(&self) -> Result<()> {
         defer_lite::defer! {
-            kv_log_macro::info!("succeed to check sync");
+            info!("succeed to check sync");
         }
         let (sender, ch) = mpsc::channel::<String>();
         let tx = self.clone();
@@ -507,7 +507,7 @@ impl TX {
         let b_root = b.local_bucket.root;
         let is_inline_page = b.page.is_some();
         defer_lite::defer! {
-            kv_log_macro::debug!("succeed to check bucket: {}, inline: {}", b_root, is_inline_page);
+            debug!("succeed to check bucket: {}, inline: {}", b_root, is_inline_page);
         }
         if b.local_bucket.root == 0 {
             return;
@@ -526,10 +526,7 @@ impl TX {
                 reachable.insert(id, true);
             }
 
-            let page_type_is_valid = matches!(
-                p.flags,
-                crate::page::BRANCH_PAGE_FLAG | crate::page::LEAF_PAGE_FLAG
-            );
+            let page_type_is_valid = matches!(p.flags, PageFlag::Branch | PageFlag::Leaf);
             if freed.contains_key(&p.id) {
                 ch.send(format!("page {}: reachable freed", p.id)).unwrap();
             } else if !page_type_is_valid {
@@ -585,7 +582,7 @@ impl TX {
             })
             .collect::<Vec<_>>();
         pages.sort_by(|a, b| a.0.cmp(&b.0));
-        kv_log_macro::debug!("ready to write dirty pages: {:?}", pages);
+        debug!("ready to write dirty pages: {:?}", pages);
         let mut db = self.db()?;
         let page_size = db.page_size();
         for (id, p) in &pages {
@@ -639,14 +636,14 @@ impl TX {
         let p = db.page(id as u64);
         let mut info = PageInfo {
             id: id as u64,
-            typ: FREE_LIST_PAGE_FLAG,
+            typ: PageFlag::FreeList.bits(),
             count: p.count as usize,
             over_flow_count: p.over_flow as usize,
         };
 
         // Determine the type (or if it's free).
         if !db.0.free_list.try_read().unwrap().freed(&(id as u64)) {
-            info.typ = p.flags;
+            info.typ = p.flags.bits();
         }
 
         Ok(Some(info))
@@ -920,7 +917,7 @@ impl<'a> DerefMut for RWTxGuard<'a> {
 mod tests {
     use crate::db::{CheckMode, DBBuilder};
     use crate::error::{Error, Result};
-    use crate::test_util::{mock_db, mock_tx};
+    use crate::test_util::{mock_db, mock_log, mock_tx};
     use crate::tx::{TxBuilder, TxInner, TX};
     use log::info;
     use std::io::Read;
@@ -1135,6 +1132,7 @@ mod tests {
 
     #[test]
     fn check_corrupted() {
+        mock_log();
         let db = DBBuilder::new("./test_data/remark_fail.db")
             .set_read_only(true)
             .build()

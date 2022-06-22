@@ -1,4 +1,5 @@
 use std::io;
+use std::io::ErrorKind::Uncategorized;
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq)]
@@ -105,3 +106,7 @@ impl From<&'static str> for Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+pub(crate) fn is_valid_error(err: std::io::Error) -> bool {
+    err.kind() == Uncategorized && err.to_string() == "Success (os error 0)"
+}

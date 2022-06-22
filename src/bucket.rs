@@ -2,7 +2,7 @@ use crate::cursor::{Cursor, PageNode};
 use crate::db::{Stats, DB};
 use crate::error::{Error, Result};
 use crate::node::{Node, NodeBuilder, WeakNode};
-use crate::page::{OwnedPage, BUCKET_LEAF_FLAG, LEAF_PAGE_ELEMENT_SIZE, PAGE_HEADER_SIZE};
+use crate::page::{ElementSize, OwnedPage, BUCKET_LEAF_FLAG, PAGE_HEADER_SIZE};
 use crate::tx::{WeakTx, TX};
 use crate::{Page, PgId};
 use either::Either;
@@ -18,11 +18,6 @@ use std::sync::Weak;
 const MAX_KEY_SIZE: usize = 32768;
 /// The maximum length of a value, in bytes.
 const MAX_VALUE_SIZE: usize = (1 << 31) - 2;
-
-const MAX_UINT: u64 = 0;
-const MIN_UINT: u64 = 0;
-const MAX_INT: i64 = 0;
-const MIN_INT: i64 = 0;
 
 pub(crate) const MIN_FILL_PERCENT: f64 = 0.1;
 pub(crate) const MAX_FILL_PERCENT: f64 = 1.0;
@@ -46,12 +41,6 @@ pub struct TopBucket {
 
 impl TopBucket {
     pub(crate) const SIZE: usize = std::mem::size_of::<Self>();
-    pub(crate) fn new() -> TopBucket {
-        TopBucket {
-            root: 0,
-            sequence: 0,
-        }
-    }
 }
 
 /// Bucket represents a collection of key/value pairs inside the database.
@@ -138,7 +127,7 @@ impl Bucket {
     /// Attempts to balance all nodes
     pub(crate) fn rebalance(&mut self) {
         let pid = self.local_bucket.root;
-        info!(
+        debug!(
             "ready to rebalance bucket, pid:{}, nodes:{}, buckets: {}",
             pid,
             self.nodes.borrow().len(),
@@ -665,11 +654,11 @@ impl Bucket {
                 .clone()
                 .ok_or(Error::Unexpected("root node empty"))?
                 .root();
-            info!(
-                "start to split node from root_node: {:?}, inodes: {}",
-                root_node.pg_id(),
-                root_node.0.inodes.borrow().len()
-            );
+            // info!(
+            //     "start to split node from root_node: {:?}, inodes: {}",
+            //     root_node.pg_id(),
+            //     root_node.0.inodes.borrow().len()
+            // );
             root_node.spill()?;
             self.root_node = Some(root_node);
 
@@ -690,12 +679,12 @@ impl Bucket {
     /// and if it contains no subbuckets. Otherwise returns false.
     fn inlineable(&self) -> bool {
         let can_inlineable = self.__inlineable();
-        kv_log_macro::info!(
-            "bucket(root_node: {:?}) can inlineable: {}",
-            self.local_bucket,
-            // self.root_node,
-            can_inlineable
-        );
+        // info!(
+        //     "bucket(root_node: {:?}) can inlineable: {}",
+        //     self.local_bucket,
+        //     // self.root_node,
+        //     can_inlineable
+        // );
         can_inlineable
     }
 
@@ -712,7 +701,7 @@ impl Bucket {
                 return false;
             }
 
-            size += LEAF_PAGE_ELEMENT_SIZE + inode.key.len() + inode.value.len();
+            size += ElementSize::Leaf.bits() + inode.key.len() + inode.value.len();
             if size > self.max_inline_bucket_size() {
                 return false;
             }
@@ -753,12 +742,12 @@ impl Bucket {
                 c
             }
         };
-        info!(
-            "loader a bucket {:?}, root: {:?}, root_node: {}",
-            String::from_utf8_lossy(name),
-            bucket.local_bucket,
-            bucket.root_node.is_some()
-        );
+        // info!(
+        //     "loader a bucket {:?}, root: {:?}, root_node: {}",
+        //     String::from_utf8_lossy(name),
+        //     bucket.local_bucket,
+        //     bucket.root_node.is_some()
+        // );
         Some(bucket)
     }
 }

@@ -10,10 +10,10 @@
 
 use crate::error::{Error, Result};
 use crate::node::{Node, WeakNode};
-use crate::page::{BRANCH_PAGE_FLAG, BUCKET_LEAF_FLAG, LEAF_PAGE_FLAG};
+use crate::page::{PageFlag, BUCKET_LEAF_FLAG};
 use crate::{Bucket, Page, PgId};
 use either::Either;
-use kv_log_macro::{debug, info};
+use log::{debug, info};
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::marker::PhantomData;
@@ -51,7 +51,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
     /// Recursively performs a binary search against a given page/node until it finds a given key.
     fn search(&self, key: &[u8], pg_id: PgId) -> Result<()> {
         let page_node = self.bucket().page_node(pg_id)?;
-        if let Either::Left(p) = page_node.upgrade() && p.flags != BRANCH_PAGE_FLAG && p.flags != LEAF_PAGE_FLAG{
+        if let Either::Left(p) = page_node.upgrade() && p.flags != PageFlag::Branch && p.flags != PageFlag::Leaf{
             panic!("invalid page type: {}: {}", p.id, p.flags)
         }
         let elem_ref = ElemRef {
@@ -570,7 +570,7 @@ impl PageNode {
 
     pub(crate) fn is_leaf(&self) -> bool {
         match self.0 {
-            Either::Left(_) => self.get_page().flags == LEAF_PAGE_FLAG,
+            Either::Left(_) => self.get_page().flags == PageFlag::Leaf,
             Either::Right(ref n) => n.is_leaf(),
         }
     }

@@ -2,6 +2,7 @@
 #![feature(drain_filter)]
 #![feature(test)]
 #![feature(let_chains)]
+#![feature(io_error_uncategorized)]
 
 use std::mem::align_of;
 
