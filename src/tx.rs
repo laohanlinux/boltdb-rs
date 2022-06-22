@@ -917,7 +917,7 @@ impl<'a> DerefMut for RWTxGuard<'a> {
 mod tests {
     use crate::db::{CheckMode, DBBuilder};
     use crate::error::{Error, Result};
-    use crate::test_util::{mock_db, mock_tx};
+    use crate::test_util::{mock_db, mock_log, mock_tx};
     use crate::tx::{TxBuilder, TxInner, TX};
     use log::info;
     use std::io::Read;
@@ -1132,6 +1132,7 @@ mod tests {
 
     #[test]
     fn check_corrupted() {
+        mock_log();
         let db = DBBuilder::new("./test_data/remark_fail.db")
             .set_read_only(true)
             .build()

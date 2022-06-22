@@ -1,7 +1,7 @@
 use crate::bucket::TopBucket;
-use crate::error::Error;
-use crate::error::Error::{DBOpFailed, DatabaseGone, DatabaseOnlyRead, Unexpected};
+use crate::error::Error::{DBOpFailed, DatabaseGone, DatabaseOnlyRead, Unexpected, Unexpected2};
 use crate::error::Result;
+use crate::error::{is_valid_error, Error};
 use crate::free_list::FreeList;
 use crate::page::META_PAGE_SIZE;
 use crate::page::{OwnedPage, PageFlag};
@@ -10,12 +10,14 @@ use crate::{Bucket, Page, PgId, TxId};
 use bitflags::bitflags;
 use fnv::FnvHasher;
 use fs2::FileExt;
-use log::{debug, info};
+use log::{debug, error, info};
 use parking_lot::lock_api::{RawMutex, RawRwLock};
 use parking_lot::{MappedMutexGuard, MappedRwLockReadGuard};
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
+use std::fmt::format;
 use std::fs::{File, OpenOptions, Permissions};
 use std::hash::Hasher;
+use std::io::ErrorKind::Uncategorized;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::ops::AddAssign;
 use std::path::{Path, PathBuf};
@@ -124,7 +126,7 @@ impl<'a> DB {
         let needs_initialization = (!std::path::Path::new(path.as_ref().unwrap()).exists())
             || file.metadata().map_err(|_| "Can't read metadata")?.len() == 0;
         if needs_initialization {
-            debug!("need to initialize a new db");
+            info!("need to initialize a new db");
         }
 
         // Lock file that other process using Bolt in read-write mode cannot
@@ -153,10 +155,15 @@ impl<'a> DB {
             }
             page.meta().page_size as usize
         };
-        debug!("page size is {}", page_size);
+        info!("page size is {}", page_size);
         // initialize the database if it doesn't exist.
-        file.allocate(page_size as u64 * 4)
-            .map_err(|_| Unexpected("Cannot allocate 4 required pages"))?;
+        if let Err(err) = file.allocate(page_size as u64 * 4) {
+            if !is_valid_error(err) {
+                return Err(Unexpected2(format!(
+                    "Cannot allocate 4 required pages, error",
+                )));
+            }
+        }
         let mmap = unsafe {
             memmap::MmapOptions::new()
                 .offset(0)
@@ -556,9 +563,11 @@ impl<'a> DB {
         }
 
         let mut mmap_size = self.0.mmap_size.lock();
-        file.get_ref()
-            .allocate(size)
-            .map_err(|_| Error::Unexpected("can't allocate space"))?;
+        if let Err(err) = file.get_ref().allocate(size) {
+            if !is_valid_error(err) {
+                return Err(Unexpected2(format!("failed to allocate mmap size")));
+            }
+        }
 
         // TODO: madvise
         let mut mmap_opts = memmap::MmapOptions::new();
