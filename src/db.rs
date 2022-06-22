@@ -158,9 +158,10 @@ impl<'a> DB {
         info!("page size is {}", page_size);
         // initialize the database if it doesn't exist.
         if let Err(err) = file.allocate(page_size as u64 * 4) {
-            if !is_valid_error(err) {
+            if !is_valid_error(&err) {
                 return Err(Unexpected2(format!(
-                    "Cannot allocate 4 required pages, error",
+                    "Cannot allocate 4 required pages, error: {}",
+                    err.to_string()
                 )));
             }
         }
@@ -564,8 +565,11 @@ impl<'a> DB {
 
         let mut mmap_size = self.0.mmap_size.lock();
         if let Err(err) = file.get_ref().allocate(size) {
-            if !is_valid_error(err) {
-                return Err(Unexpected2(format!("failed to allocate mmap size")));
+            if !is_valid_error(&err) {
+                return Err(Unexpected2(format!(
+                    "failed to allocate mmap size, error: {}",
+                    err.to_string()
+                )));
             }
         }
 
