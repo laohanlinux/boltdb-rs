@@ -10,6 +10,7 @@ use parking_lot::{
     MappedRwLockReadGuard, MappedRwLockWriteGuard, Mutex, RawMutex, RawRwLock, RwLock,
     RwLockReadGuard, RwLockWriteGuard,
 };
+use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::fs::OpenOptions;
@@ -459,7 +460,6 @@ impl TX {
     }
 
     /// Sync version of check()
-    ///
     /// In case of checking thread panic will also return Error
     pub fn check_sync(&self) -> Result<()> {
         defer_lite::defer! {
@@ -473,8 +473,8 @@ impl TX {
         for err in ch {
             errs.push(err)
         }
-        if handle.join().is_err() {
-            errs.push("check thread panicked".to_owned());
+        if let Err(err) = handle.join() {
+            errs.push("check thread panicked:".to_owned() + &*format!("{:?}", err));
         }
         if !errs.is_empty() {
             return Err(Error::CheckFailed(errs.join("|")));
@@ -706,15 +706,15 @@ impl TX {
             reachable.insert(freelist_pgid + u64::from(i), true);
         }
 
-        // check bucekt
-        self.check_bucket(
-            &self.0.root.try_read().unwrap(),
-            &mut reachable,
-            &freed,
-            &ch,
-        );
+        // check bucket
+        if let Some(bucket) = self.0.root.try_read() {
+            self.check_bucket(&bucket, &mut reachable, &freed, &ch);
+        } else {
+            warn!("must free bucket lock");
+            return;
+        }
 
-        // check page from 0 to hight watermask
+        // check page from 0 to high watermask
         // every page must be found at freed or reachable
         for i in 0..self.0.meta.try_read().unwrap().pg_id {
             let is_reachable = reachable.contains_key(&i);
@@ -733,10 +733,10 @@ impl Drop for TX {
         if count > 2 {
             return;
         }
-        let trace_id = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        // let trace_id = SystemTime::now()
+        //     .duration_since(UNIX_EPOCH)
+        //     .unwrap()
+        //     .as_nanos();
         // warn!(
         //     "tx count reference has to {}, trace-id: {}",
         //     count, trace_id

@@ -31,9 +31,6 @@ use std::time::Duration;
 /// The largest step that can be token when remapping the mman.
 pub const MAX_MMAP_STEP: u64 = 1 << 30; //1GB
 
-/// Represents the largest mmap size supported by the Bolt
-pub const MAX_MMAP_SIZE: u64 = 0xFFFFFFFFFFFF; // 256T
-
 /// The data file format version.
 pub const VERSION: usize = 2;
 
@@ -666,7 +663,7 @@ impl<'a> DB {
         }
 
         // Verify the requested size is not above the maximum allowed.
-        if size > MAX_MMAP_SIZE {
+        if size > crate::os::MAX_MMAP_SIZE {
             return Err("mmap too large".into());
         }
 
@@ -684,8 +681,8 @@ impl<'a> DB {
         }
 
         // If we've exceeded the max size then only grow up to the max size.
-        if size > MAX_MMAP_SIZE {
-            size = MAX_MMAP_SIZE;
+        if size > crate::os::MAX_MMAP_SIZE {
+            size = crate::os::MAX_MMAP_SIZE;
         }
         Ok(size)
     }

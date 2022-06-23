@@ -213,8 +213,10 @@ impl Bucket {
 
     pub fn clear(&mut self) {
         debug!("close bucket");
-        self.buckets.borrow_mut().clear();
-        self.nodes.borrow_mut().clear();
+        self.buckets
+            .try_borrow_mut()
+            .map(|mut bucket| bucket.clear());
+        self.nodes.try_borrow_mut().map(|mut nodes| nodes.clear());
         self.page = None;
         self.root_node = None;
     }
@@ -756,7 +758,9 @@ impl Bucket {
 mod tests {
     use crate::error::Error;
     use crate::error::Error::IncompatibleValue;
-    use crate::test_util::mock_db;
+    use crate::test_util::{mock_db, mock_log};
+    use byteordered::byteorder::{BigEndian, WriteBytesExt};
+    use log::info;
 
     #[test]
     fn create() {
@@ -849,5 +853,76 @@ mod tests {
             assert_eq!(bucket.delete(b"stan").unwrap_err(), IncompatibleValue);
         }
         tx.commit().unwrap();
+    }
+
+    #[test]
+    fn put_repeat() {
+        let mut db = mock_db().build().unwrap();
+        db.update(|tx| {
+            {
+                let mut bucket = tx.create_bucket(b"widgets").unwrap();
+                bucket.put(b"foo", b"bar".to_vec()).unwrap();
+                bucket.put(b"foo", b"bar".to_vec()).unwrap();
+            }
+            let value = tx.bucket(b"widgets").unwrap().get(b"foo").unwrap().to_vec();
+            assert_eq!(value, Vec::from("bar"));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn put_large() {
+        let mut db = mock_db().build().unwrap();
+        let count = 100;
+        let factor = 200;
+        let ok = db.update(|tx| {
+            let mut bucket = tx.create_bucket(b"widgets").unwrap();
+            for i in 1..count {
+                let key = [0].repeat(i * factor);
+                let value = [0].repeat((count - i) * factor);
+                let ok = bucket.put(&key, value);
+                assert!(ok.is_ok());
+            }
+
+            Ok(())
+        });
+        assert!(ok.is_ok());
+    }
+
+    // #[test]
+    // fn put_very_large() {
+    //     let mut db = mock_db().build().unwrap();
+    //     let k_size = 8;
+    //     let v_value = 500;
+    //     let (n, batch_n) = (400000, 200000);
+    //
+    //     for i in (0..n).step_by(batch_n) {
+    //         db.update(|tx| {
+    //             let mut bucket = tx.create_bucket_if_not_exists(b"widgets").unwrap();
+    //             for j in 0..batch_n {
+    //                 let mut key = [0].repeat(k_size);
+    //                 let mut value = [0].repeat(v_value);
+    //                 key.write_u32::<BigEndian>((i + j) as u32).unwrap();
+    //                 let ok = bucket.put(&key, value);
+    //                 assert!(ok.is_ok());
+    //             }
+    //             Ok(())
+    //         });
+    //     }
+    // }
+
+    #[test]
+    fn put_close() {
+        let mut db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+
+        {
+            let bucket = tx.create_bucket(b"widgets").unwrap();
+        }
+
+        info!("start to roll back");
+        tx.rollback().unwrap();
+        info!("end to roll back");
     }
 }
