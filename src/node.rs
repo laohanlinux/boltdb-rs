@@ -385,7 +385,7 @@ impl Node {
 
     // Inserts a key/value.
     pub(crate) fn put(
-        &self,
+        &mut self,
         old_key: &[u8],
         new_key: &[u8],
         value: Value,
@@ -613,7 +613,7 @@ impl Node {
                 }
 
                 // Insert into parent inodes.
-                if let Some(p) = node.parent() {
+                if let Some(mut p) = node.parent() {
                     let mut okey = node.0.key.borrow().clone();
                     let nkey = node.0.inodes.borrow()[0].key.to_vec();
                     // TODO: Why?, Fix ME
