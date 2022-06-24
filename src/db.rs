@@ -3,10 +3,10 @@ use crate::error::Error::{DBOpFailed, DatabaseGone, DatabaseOnlyRead, Unexpected
 use crate::error::Result;
 use crate::error::{is_valid_error, Error};
 use crate::free_list::FreeList;
-use crate::page::META_PAGE_SIZE;
-use crate::page::{OwnedPage, PageFlag};
+use crate::page::{OwnedPage, Page, PageFlag};
+use crate::page::{PgId, META_PAGE_SIZE};
 use crate::tx::{RWTxGuard, TxBuilder, TxGuard, TX};
-use crate::{Bucket, Page, PgId, TxId};
+use crate::{Bucket, TxId};
 use bitflags::bitflags;
 use fnv::FnvHasher;
 use fs2::FileExt;
@@ -274,7 +274,7 @@ impl<'a> DB {
     /// If a long running read transaction (for example, a snapshot transaction) is
     /// needed, you might want to set DBBuilder.init_mmap_size to a large enough value
     /// to avoid potential blocking of write transasction.
-    pub fn begin_rw_tx(&mut self) -> Result<RWTxGuard> {
+    pub fn begin_rw_tx(&self) -> Result<RWTxGuard> {
         if self.read_only() {
             return Err(DatabaseOnlyRead);
         };
@@ -315,10 +315,7 @@ impl<'a> DB {
     }
 
     /// shorthand for db.begin_rw_tx with addditional guagrantee for panic safery
-    pub fn update<'b>(
-        &mut self,
-        mut handler: impl FnMut(&mut TX) -> Result<()> + 'b,
-    ) -> Result<()> {
+    pub fn update<'b>(&self, mut handler: impl FnMut(&mut TX) -> Result<()> + 'b) -> Result<()> {
         use std::panic::{catch_unwind, AssertUnwindSafe};
         let mut tx = scopeguard::guard(self.begin_rw_tx()?, |mut tx| {
             let db_exists = tx.db().is_ok();
@@ -426,7 +423,7 @@ impl<'a> DB {
         }
     }
 
-    pub(crate) fn sync(&mut self) -> Result<()> {
+    pub(crate) fn sync(&self) -> Result<()> {
         self.0
             .file
             .write()
@@ -438,7 +435,7 @@ impl<'a> DB {
         self.0.stats.read().clone()
     }
 
-    pub(crate) fn page_size(&self) -> usize {
+    pub fn page_size(&self) -> usize {
         self.0.page_size
     }
 
@@ -456,13 +453,6 @@ impl<'a> DB {
         let pos = id as usize * page_size as usize;
         let mmap = self.0.mmap.read_recursive();
         RwLockReadGuard::map(mmap, |mmap| Page::from_slice(&mmap.as_ref()[pos..]))
-    }
-
-    fn page_in_buffer<'b>(&'a self, buf: &'b mut [u8], id: PgId) -> &'b mut Page {
-        let page_size = self.0.page_size as usize;
-        let pos = id as usize * page_size;
-        let end_pos = pos + page_size;
-        Page::from_slice_mut(&mut buf[pos..end_pos])
     }
 
     /// Retrieves the current meta page reference
@@ -488,6 +478,15 @@ impl<'a> DB {
         // This should never be reached, because both meta1 and meta0 were validated
         // on mmap() and we do fsync() on every write.
         panic!("invalid meta pages")
+    }
+}
+
+impl<'a> DB {
+    fn page_in_buffer<'b>(&'a self, buf: &'b mut [u8], id: PgId) -> &'b mut Page {
+        let page_size = self.0.page_size as usize;
+        let pos = id as usize * page_size;
+        let end_pos = pos + page_size;
+        Page::from_slice_mut(&mut buf[pos..end_pos])
     }
 
     pub(crate) fn allocate(&mut self, count: u64, tx: &mut TX) -> Result<OwnedPage> {

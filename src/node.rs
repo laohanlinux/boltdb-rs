@@ -2,9 +2,10 @@ use crate::bucket::{MAX_FILL_PERCENT, MIN_FILL_PERCENT};
 use crate::error::Error::BucketEmpty;
 use crate::error::{Error, Result};
 use crate::page::{
-    BranchPageElement, ElementSize, LeafPageElement, PageFlag, MIN_KEYS_PER_PAGE, PAGE_HEADER_SIZE,
+    BranchPageElement, ElementSize, LeafPageElement, Page, PageFlag, PgId, MIN_KEYS_PER_PAGE,
+    PAGE_HEADER_SIZE,
 };
-use crate::{bucket, Bucket, Page, PgId};
+use crate::Bucket;
 use log::{debug, info, warn};
 use memoffset::ptr::copy_nonoverlapping;
 use std::borrow::{Borrow, BorrowMut};
@@ -158,7 +159,7 @@ impl Node {
             let mut parent = self.parent().unwrap();
             parent.del(&key);
             parent.remove_child(self);
-            self.bucket_mut().unwrap().nodes.borrow_mut().remove(&pgid);
+            self.bucket().unwrap().nodes.borrow_mut().remove(&pgid);
             self.free();
             parent.rebalance();
             return;
@@ -535,12 +536,15 @@ impl Node {
     // Removes a node from the list of in-memory children.
     // This dose not affect the inodes.
     fn remove_child(&self, target: &Node) {
-        self.0
+        let idx = self
+            .0
             .children
             .borrow()
             .iter()
-            .position(|c| Rc::ptr_eq(&target.0, &c.0))
-            .map(|idx| self.0.children.borrow_mut().remove(idx));
+            .position(|c| Rc::ptr_eq(&target.0, &c.0));
+        if let Some(idx) = idx {
+            self.0.children.borrow_mut().remove(idx);
+        }
     }
 
     /// Writes the nodes to dirty pages and splits nodes as it goes.

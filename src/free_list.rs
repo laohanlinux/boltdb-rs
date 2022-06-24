@@ -259,8 +259,7 @@ impl FreeList {
 #[cfg(test)]
 mod tests {
     use crate::free_list::FreeList;
-    use crate::page::PageFlag;
-    use crate::{Page, PgIds};
+    use crate::page::{Page, PageFlag, PgIds};
     use rand::rngs::ThreadRng;
     use rand::Rng;
     use test::Bencher;

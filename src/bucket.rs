@@ -2,9 +2,8 @@ use crate::cursor::{Cursor, PageNode};
 use crate::db::{Stats, DB};
 use crate::error::{Error, Result};
 use crate::node::{Node, NodeBuilder, WeakNode};
-use crate::page::{ElementSize, OwnedPage, BUCKET_LEAF_FLAG, PAGE_HEADER_SIZE};
+use crate::page::{ElementSize, OwnedPage, Page, PgId, BUCKET_LEAF_FLAG, PAGE_HEADER_SIZE};
 use crate::tx::{WeakTx, TX};
-use crate::{Page, PgId};
 use either::Either;
 use log::{debug, info, warn};
 use std::cell::RefCell;
@@ -262,7 +261,7 @@ impl Bucket {
     /// Removes a key from the bucket.
     /// If the key does not exist then nothing is done.
     /// Returns the error if the bucket was created from a read-only transaction.
-    pub fn delete(&mut self, key: &[u8]) -> Result<()> {
+    pub fn delete(&self, key: &[u8]) -> Result<()> {
         if self.tx()?.db().is_err() {
             return Err(Error::TxClosed);
         }
@@ -920,9 +919,53 @@ mod tests {
         {
             let bucket = tx.create_bucket(b"widgets").unwrap();
         }
-        // tx.commit().unwrap();
-        info!("start to roll back");
         tx.rollback().unwrap();
-        info!("end to roll back");
+    }
+
+    #[test]
+    fn bucket_delete() {
+        let mut db = mock_db().build().unwrap();
+        db.update(|tx| {
+            let mut bucket = tx.create_bucket(b"widgets").unwrap();
+            bucket.put(b"foo", b"bar".to_vec()).unwrap();
+            bucket.delete(b"foo").unwrap();
+            let ok = bucket.get(b"foo");
+            assert!(ok.is_none());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn bucket_delete_large() {
+        let mut db = mock_db().build().unwrap();
+        db.update(|tx| {
+            let mut bucket = tx.create_bucket(b"widgets").unwrap();
+            for i in 0..100 {
+                let value = vec![0; 1024];
+                bucket.put(format!("{}", i).as_bytes(), value).unwrap();
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        db.update(|tx| {
+            let mut bucket = tx.bucket_mut(b"widgets").unwrap();
+            for i in 0..100 {
+                bucket.delete(format!("{}", i).as_bytes()).unwrap();
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        db.view(|tx| {
+            let bucket = tx.bucket(b"widgets").unwrap();
+            for i in 0..100 {
+                let value = bucket.get(format!("{}", i).as_bytes());
+                assert!(value.is_none());
+            }
+            Ok(())
+        })
+        .unwrap();
     }
 }

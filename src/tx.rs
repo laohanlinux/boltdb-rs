@@ -1,9 +1,9 @@
 use crate::cursor::Cursor;
 use crate::db::{CheckMode, Meta, WeakDB, DB};
 use crate::error::Error::Unexpected;
-use crate::page::OwnedPage;
-use crate::page::PageFlag;
-use crate::{error::Error, error::Result, Bucket, Page, PageInfo, PgId};
+use crate::page::{OwnedPage, PageInfo, PgId};
+use crate::page::{Page, PageFlag};
+use crate::{error::Error, error::Result, Bucket};
 use log::{debug, error, info, warn};
 use parking_lot::lock_api::MutexGuard;
 use parking_lot::{
