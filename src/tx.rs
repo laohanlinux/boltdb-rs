@@ -305,7 +305,7 @@ impl TX {
     /// Returns None if the bucket does not exist.
     /// The bucket instance is only valid for the lifetime of the transaction.
     /// *NOTE* avoid commit cycle reference, caller cannot see it.
-    pub(crate) fn bucket(&self, key: &[u8]) -> Result<MappedRwLockReadGuard<Bucket>> {
+    pub fn bucket(&self, key: &[u8]) -> Result<MappedRwLockReadGuard<Bucket>> {
         let bucket = self.0.root.try_read().ok_or("can't acquire bucket")?;
         RwLockReadGuard::try_map(bucket, |b| b.bucket(key))
             .map_err(|_| Error::Unexpected("can't get bucket"))
@@ -313,7 +313,6 @@ impl TX {
 
     /// Closes transaction (so subsequent user of it will resolve in error)
     pub(crate) fn close(&self) -> Result<()> {
-        log::info!(strong_count = Arc::strong_count(&self.0); "close transaction");
         let db = self.db()?;
         let tx = db.remove_tx(self)?;
         *tx.0.db.write() = WeakDB::new();
@@ -335,7 +334,9 @@ impl TX {
         {
             let start_time = SystemTime::now();
             // rebalance
-            self.0.root.try_write().unwrap().rebalance();
+            {
+                self.0.root.try_write().unwrap().rebalance();
+            }
             let mut stats = self.0.stats.lock();
             if stats.rebalance > 0 {
                 stats.rebalance_time += SystemTime::now()

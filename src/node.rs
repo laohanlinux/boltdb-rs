@@ -29,6 +29,7 @@ pub(crate) struct NodeInner {
     // Just for inner mut
     spilled: AtomicBool,
     unbalanced: AtomicBool,
+    pub(crate) recycled: AtomicBool,
     key: RefCell<Key>,   // be set to inodes[0].key when inodes is not empty
     pgid: RefCell<PgId>, // be set to 0 when node is leaf node
     parent: RefCell<WeakNode>,
@@ -94,7 +95,7 @@ impl Node {
     /// Attempts to combine the node with sibling nodes if the node fill
     /// size is below a threshold or if there are not enough keys.
     /// The node will be reclaimed to free-list with freelist.free() after merge by it's sibling
-    pub(crate) fn rebalance(&mut self) {
+    pub(crate) fn rebalance(&self) {
         // check rebalance
         {
             if !self.0.unbalanced.load(Ordering::Acquire) {
@@ -154,12 +155,14 @@ impl Node {
         }
         // If node has no keys then just remove it.
         if self.num_children() == 0 {
+            self.0.recycled.store(true, Ordering::Relaxed);
             let key = self.0.key.borrow().clone();
+            info!("zero children node, key: {}", String::from_utf8_lossy(&key));
             let pgid = *self.0.pgid.borrow();
             let mut parent = self.parent().unwrap();
             parent.del(&key);
             parent.remove_child(self);
-            self.bucket().unwrap().nodes.borrow_mut().remove(&pgid);
+            // self.bucket_mut().unwrap().nodes.borrow_mut().remove(&pgid);
             self.free();
             parent.rebalance();
             return;
@@ -795,7 +798,7 @@ impl Node {
     }
 
     // Adds the node's underlying `page` to the freelist.
-    pub(crate) fn free(&mut self) {
+    pub(crate) fn free(&self) {
         if *self.0.pgid.borrow() == 0 {
             return;
         }
@@ -861,6 +864,7 @@ impl NodeBuilder {
             is_leaf: AtomicBool::new(self.is_leaf),
             spilled: AtomicBool::new(false),
             unbalanced: AtomicBool::new(false),
+            recycled: AtomicBool::new(false),
             key: RefCell::new(vec![]),
             pgid: RefCell::new(self.pg_id),
             parent: RefCell::new(self.parent),

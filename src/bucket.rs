@@ -11,6 +11,7 @@ use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::intrinsics::copy_nonoverlapping;
+use std::sync::atomic::Ordering;
 use std::sync::Weak;
 
 /// The maximum length of a key, in bytes.
@@ -274,7 +275,7 @@ impl Bucket {
         if item.is_bucket() {
             return Err(Error::IncompatibleValue);
         }
-        info!("it should be not happen");
+        // info!("it should be not happen");
         c.node().unwrap().del(key);
         Ok(())
     }
@@ -373,15 +374,24 @@ impl Bucket {
     /// Attempts to balance all nodes
     pub(crate) fn rebalance(&mut self) {
         let pid = self.local_bucket.root;
-        debug!(
+        info!(
             "ready to rebalance bucket, pid:{}, nodes:{}, buckets: {}",
             pid,
             self.nodes.borrow().len(),
             self.buckets.borrow().len()
         );
-        for node in self.nodes.borrow_mut().values_mut() {
+        let mut dirty = vec![];
+        for node in self.nodes.borrow().values() {
             node.rebalance();
+            if node.0.recycled.load(Ordering::Acquire) {
+                dirty.push(node.pg_id());
+            }
         }
+        for pg_id in dirty {
+            self.nodes.borrow_mut().remove(&pg_id);
+        }
+
+        // self.nodes.borrow_mut().iter_mut().for_each(|node| )
         for child in self.buckets.borrow_mut().values_mut() {
             child.rebalance();
         }
