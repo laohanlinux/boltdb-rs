@@ -1161,17 +1161,4 @@ mod tests {
         let parent = n.split(4096).unwrap().unwrap();
         assert_eq!(parent.0.children.borrow().len(), 19);
     }
-
-    #[test]
-    fn rlock() {
-        fn do_stuff<'a>(_: RwLockReadGuard<'_, &'a i32>, _: &'a i32) {
-            let j = 5;
-            let lock = RwLock::new(&j);
-            {
-                let i = 6;
-                do_stuff(lock.read().unwrap(), &i);
-            }
-            drop(lock)
-        }
-    }
 }

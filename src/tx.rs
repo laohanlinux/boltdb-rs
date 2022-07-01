@@ -335,7 +335,7 @@ impl TX {
             let start_time = SystemTime::now();
             // rebalance
             {
-                self.0.root.try_write().unwrap().rebalance();
+                self.0.root.write().rebalance();
             }
             let mut stats = self.0.stats.lock();
             if stats.rebalance > 0 {
