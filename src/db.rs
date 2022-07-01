@@ -3,21 +3,19 @@ use crate::error::Error::{DBOpFailed, DatabaseGone, DatabaseOnlyRead, Unexpected
 use crate::error::Result;
 use crate::error::{is_valid_error, Error};
 use crate::free_list::FreeList;
-use crate::page::META_PAGE_SIZE;
-use crate::page::{OwnedPage, PageFlag};
+use crate::page::{OwnedPage, Page, PageFlag};
+use crate::page::{PgId, META_PAGE_SIZE};
 use crate::tx::{RWTxGuard, TxBuilder, TxGuard, TX};
-use crate::{Bucket, Page, PgId, TxId};
+use crate::TxId;
 use bitflags::bitflags;
 use fnv::FnvHasher;
 use fs2::FileExt;
-use log::{debug, error, info};
+use log::{debug, info};
 use parking_lot::lock_api::{RawMutex, RawRwLock};
-use parking_lot::{MappedMutexGuard, MappedRwLockReadGuard};
+use parking_lot::MappedRwLockReadGuard;
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
-use std::fmt::format;
-use std::fs::{File, OpenOptions, Permissions};
+use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
-use std::io::ErrorKind::Uncategorized;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::ops::AddAssign;
 use std::path::{Path, PathBuf};
@@ -31,9 +29,6 @@ use std::time::Duration;
 /// The largest step that can be token when remapping the mman.
 pub const MAX_MMAP_STEP: u64 = 1 << 30; //1GB
 
-/// Represents the largest mmap size supported by the Bolt
-pub const MAX_MMAP_SIZE: u64 = 0xFFFFFFFFFFFF; // 256T
-
 /// The data file format version.
 pub const VERSION: usize = 2;
 
@@ -43,7 +38,6 @@ pub const MAGIC: u32 = 0xED0CDAED;
 /// Default values if not set in a `DB` instance.
 const DEFAULT_MAX_BATCH_SIZE: usize = 1000;
 const DEFAULT_MAX_BATCH_DELAY: Duration = Duration::from_millis(10);
-const DEFAULT_ALLOC_SIZE: isize = 16 * 1024 * 1024;
 
 bitflags! {
     /// Defines when db check will occur
@@ -106,7 +100,7 @@ impl Default for DB {
     }
 }
 
-impl<'a> DB {
+impl DB {
     pub fn open<P: AsRef<Path>>(path: P, opt: Options) -> Result<DB> {
         let path = path.as_ref().to_owned();
         let fp = OpenOptions::new()
@@ -158,9 +152,10 @@ impl<'a> DB {
         info!("page size is {}", page_size);
         // initialize the database if it doesn't exist.
         if let Err(err) = file.allocate(page_size as u64 * 4) {
-            if !is_valid_error(err) {
+            if !is_valid_error(&err) {
                 return Err(Unexpected2(format!(
-                    "Cannot allocate 4 required pages, error",
+                    "Cannot allocate 4 required pages, error: {}",
+                    err.to_string()
                 )));
             }
         }
@@ -276,7 +271,7 @@ impl<'a> DB {
     /// If a long running read transaction (for example, a snapshot transaction) is
     /// needed, you might want to set DBBuilder.init_mmap_size to a large enough value
     /// to avoid potential blocking of write transasction.
-    pub fn begin_rw_tx(&mut self) -> Result<RWTxGuard> {
+    pub fn begin_rw_tx(&self) -> Result<RWTxGuard> {
         if self.read_only() {
             return Err(DatabaseOnlyRead);
         };
@@ -317,12 +312,9 @@ impl<'a> DB {
     }
 
     /// shorthand for db.begin_rw_tx with addditional guagrantee for panic safery
-    pub fn update<'b>(
-        &mut self,
-        mut handler: impl FnMut(&mut TX) -> Result<()> + 'b,
-    ) -> Result<()> {
+    pub fn update<'b>(&self, mut handler: impl FnMut(&mut TX) -> Result<()> + 'b) -> Result<()> {
         use std::panic::{catch_unwind, AssertUnwindSafe};
-        let mut tx = scopeguard::guard(self.begin_rw_tx()?, |mut tx| {
+        let mut tx = scopeguard::guard(self.begin_rw_tx()?, |tx| {
             let db_exists = tx.db().is_ok();
             if db_exists {
                 tx.__rollback().unwrap();
@@ -428,7 +420,7 @@ impl<'a> DB {
         }
     }
 
-    pub(crate) fn sync(&mut self) -> Result<()> {
+    pub(crate) fn sync(&self) -> Result<()> {
         self.0
             .file
             .write()
@@ -440,7 +432,7 @@ impl<'a> DB {
         self.0.stats.read().clone()
     }
 
-    pub(crate) fn page_size(&self) -> usize {
+    pub fn page_size(&self) -> usize {
         self.0.page_size
     }
 
@@ -458,13 +450,6 @@ impl<'a> DB {
         let pos = id as usize * page_size as usize;
         let mmap = self.0.mmap.read_recursive();
         RwLockReadGuard::map(mmap, |mmap| Page::from_slice(&mmap.as_ref()[pos..]))
-    }
-
-    fn page_in_buffer<'b>(&'a self, buf: &'b mut [u8], id: PgId) -> &'b mut Page {
-        let page_size = self.0.page_size as usize;
-        let pos = id as usize * page_size;
-        let end_pos = pos + page_size;
-        Page::from_slice_mut(&mut buf[pos..end_pos])
     }
 
     /// Retrieves the current meta page reference
@@ -490,6 +475,15 @@ impl<'a> DB {
         // This should never be reached, because both meta1 and meta0 were validated
         // on mmap() and we do fsync() on every write.
         panic!("invalid meta pages")
+    }
+}
+
+impl<'a> DB {
+    fn page_in_buffer<'b>(&'a self, buf: &'b mut [u8], id: PgId) -> &'b mut Page {
+        let page_size = self.0.page_size as usize;
+        let pos = id as usize * page_size;
+        let end_pos = pos + page_size;
+        Page::from_slice_mut(&mut buf[pos..end_pos])
     }
 
     pub(crate) fn allocate(&mut self, count: u64, tx: &mut TX) -> Result<OwnedPage> {
@@ -564,8 +558,8 @@ impl<'a> DB {
 
         let mut mmap_size = self.0.mmap_size.lock();
         if let Err(err) = file.get_ref().allocate(size) {
-            if !is_valid_error(err) {
-                return Err(Unexpected2(format!("failed to allocate mmap size")));
+            if !is_valid_error(&err) {
+                return Err(Error::Io(err.to_string()));
             }
         }
 
@@ -575,8 +569,8 @@ impl<'a> DB {
             mmap_opts
                 .offset(0)
                 .len(size as usize)
-                .map(&*file.get_ref())
-                .map_err(|e| Error::Unexpected("mmap failed"))?
+                .map(file.get_ref())
+                .map_err(|err| Error::Io(err.to_string()))?
         };
         *mmap_size = nmmap.len();
         *mmap = nmmap;
@@ -635,7 +629,7 @@ impl<'a> DB {
         page.id = 3;
         page.flags = PageFlag::Leaf;
         debug!("succeed to init root page");
-        self.write_at(0, std::io::Cursor::new(&mut buf));
+        self.write_at(0, std::io::Cursor::new(&mut buf))?;
         self.sync()?;
         debug!("succeed to init db, waker pgid: {:?}, top-pgid: {}", 4, 3);
         Ok(())
@@ -662,7 +656,7 @@ impl<'a> DB {
         }
 
         // Verify the requested size is not above the maximum allowed.
-        if size > MAX_MMAP_SIZE {
+        if size > crate::os::MAX_MMAP_SIZE {
             return Err("mmap too large".into());
         }
 
@@ -680,8 +674,8 @@ impl<'a> DB {
         }
 
         // If we've exceeded the max size then only grow up to the max size.
-        if size > MAX_MMAP_SIZE {
-            size = MAX_MMAP_SIZE;
+        if size > crate::os::MAX_MMAP_SIZE {
+            size = crate::os::MAX_MMAP_SIZE;
         }
         Ok(size)
     }
@@ -825,15 +819,11 @@ impl Meta {
     // writes the meta onto a page
     pub fn write(&mut self, p: &mut Page) -> Result<()> {
         if self.root.root >= self.pg_id {
-            panic!(format!(
-                "root bucket pgid({}) above high water mark ({})",
-                self.root.root, self.pg_id
-            ));
+            panic!("root bucket pgid({}) above high water mark ({})", self.root.root, self.pg_id);
         } else if self.free_list >= self.pg_id {
-            panic!(format!(
+            panic!(
                 "freelist pgid({}) above high water mark ({})",
-                self.free_list, self.pg_id
-            ));
+                self.free_list, self.pg_id);
         }
         // Page id is either going to be 0 or 1 which we can determine by the transaction ID.
         p.id = self.tx_id % 2;

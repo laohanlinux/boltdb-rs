@@ -2,9 +2,8 @@ use crate::cursor::{Cursor, PageNode};
 use crate::db::{Stats, DB};
 use crate::error::{Error, Result};
 use crate::node::{Node, NodeBuilder, WeakNode};
-use crate::page::{ElementSize, OwnedPage, BUCKET_LEAF_FLAG, PAGE_HEADER_SIZE};
+use crate::page::{ElementSize, OwnedPage, Page, PgId, BUCKET_LEAF_FLAG, PAGE_HEADER_SIZE};
 use crate::tx::{WeakTx, TX};
-use crate::{Page, PgId};
 use either::Either;
 use log::{debug, info, warn};
 use std::cell::RefCell;
@@ -12,6 +11,7 @@ use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::intrinsics::copy_nonoverlapping;
+use std::sync::atomic::Ordering;
 use std::sync::Weak;
 
 /// The maximum length of a key, in bytes.
@@ -67,158 +67,6 @@ pub struct Bucket {
 }
 
 impl Bucket {
-    pub(crate) fn new(tx: WeakTx) -> Self {
-        Bucket {
-            local_bucket: Default::default(),
-            tx,
-            buckets: RefCell::new(Default::default()),
-            page: None,
-            root_node: None,
-            nodes: Default::default(),
-            fill_percent: DEFAULT_FILL_PERCENT,
-        }
-    }
-
-    /// Returns the tx of the bucket.
-    pub fn tx(&self) -> Result<TX> {
-        self.tx.upgrade().ok_or(Error::TxGone)
-    }
-
-    /// Returns the root of the bucket.
-    pub(crate) fn root(&self) -> PgId {
-        self.local_bucket.root
-    }
-
-    /// Creates a cursor associated with the bucket.
-    /// The cursor is only valid as long as the transaction is open.
-    /// Do not use a cursor after the transaction is closed.
-    pub fn cursor(&self) -> Result<Cursor<&Bucket>> {
-        // update transaction statistics.
-        self.tx()?.0.stats.lock().cursor_count += 1;
-        // allocate and return a cursor.
-        Ok(Cursor::new(self))
-    }
-
-    /// Returns whether the bucket is writable.
-    pub fn writeable(&self) -> bool {
-        self.tx().unwrap().writable()
-    }
-
-    /// Allocates and writes the bucket to a byte slice.
-    fn write(&mut self) -> Vec<u8> {
-        // Allocate the appropriate size.
-        let n = self.root_node.as_ref().unwrap();
-        let node_size = n.size();
-        let mut value = vec![0u8; TopBucket::SIZE + node_size];
-
-        // write a bucket header.
-        let bucket_ptr = value.as_mut_ptr() as *mut TopBucket;
-        unsafe { copy_nonoverlapping(&self.local_bucket, bucket_ptr, 1) };
-
-        // Convert byte slice to a fake page and write the root node.
-        {
-            let mut page = &mut value[TopBucket::SIZE..];
-            let mut page = Page::from_slice_mut(&mut page);
-            n.write(&mut page);
-        }
-        value
-    }
-
-    /// Attempts to balance all nodes
-    pub(crate) fn rebalance(&mut self) {
-        let pid = self.local_bucket.root;
-        debug!(
-            "ready to rebalance bucket, pid:{}, nodes:{}, buckets: {}",
-            pid,
-            self.nodes.borrow().len(),
-            self.buckets.borrow().len()
-        );
-        for node in self.nodes.borrow_mut().values_mut() {
-            node.rebalance();
-        }
-        for child in self.buckets.borrow_mut().values_mut() {
-            child.rebalance();
-        }
-    }
-
-    /// Create a `node` from a `page` and associates it with a given parent.
-    pub(crate) fn node(&mut self, pg_id: PgId, parent: WeakNode) -> Node {
-        debug!("load node from page: {}", pg_id);
-        // assert!(!self.nodes.is_empty(), "nodes map expected");
-        if !self.tx().unwrap().writable() {
-            panic!("tx is read-only");
-        }
-        // Retrieve node if it's already been created.
-        if let Some(node) = self.nodes.borrow().get(&pg_id) {
-            return node.clone();
-        }
-        // Otherwise, create a node and cache it.
-        let mut node = NodeBuilder::new(self as *const Bucket)
-            .parent(parent.clone())
-            .build();
-        if let Some(parent) = parent.upgrade() {
-            parent.child_mut().push(node.clone());
-        } else {
-            // Why? Ony root node has not parent, so the node is root node
-            // Update it
-            self.root_node.replace(node.clone());
-        }
-
-        // Use the page into the node and cache it.
-        if let Some(page) = &self.page {
-            node.read(page);
-        } else {
-            // Read the page into the node and cache it.
-            let page = unsafe { &*self.tx().unwrap().page(pg_id).unwrap() };
-            // warn!("read node from inline page:  {:?}", page.as_slice());
-            unsafe {
-                node.read(page);
-            }
-        }
-        // debug!("cache a node: {:?}", node);
-        self.nodes.borrow_mut().insert(pg_id, node.clone());
-        // Update statistics.
-        self.tx().unwrap().stats().node_count += 1;
-        node
-    }
-
-    /// Returns the in-memory node, if it exists.
-    /// Otherwise returns the underlying page.
-    pub(crate) fn page_node(&self, id: PgId) -> Result<PageNode> {
-        // Inline buckets have fake page embedded in their value so treat them
-        // differently. We'll return the rootNode (if available) or the fake page.
-        if self.local_bucket.root == 0 {
-            if id != 0 {
-                return Err(Error::Unexpected("inline bucket no-zero page access"));
-            }
-            // TODO: when happen
-            if let Some(ref node) = self.root_node {
-                // debug!("return a inline root_node");
-                return Ok(PageNode::from(node.clone()));
-            }
-            debug!("return a inline root page");
-            return Ok(PageNode::from(
-                &**self.page.as_ref().ok_or("page empty")? as *const Page
-            ));
-        }
-        // Check the node cache for non-inline buckets.
-        if let Some(node) = self.nodes.borrow().get(&id) {
-            return Ok(PageNode::from(node.clone()));
-        }
-
-        // TODO Why?
-        // Finally lookup the page from the transaction if no node is materialized.
-        Ok(PageNode::from(self.tx()?.page(id)?))
-    }
-
-    pub fn clear(&mut self) {
-        debug!("close bucket");
-        self.buckets.borrow_mut().clear();
-        self.nodes.borrow_mut().clear();
-        self.page = None;
-        self.root_node = None;
-    }
-
     // Creates a new bucket at the given key and returns the new bucket.
     // Returns an error if the key already exists, if the bucket name is blank, or if the bucket name is too long.
     // The bucket instance is only valid for the lifetime of the transaction.
@@ -340,7 +188,7 @@ impl Bucket {
     }
 
     /// Returns list of subbuckets's keys
-    pub(crate) fn buckets(&self) -> Vec<Vec<u8>> {
+    pub fn buckets(&self) -> Vec<Vec<u8>> {
         let mut names = Vec::new();
         self.for_each(|key, value| -> Result<()> {
             if value.is_none() {
@@ -353,10 +201,11 @@ impl Bucket {
         names
     }
 
-    /// Retrieves a nested bucket by name.
-    /// Returns None if the bucket does not exits or found item is not bucket.
-    pub fn bucket(&self, key: &[u8]) -> Option<&Bucket> {
-        self.__bucket(key).map(|b| unsafe { &*b })
+    pub fn clear(&mut self) {
+        self.buckets.borrow_mut().clear();
+        self.nodes.borrow_mut().clear();
+        self.page.take();
+        self.root_node.take();
     }
 
     /// Retrieves a nested mutable bucket by name.
@@ -413,7 +262,7 @@ impl Bucket {
     /// Removes a key from the bucket.
     /// If the key does not exist then nothing is done.
     /// Returns the error if the bucket was created from a read-only transaction.
-    pub fn delete(&mut self, key: &[u8]) -> Result<()> {
+    pub fn delete(&self, key: &[u8]) -> Result<()> {
         if self.tx()?.db().is_err() {
             return Err(Error::TxClosed);
         }
@@ -426,39 +275,196 @@ impl Bucket {
         if item.is_bucket() {
             return Err(Error::IncompatibleValue);
         }
-        info!("it should be not happen");
+        // info!("it should be not happen");
         c.node().unwrap().del(key);
         Ok(())
     }
 
-    /// Returns the current integer for the bucket without incrementing it.
-    pub fn sequence(&self) -> u64 {
-        self.local_bucket.sequence
-    }
+    /// Executions a function for each key/value pair in a bucket.
+    /// If the provided function returns an error the the interaction is stopped and
+    /// the error is returned to the caller.
+    pub fn for_each(
+        &self,
+        mut handler: impl FnMut(&[u8], Option<&[u8]>) -> Result<()>,
+    ) -> Result<()> {
+        if !self.tx()?.opened() {
+            return Err(Error::TxClosed);
+        }
+        let c = self.cursor()?;
+        let mut item = c.first()?;
+        loop {
+            if item.is_none() {
+                break;
+            }
+            handler(item.key.unwrap(), item.value)?;
+            item = c.next()?;
+        }
 
-    pub fn next_sequence(&mut self) -> Result<u64> {
-        if !self.tx()?.writable() {
-            return Err(Error::TxReadOnly);
-        }
-        if self.root_node.is_none() {
-            self.node(self.root(), WeakNode::new());
-        }
-
-        self.local_bucket.sequence += 1;
-        Ok(self.local_bucket.sequence)
-    }
-
-    pub fn set_sequence(&mut self, seq: u64) -> Result<()> {
-        if !self.tx()?.writable() {
-            return Err(Error::TxReadOnly);
-        }
-        if self.root_node.is_none() {
-            let pgid = self.root();
-            self.node(pgid, WeakNode::new());
-        }
-        self.local_bucket.sequence = seq;
         Ok(())
     }
+
+    /// Returns stats on a bucket.
+    /// todo
+    pub fn stats(&self) -> Stats {
+        let mut stats = Stats::default();
+        let mut sub_stats = Stats::default();
+        let page_size = self.tx().unwrap().db().unwrap().page_size();
+        stats
+    }
+}
+
+impl Bucket {
+    pub(crate) fn new(tx: WeakTx) -> Self {
+        Bucket {
+            local_bucket: Default::default(),
+            tx,
+            buckets: RefCell::new(Default::default()),
+            page: None,
+            root_node: None,
+            nodes: Default::default(),
+            fill_percent: DEFAULT_FILL_PERCENT,
+        }
+    }
+
+    /// Returns the tx of the bucket.
+    pub(crate) fn tx(&self) -> Result<TX> {
+        self.tx.upgrade().ok_or(Error::TxGone)
+    }
+
+    /// Returns the root of the bucket.
+    pub(crate) fn root(&self) -> PgId {
+        self.local_bucket.root
+    }
+
+    /// Creates a cursor associated with the bucket.
+    /// The cursor is only valid as long as the transaction is open.
+    /// Do not use a cursor after the transaction is closed.
+    pub(crate) fn cursor(&self) -> Result<Cursor<&Bucket>> {
+        // update transaction statistics.
+        self.tx()?.0.stats.lock().cursor_count += 1;
+        // allocate and return a cursor.
+        Ok(Cursor::new(self))
+    }
+
+    /// Returns whether the bucket is writable.
+    pub(crate) fn writeable(&self) -> bool {
+        self.tx().unwrap().writable()
+    }
+
+    /// Allocates and writes the bucket to a byte slice.
+    fn write(&mut self) -> Vec<u8> {
+        // Allocate the appropriate size.
+        let n = self.root_node.as_ref().unwrap();
+        let node_size = n.size();
+        let mut value = vec![0u8; TopBucket::SIZE + node_size];
+
+        // write a bucket header.
+        let bucket_ptr = value.as_mut_ptr() as *mut TopBucket;
+        unsafe { copy_nonoverlapping(&self.local_bucket, bucket_ptr, 1) };
+
+        // Convert byte slice to a fake page and write the root node.
+        {
+            let mut page = &mut value[TopBucket::SIZE..];
+            let mut page = Page::from_slice_mut(&mut page);
+            n.write(&mut page);
+        }
+        value
+    }
+
+    /// Attempts to balance all nodes
+    pub(crate) fn rebalance(&mut self) {
+        let pid = self.local_bucket.root;
+        info!(
+            "ready to rebalance bucket, pid:{}, nodes:{}, buckets: {}",
+            pid,
+            self.nodes.borrow().len(),
+            self.buckets.borrow().len()
+        );
+        let mut dirty = Vec::with_capacity(self.nodes.borrow().len());
+        for node in self.nodes.borrow().values() {
+            node.rebalance(&mut dirty);
+        }
+        for pgid in dirty {
+            if let Some(entry) = self.nodes.borrow_mut().remove(&pgid) {
+                entry.free();
+            }
+        }
+
+        for child in self.buckets.borrow_mut().values_mut() {
+            child.rebalance();
+        }
+    }
+
+    /// Create a `node` from a `page` and associates it with a given parent.
+    pub(crate) fn node(&mut self, pg_id: PgId, parent: WeakNode) -> Node {
+        debug!("load node from page: {}", pg_id);
+        // assert!(!self.nodes.is_empty(), "nodes map expected");
+        if !self.tx().unwrap().writable() {
+            panic!("tx is read-only");
+        }
+        // Retrieve node if it's already been created.
+        if let Some(node) = self.nodes.borrow().get(&pg_id) {
+            return node.clone();
+        }
+        // Otherwise, create a node and cache it.
+        let mut node = NodeBuilder::new(self as *const Bucket)
+            .parent(parent.clone())
+            .build();
+        if let Some(parent) = parent.upgrade() {
+            parent.child_mut().push(node.clone());
+        } else {
+            // Why? Ony root node has not parent, so the node is root node
+            // Update it
+            self.root_node.replace(node.clone());
+        }
+
+        // Use the page into the node and cache it.
+        if let Some(page) = &self.page {
+            node.read(page);
+        } else {
+            // Read the page into the node and cache it.
+            let page = unsafe { &*self.tx().unwrap().page(pg_id).unwrap() };
+            // warn!("read node from inline page:  {:?}", page.as_slice());
+            unsafe {
+                node.read(page);
+            }
+        }
+        // debug!("cache a node: {:?}", node);
+        self.nodes.borrow_mut().insert(pg_id, node.clone());
+        // Update statistics.
+        self.tx().unwrap().stats().node_count += 1;
+        node
+    }
+
+    /// Returns the in-memory node, if it exists.
+    /// Otherwise returns the underlying page.
+    pub(crate) fn page_node(&self, id: PgId) -> Result<PageNode> {
+        // Inline buckets have fake page embedded in their value so treat them
+        // differently. We'll return the rootNode (if available) or the fake page.
+        if self.local_bucket.root == 0 {
+            if id != 0 {
+                return Err(Error::Unexpected("inline bucket no-zero page access"));
+            }
+            // TODO: when happen
+            if let Some(ref node) = self.root_node {
+                // debug!("return a inline root_node");
+                return Ok(PageNode::from(node.clone()));
+            }
+            debug!("return a inline root page");
+            return Ok(PageNode::from(
+                &**self.page.as_ref().ok_or("page empty")? as *const Page
+            ));
+        }
+        // Check the node cache for non-inline buckets.
+        if let Some(node) = self.nodes.borrow().get(&id) {
+            return Ok(PageNode::from(node.clone()));
+        }
+
+        // TODO Why?
+        // Finally lookup the page from the transaction if no node is materialized.
+        Ok(PageNode::from(self.tx()?.page(id)?))
+    }
+
     /// Helper method that re-interprets a sub-bucket value
     /// from a parent into a Bucket.
     ///
@@ -486,31 +492,8 @@ impl Bucket {
         child
     }
 
-    /// Executions a function for each key/value pair in a bucket.
-    /// If the provided function returns an error the the interaction is stopped and
-    /// the error is returned to the caller.
-    pub fn for_each(
-        &self,
-        mut handler: impl FnMut(&[u8], Option<&[u8]>) -> Result<()>,
-    ) -> Result<()> {
-        if !self.tx()?.opened() {
-            return Err(Error::TxClosed);
-        }
-        let c = self.cursor()?;
-        let mut item = c.first()?;
-        loop {
-            if item.is_none() {
-                break;
-            }
-            handler(item.key.unwrap(), item.value)?;
-            item = c.next()?;
-        }
-
-        Ok(())
-    }
-
     /// Recursively frees all pages in the bucket.
-    pub fn free(&mut self) {
+    pub(crate) fn free(&mut self) {
         // This is an inline bucket, don't need to free it.
         if self.local_bucket.root == 0 {
             debug!("the bucket is inline root, nothing frees");
@@ -527,15 +510,6 @@ impl Bucket {
             Either::Right(node) => node.clone().free(),
         });
         self.local_bucket.root = 0;
-    }
-
-    /// Returns stats on a bucket.
-    /// todo
-    pub fn stats(&self) -> Stats {
-        let mut stats = Stats::default();
-        let mut sub_stats = Stats::default();
-        let page_size = self.tx().unwrap().db().unwrap().page_size();
-        stats
     }
 
     /// Iterates over every page in a bucket, including inline pages.
@@ -715,7 +689,13 @@ impl Bucket {
         self.tx().unwrap().db().unwrap().page_size() / 4
     }
 
-    pub fn __bucket(&self, name: &[u8]) -> Option<*mut Bucket> {
+    /// Retrieves a nested bucket by name.
+    /// Returns None if the bucket does not exits or found item is not bucket.
+    pub(crate) fn bucket(&self, key: &[u8]) -> Option<&Bucket> {
+        self.__bucket(key).map(|b| unsafe { &*b })
+    }
+
+    fn __bucket(&self, name: &[u8]) -> Option<*mut Bucket> {
         if let Some(b) = self.buckets.borrow_mut().get_mut(&name.to_vec()) {
             return Some(b);
         }
@@ -750,13 +730,44 @@ impl Bucket {
         // );
         Some(bucket)
     }
+
+    /// Returns the current integer for the bucket without incrementing it.
+    pub(crate) fn sequence(&self) -> u64 {
+        self.local_bucket.sequence
+    }
+
+    pub(crate) fn next_sequence(&mut self) -> Result<u64> {
+        if !self.tx()?.writable() {
+            return Err(Error::TxReadOnly);
+        }
+        if self.root_node.is_none() {
+            self.node(self.root(), WeakNode::new());
+        }
+
+        self.local_bucket.sequence += 1;
+        Ok(self.local_bucket.sequence)
+    }
+
+    pub(crate) fn set_sequence(&mut self, seq: u64) -> Result<()> {
+        if !self.tx()?.writable() {
+            return Err(Error::TxReadOnly);
+        }
+        if self.root_node.is_none() {
+            let pgid = self.root();
+            self.node(pgid, WeakNode::new());
+        }
+        self.local_bucket.sequence = seq;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::error::Error;
     use crate::error::Error::IncompatibleValue;
-    use crate::test_util::mock_db;
+    use crate::test_util::{mock_db, mock_log};
+    use byteordered::byteorder::{BigEndian, WriteBytesExt};
+    use log::info;
 
     #[test]
     fn create() {
@@ -849,5 +860,120 @@ mod tests {
             assert_eq!(bucket.delete(b"stan").unwrap_err(), IncompatibleValue);
         }
         tx.commit().unwrap();
+    }
+
+    #[test]
+    fn put_repeat() {
+        let mut db = mock_db().build().unwrap();
+        db.update(|tx| {
+            {
+                let mut bucket = tx.create_bucket(b"widgets").unwrap();
+                bucket.put(b"foo", b"bar".to_vec()).unwrap();
+                bucket.put(b"foo", b"bar".to_vec()).unwrap();
+            }
+            let value = tx.bucket(b"widgets").unwrap().get(b"foo").unwrap().to_vec();
+            assert_eq!(value, Vec::from("bar"));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn put_large() {
+        let mut db = mock_db().build().unwrap();
+        let count = 100;
+        let factor = 200;
+        let ok = db.update(|tx| {
+            let mut bucket = tx.create_bucket(b"widgets").unwrap();
+            for i in 1..count {
+                let key = [0].repeat(i * factor);
+                let value = [0].repeat((count - i) * factor);
+                let ok = bucket.put(&key, value);
+                assert!(ok.is_ok());
+            }
+
+            Ok(())
+        });
+        assert!(ok.is_ok());
+    }
+
+    // #[test]
+    // fn put_very_large() {
+    //     let mut db = mock_db().build().unwrap();
+    //     let k_size = 8;
+    //     let v_value = 500;
+    //     let (n, batch_n) = (400000, 200000);
+    //
+    //     for i in (0..n).step_by(batch_n) {
+    //         db.update(|tx| {
+    //             let mut bucket = tx.create_bucket_if_not_exists(b"widgets").unwrap();
+    //             for j in 0..batch_n {
+    //                 let mut key = [0].repeat(k_size);
+    //                 let mut value = [0].repeat(v_value);
+    //                 key.write_u32::<BigEndian>((i + j) as u32).unwrap();
+    //                 let ok = bucket.put(&key, value);
+    //                 assert!(ok.is_ok());
+    //             }
+    //             Ok(())
+    //         });
+    //     }
+    // }
+
+    #[test]
+    fn put_close() {
+        let mut db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+
+        {
+            let bucket = tx.create_bucket(b"widgets").unwrap();
+        }
+        tx.rollback().unwrap();
+    }
+
+    #[test]
+    fn bucket_delete() {
+        let mut db = mock_db().build().unwrap();
+        db.update(|tx| {
+            let mut bucket = tx.create_bucket(b"widgets").unwrap();
+            bucket.put(b"foo", b"bar".to_vec()).unwrap();
+            bucket.delete(b"foo").unwrap();
+            let ok = bucket.get(b"foo");
+            assert!(ok.is_none());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn bucket_delete_large() {
+        let mut db = mock_db().build().unwrap();
+        db.update(|tx| {
+            let mut bucket = tx.create_bucket(b"widgets").unwrap();
+            for i in 0..100 {
+                let value = vec![0; 1024];
+                bucket.put(format!("{}", i).as_bytes(), value).unwrap();
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        db.update(|tx| {
+            let mut bucket = tx.bucket_mut(b"widgets").unwrap();
+            for i in 0..100 {
+                bucket.delete(format!("{}", i).as_bytes()).unwrap();
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        db.view(|tx| {
+            let bucket = tx.bucket(b"widgets").unwrap();
+            for i in 0..100 {
+                let value = bucket.get(format!("{}", i).as_bytes());
+                assert!(value.is_none());
+            }
+            Ok(())
+        })
+        .unwrap();
     }
 }

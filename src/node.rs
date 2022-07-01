@@ -2,9 +2,10 @@ use crate::bucket::{MAX_FILL_PERCENT, MIN_FILL_PERCENT};
 use crate::error::Error::BucketEmpty;
 use crate::error::{Error, Result};
 use crate::page::{
-    BranchPageElement, ElementSize, LeafPageElement, PageFlag, MIN_KEYS_PER_PAGE, PAGE_HEADER_SIZE,
+    BranchPageElement, ElementSize, LeafPageElement, Page, PageFlag, PgId, MIN_KEYS_PER_PAGE,
+    PAGE_HEADER_SIZE,
 };
-use crate::{bucket, Bucket, Page, PgId};
+use crate::Bucket;
 use log::{debug, info, warn};
 use memoffset::ptr::copy_nonoverlapping;
 use std::borrow::{Borrow, BorrowMut};
@@ -93,7 +94,7 @@ impl Node {
     /// Attempts to combine the node with sibling nodes if the node fill
     /// size is below a threshold or if there are not enough keys.
     /// The node will be reclaimed to free-list with freelist.free() after merge by it's sibling
-    pub(crate) fn rebalance(&mut self) {
+    pub(crate) fn rebalance(&self, dirty: &mut Vec<PgId>) {
         // check rebalance
         {
             if !self.0.unbalanced.load(Ordering::Acquire) {
@@ -140,12 +141,7 @@ impl Node {
                     }
 
                     *child.0.parent.borrow_mut() = WeakNode::new();
-                    self.bucket_mut()
-                        .unwrap()
-                        .nodes
-                        .borrow_mut()
-                        .remove(&child.0.pgid.borrow());
-                    child.free();
+                    dirty.push(child.pg_id());
                 }
 
                 return;
@@ -153,14 +149,14 @@ impl Node {
         }
         // If node has no keys then just remove it.
         if self.num_children() == 0 {
+            dirty.push(self.pg_id());
             let key = self.0.key.borrow().clone();
+            info!("zero children node, key: {}", String::from_utf8_lossy(&key));
             let pgid = *self.0.pgid.borrow();
             let mut parent = self.parent().unwrap();
             parent.del(&key);
             parent.remove_child(self);
-            self.bucket_mut().unwrap().nodes.borrow_mut().remove(&pgid);
-            self.free();
-            parent.rebalance();
+            parent.rebalance(dirty);
             return;
         }
 
@@ -205,12 +201,7 @@ impl Node {
                 parent.remove_child(&target);
             }
 
-            self.bucket_mut()
-                .unwrap()
-                .nodes
-                .borrow_mut()
-                .remove(&target.pg_id());
-            target.free();
+            dirty.push(target.pg_id());
         } else {
             for pgid in target.0.inodes.borrow().iter().map(|i| i.pg_id) {
                 if let Some(child) = self.bucket_mut().unwrap().nodes.borrow_mut().get_mut(&pgid) {
@@ -231,14 +222,9 @@ impl Node {
                 parent.del(&self.0.key.borrow());
                 parent.remove_child(self);
             }
-            self.bucket_mut()
-                .unwrap()
-                .nodes
-                .borrow_mut()
-                .remove(&self.pg_id());
-            self.free();
+            dirty.push(self.pg_id());
         }
-        self.parent().unwrap().rebalance();
+        self.parent().unwrap().rebalance(dirty);
     }
 
     fn parent(&self) -> Option<Node> {
@@ -385,7 +371,7 @@ impl Node {
 
     // Inserts a key/value.
     pub(crate) fn put(
-        &self,
+        &mut self,
         old_key: &[u8],
         new_key: &[u8],
         value: Value,
@@ -535,12 +521,15 @@ impl Node {
     // Removes a node from the list of in-memory children.
     // This dose not affect the inodes.
     fn remove_child(&self, target: &Node) {
-        self.0
+        let idx = self
+            .0
             .children
             .borrow()
             .iter()
-            .position(|c| Rc::ptr_eq(&target.0, &c.0))
-            .map(|idx| self.0.children.borrow_mut().remove(idx));
+            .position(|c| Rc::ptr_eq(&target.0, &c.0));
+        if let Some(idx) = idx {
+            self.0.children.borrow_mut().remove(idx);
+        }
     }
 
     /// Writes the nodes to dirty pages and splits nodes as it goes.
@@ -613,7 +602,7 @@ impl Node {
                 }
 
                 // Insert into parent inodes.
-                if let Some(p) = node.parent() {
+                if let Some(mut p) = node.parent() {
                     let mut okey = node.0.key.borrow().clone();
                     let nkey = node.0.inodes.borrow()[0].key.to_vec();
                     // TODO: Why?, Fix ME
@@ -791,7 +780,7 @@ impl Node {
     }
 
     // Adds the node's underlying `page` to the freelist.
-    pub(crate) fn free(&mut self) {
+    pub(crate) fn free(&self) {
         if *self.0.pgid.borrow() == 0 {
             return;
         }
@@ -935,6 +924,7 @@ impl Inodes {
 mod tests {
     use crate::page::PageFlag;
     use std::sync::atomic::Ordering;
+    use std::sync::{RwLock, RwLockReadGuard};
     use std::{
         mem::size_of,
         slice::{from_raw_parts, from_raw_parts_mut},
@@ -1169,7 +1159,6 @@ mod tests {
             .expect("TODO: panic message");
         }
         let parent = n.split(4096).unwrap().unwrap();
-
         assert_eq!(parent.0.children.borrow().len(), 19);
     }
 }

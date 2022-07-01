@@ -1,15 +1,16 @@
 use crate::cursor::Cursor;
 use crate::db::{CheckMode, Meta, WeakDB, DB};
 use crate::error::Error::Unexpected;
-use crate::page::OwnedPage;
-use crate::page::PageFlag;
-use crate::{error::Error, error::Result, Bucket, Page, PageInfo, PgId};
+use crate::page::{OwnedPage, PageInfo, PgId};
+use crate::page::{Page, PageFlag};
+use crate::{error::Error, error::Result, Bucket};
 use log::{debug, error, info, warn};
 use parking_lot::lock_api::MutexGuard;
 use parking_lot::{
     MappedRwLockReadGuard, MappedRwLockWriteGuard, Mutex, RawMutex, RawRwLock, RwLock,
     RwLockReadGuard, RwLockWriteGuard,
 };
+use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::fs::OpenOptions;
@@ -101,78 +102,12 @@ impl TX {
     /// All items in the cursor will return a nil value because all items in root bucket are also buckets.
     /// The cursor is only valid as long as the transaction is open.
     /// Do not use a cursor after the transaction is closed.
-    pub fn cursor(&self) -> Cursor<RwLockWriteGuard<Bucket>> {
+    pub fn cursor(&mut self) -> Cursor<RwLockWriteGuard<Bucket>> {
         self.0.stats.lock().cursor_count += 1;
         Cursor::new(self.0.root.write())
     }
 
-    pub(crate) fn stats(&self) -> MutexGuard<'_, RawMutex, TxStats> {
-        self.0.stats.try_lock().unwrap()
-    }
-
-    pub(crate) fn meta_mut(&self) -> parking_lot::lock_api::RwLockWriteGuard<'_, RawRwLock, Meta> {
-        self.0.meta.try_write().unwrap()
-    }
-
-    pub(crate) fn set_pgid(&mut self, id: PgId) -> Result<()> {
-        self.0.meta.try_write().ok_or("pgid locked")?.pg_id = id;
-        Ok(())
-    }
-
-    /// Returns a reference to the page with a given id.
-    /// If page has been written to then a temporary buffered page is returned.
-    /// Why not use &Page reference to return? here can avoid to owner limit
-    pub(crate) fn page(&self, id: PgId) -> Result<*const Page> {
-        // check the dirty pages first.
-        {
-            let pages = self.0.pages.try_read().unwrap();
-            if let Some(p) = pages.get(&id) {
-                return Ok(&**p);
-            }
-        }
-
-        // Otherwise return directly from the mmap.
-        Ok(&*self.db()?.page(id))
-    }
-
-    pub(crate) fn writable(&self) -> bool {
-        self.0.writeable
-    }
-
-    pub(crate) fn db(&self) -> Result<DB> {
-        self.0
-            .db
-            .try_read()
-            .unwrap()
-            .upgrade()
-            .ok_or(Error::DatabaseGone)
-    }
-
-    // return current transaction id
-    pub(crate) fn id(&self) -> TxId {
-        self.0.meta.try_read().unwrap().tx_id
-    }
-
-    // return current waker id
-    pub(crate) fn pgid(&self) -> PgId {
-        self.0.meta.try_read().unwrap().pg_id
-    }
-
-    // return the db size by use waker id cal
-    pub(crate) fn size(&self) -> i64 {
-        self.pgid() as i64 * self.db().unwrap().page_size() as i64
-    }
-
-    /// Bucket retrieves a bucket by name.
-    /// Returns None if the bucket does not exist.
-    /// The bucket instance is only valid for the lifetime of the transaction.
-    pub fn bucket(&self, key: &[u8]) -> Result<MappedRwLockReadGuard<Bucket>> {
-        let bucket = self.0.root.try_read().ok_or("can't acquire bucket")?;
-        RwLockReadGuard::try_map(bucket, |b| b.bucket(key))
-            .map_err(|_| Error::Unexpected("can't get bucket"))
-    }
-
-    pub fn bucket_mut(&self, key: &[u8]) -> Result<MappedRwLockWriteGuard<Bucket>> {
+    pub fn bucket_mut(&mut self, key: &[u8]) -> Result<MappedRwLockWriteGuard<Bucket>> {
         let bucket = self
             .0
             .root
@@ -190,7 +125,7 @@ impl TX {
     /// Create a new bucket.
     /// Returns an error if bucket already exists, if the bucket name is blank, or if the bucket name is too long.
     /// The bucket instance is only valid for the lifetime of the transaction.
-    pub fn create_bucket(&self, key: &[u8]) -> Result<MappedRwLockWriteGuard<Bucket>> {
+    pub fn create_bucket(&mut self, key: &[u8]) -> Result<MappedRwLockWriteGuard<Bucket>> {
         if !self.0.writeable {
             return Err(Error::TxReadOnly);
         }
@@ -286,9 +221,98 @@ impl TX {
         Ok(())
     }
 
+    /// Closes the transaction and ignores all previous updates. Read-Only
+    /// transactions must be rolled back and not committed
+    pub fn rollback(&self) -> Result<()> {
+        if self.0.managed.load(Ordering::Acquire) {
+            return Err(Error::TxClosed);
+        }
+        // self.__rollback()?;
+        let db = self.db()?;
+        if self.writable() {
+            let txid = self.id();
+            let mut free_list = db.0.free_list.write();
+            free_list.rollback(&txid);
+            let free_list_id = db.meta().free_list;
+            let free_list_page = db.page(free_list_id);
+            free_list.reload(&free_list_page);
+        }
+        Ok(())
+    }
+}
+
+impl TX {
+    pub(crate) fn stats(&self) -> MutexGuard<'_, RawMutex, TxStats> {
+        self.0.stats.try_lock().unwrap()
+    }
+
+    pub(crate) fn meta_mut(
+        &mut self,
+    ) -> parking_lot::lock_api::RwLockWriteGuard<'_, RawRwLock, Meta> {
+        self.0.meta.try_write().unwrap()
+    }
+
+    pub(crate) fn set_pgid(&mut self, id: PgId) -> Result<()> {
+        self.0.meta.try_write().ok_or("pgid locked")?.pg_id = id;
+        Ok(())
+    }
+
+    /// Returns a reference to the page with a given id.
+    /// If page has been written to then a temporary buffered page is returned.
+    /// Why not use &Page reference to return? here can avoid to owner limit
+    pub(crate) fn page(&self, id: PgId) -> Result<*const Page> {
+        // check the dirty pages first.
+        {
+            let pages = self.0.pages.try_read().unwrap();
+            if let Some(p) = pages.get(&id) {
+                return Ok(&**p);
+            }
+        }
+
+        // Otherwise return directly from the mmap.
+        Ok(&*self.db()?.page(id))
+    }
+
+    pub(crate) fn writable(&self) -> bool {
+        self.0.writeable
+    }
+
+    pub(crate) fn db(&self) -> Result<DB> {
+        self.0
+            .db
+            .try_read()
+            .unwrap()
+            .upgrade()
+            .ok_or(Error::DatabaseGone)
+    }
+
+    // return current transaction id
+    pub(crate) fn id(&self) -> TxId {
+        self.0.meta.try_read().unwrap().tx_id
+    }
+
+    // return current waker id
+    pub(crate) fn pgid(&self) -> PgId {
+        self.0.meta.try_read().unwrap().pg_id
+    }
+
+    // return the db size by use waker id cal
+    pub(crate) fn size(&self) -> i64 {
+        self.pgid() as i64 * self.db().unwrap().page_size() as i64
+    }
+
+    /// Bucket retrieves a bucket by name.
+    /// Returns None if the bucket does not exist.
+    /// The bucket instance is only valid for the lifetime of the transaction.
+    /// *NOTE* avoid commit cycle reference, caller cannot see it.
+    pub fn bucket(&self, key: &[u8]) -> Result<MappedRwLockReadGuard<Bucket>> {
+        let bucket = self.0.root.try_read().ok_or("can't acquire bucket")?;
+        RwLockReadGuard::try_map(bucket, |b| b.bucket(key))
+            .map_err(|_| Error::Unexpected("can't get bucket"))
+    }
+
     /// Closes transaction (so subsequent user of it will resolve in error)
     pub(crate) fn close(&self) -> Result<()> {
-        log::info!(strong_count = Arc::strong_count(&self.0); "close transaction");
         let db = self.db()?;
         let tx = db.remove_tx(self)?;
         *tx.0.db.write() = WeakDB::new();
@@ -310,7 +334,9 @@ impl TX {
         {
             let start_time = SystemTime::now();
             // rebalance
-            self.0.root.try_write().unwrap().rebalance();
+            {
+                self.0.root.write().rebalance();
+            }
             let mut stats = self.0.stats.lock();
             if stats.rebalance > 0 {
                 stats.rebalance_time += SystemTime::now()
@@ -422,16 +448,6 @@ impl TX {
         Ok(())
     }
 
-    /// Closes the transaction and ignores all previous updates. Read-Only
-    /// transactions must be rolled back and not committed
-    pub fn rollback(&self) -> Result<()> {
-        if self.0.managed.load(Ordering::Acquire) {
-            return Err(Error::TxManaged);
-        }
-        self.__rollback()?;
-        Ok(())
-    }
-
     pub(crate) fn __rollback(&self) -> Result<()> {
         debug!("ready to __rollback");
         let db = self.db()?;
@@ -459,9 +475,8 @@ impl TX {
     }
 
     /// Sync version of check()
-    ///
     /// In case of checking thread panic will also return Error
-    pub fn check_sync(&self) -> Result<()> {
+    pub(crate) fn check_sync(&self) -> Result<()> {
         defer_lite::defer! {
             info!("succeed to check sync");
         }
@@ -473,8 +488,8 @@ impl TX {
         for err in ch {
             errs.push(err)
         }
-        if handle.join().is_err() {
-            errs.push("check thread panicked".to_owned());
+        if let Err(err) = handle.join() {
+            errs.push("check thread panicked:".to_owned() + &*format!("{:?}", err));
         }
         if !errs.is_empty() {
             return Err(Error::CheckFailed(errs.join("|")));
@@ -622,7 +637,7 @@ impl TX {
 
     /// Returns page information for a given page number.
     /// This is only safe for concurrent use when used by a writable transaction.
-    pub fn page_info(&self, id: usize) -> Result<Option<PageInfo>> {
+    pub(crate) fn page_info(&self, id: usize) -> Result<Option<PageInfo>> {
         if !self.opened() {
             return Err(Error::TxClosed);
         }
@@ -706,15 +721,12 @@ impl TX {
             reachable.insert(freelist_pgid + u64::from(i), true);
         }
 
-        // check bucekt
-        self.check_bucket(
-            &self.0.root.try_read().unwrap(),
-            &mut reachable,
-            &freed,
-            &ch,
-        );
-
-        // check page from 0 to hight watermask
+        // check bucket
+        {
+            let bu = self.0.root.read();
+            self.check_bucket(&bu, &mut reachable, &freed, &ch);
+        }
+        // check page from 0 to high watermask
         // every page must be found at freed or reachable
         for i in 0..self.0.meta.try_read().unwrap().pg_id {
             let is_reachable = reachable.contains_key(&i);
@@ -733,10 +745,10 @@ impl Drop for TX {
         if count > 2 {
             return;
         }
-        let trace_id = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        // let trace_id = SystemTime::now()
+        //     .duration_since(UNIX_EPOCH)
+        //     .unwrap()
+        //     .as_nanos();
         // warn!(
         //     "tx count reference has to {}, trace-id: {}",
         //     count, trace_id

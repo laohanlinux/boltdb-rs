@@ -11,23 +11,23 @@ extern crate memoffset;
 extern crate test;
 
 pub mod bucket;
-pub mod cursor;
+mod cursor;
 pub mod db;
 pub mod error;
-pub mod free_list;
-pub mod node;
-pub mod os;
-pub mod page;
+mod free_list;
+mod node;
+mod os;
+mod page;
 mod test_util;
 pub mod tx;
 
 pub use bucket::Bucket;
-pub use page::{Page, PageInfo, PgId, PgIds};
-pub use tx::{TxGuard, TxId, TxStats};
+pub use db::DB;
+pub use tx::{TxId, TxStats, TX};
 
 #[allow(dead_code)]
 #[inline]
-pub fn must_align<T>(ptr: *const T) {
+pub(crate) fn must_align<T>(ptr: *const T) {
     let actual = (ptr as usize) % align_of::<T>() == 0;
     assert!(actual);
 }

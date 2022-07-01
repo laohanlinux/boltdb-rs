@@ -30,3 +30,4 @@ temp-file = "0.1.7"
 chrono = "0.4.19"
 serde_json = "1.0"
 console_log = { version = "0.2.0", features = ["color"] }
+byteordered = "0.6.0"

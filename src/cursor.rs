@@ -10,8 +10,8 @@
 
 use crate::error::{Error, Result};
 use crate::node::{Node, WeakNode};
-use crate::page::{PageFlag, BUCKET_LEAF_FLAG};
-use crate::{Bucket, Page, PgId};
+use crate::page::{Page, PageFlag, PgId, BUCKET_LEAF_FLAG};
+use crate::Bucket;
 use either::Either;
 use log::{debug, info};
 use std::cell::RefCell;

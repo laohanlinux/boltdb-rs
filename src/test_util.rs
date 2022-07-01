@@ -1,10 +1,9 @@
 use crate::bucket::Bucket;
 use crate::db::{CheckMode, DBBuilder, DB, MAGIC};
 use crate::node::{Node, NodeBuilder};
-use crate::page::PAGE_HEADER_SIZE;
+use crate::page::{Page, PAGE_HEADER_SIZE};
 use crate::tx::WeakTx;
 use crate::tx::{TxBuilder, TX};
-use crate::Page;
 use bitflags::_core::borrow::Borrow;
 use log::{info, kv::source::as_map, kv::Source, Level};
 use rand::random;
@@ -98,7 +97,7 @@ pub(crate) fn mock_log() {
     }
 
     let env = Env::default()
-        .filter_or("MY_LOG_LEVEL", "info")
+        .filter_or("MY_LOG_LEVEL", "debug")
         .write_style_or("MY_LOG_STYLE", "always");
     let _ = env_logger::Builder::from_env(env)
         .format(|buf, record| {
