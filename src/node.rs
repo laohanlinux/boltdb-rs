@@ -29,7 +29,6 @@ pub(crate) struct NodeInner {
     // Just for inner mut
     spilled: AtomicBool,
     unbalanced: AtomicBool,
-    pub(crate) recycled: AtomicBool,
     key: RefCell<Key>,   // be set to inodes[0].key when inodes is not empty
     pgid: RefCell<PgId>, // be set to 0 when node is leaf node
     parent: RefCell<WeakNode>,
@@ -847,7 +846,6 @@ impl NodeBuilder {
             is_leaf: AtomicBool::new(self.is_leaf),
             spilled: AtomicBool::new(false),
             unbalanced: AtomicBool::new(false),
-            recycled: AtomicBool::new(false),
             key: RefCell::new(vec![]),
             pgid: RefCell::new(self.pg_id),
             parent: RefCell::new(self.parent),

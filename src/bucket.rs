@@ -202,10 +202,10 @@ impl Bucket {
     }
 
     pub fn clear(&mut self) {
-        self.buckets.try_borrow_mut().unwrap().clear();
-        self.nodes.try_borrow_mut().unwrap().clear();
-        self.page = None;
-        self.root_node = None;
+        self.buckets.borrow_mut().clear();
+        self.nodes.borrow_mut().clear();
+        self.page.take();
+        self.root_node.take();
     }
 
     /// Retrieves a nested mutable bucket by name.
@@ -385,7 +385,7 @@ impl Bucket {
             node.rebalance(&mut dirty);
         }
         for pgid in dirty {
-            if let Some(mut entry) = self.nodes.borrow_mut().remove(&pgid) {
+            if let Some(entry) = self.nodes.borrow_mut().remove(&pgid) {
                 entry.free();
             }
         }
