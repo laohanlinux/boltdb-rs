@@ -767,7 +767,8 @@ mod tests {
     use crate::error::Error::IncompatibleValue;
     use crate::test_util::{mock_db, mock_log};
     use byteordered::byteorder::{BigEndian, WriteBytesExt};
-    use log::info;
+    use log::{error, info};
+    use std::io::repeat;
 
     #[test]
     fn create() {
@@ -921,7 +922,7 @@ mod tests {
 
     #[test]
     fn put_close() {
-        let mut db = mock_db().build().unwrap();
+        let db = mock_db().build().unwrap();
         let mut tx = db.begin_rw_tx().unwrap();
 
         {
@@ -932,7 +933,7 @@ mod tests {
 
     #[test]
     fn bucket_delete() {
-        let mut db = mock_db().build().unwrap();
+        let db = mock_db().build().unwrap();
         db.update(|tx| {
             let mut bucket = tx.create_bucket(b"widgets").unwrap();
             bucket.put(b"foo", b"bar".to_vec()).unwrap();
@@ -946,7 +947,7 @@ mod tests {
 
     #[test]
     fn bucket_delete_large() {
-        let mut db = mock_db().build().unwrap();
+        let db = mock_db().build().unwrap();
         db.update(|tx| {
             let mut bucket = tx.create_bucket(b"widgets").unwrap();
             for i in 0..100 {
@@ -958,7 +959,7 @@ mod tests {
         .unwrap();
 
         db.update(|tx| {
-            let mut bucket = tx.bucket_mut(b"widgets").unwrap();
+            let bucket = tx.bucket_mut(b"widgets").unwrap();
             for i in 0..100 {
                 bucket.delete(format!("{}", i).as_bytes()).unwrap();
             }
@@ -975,5 +976,60 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn bucket_delete_freelist_overflow() {
+        use std::io::Write;
+        let db = mock_db().build().unwrap();
+        let mut k = [0u8; 16].to_vec();
+        for i in 0..10000 {
+            let ok = db.update(|tx| {
+                let mut bucket = tx.create_bucket_if_not_exists(b"0").unwrap();
+                for j in 0..1000 {
+                    k.write_u64::<BigEndian>(i).unwrap();
+                    k.write_u64::<BigEndian>(j).unwrap();
+                    let err = bucket.put(&k, vec![]);
+
+                    error!("i:{}, j:{}", i, j);
+                    k.clear();
+                    assert!(err.is_ok());
+                }
+                Ok(())
+            });
+            assert!(ok.is_ok());
+        }
+
+        let err = db.update(|tx| {
+            let mut bucket = tx.bucket_mut(b"0").unwrap();
+            let mut c = bucket.cursor().unwrap();
+            for k in c.next() {
+                let err = c.delete();
+                assert!(err.is_ok());
+            }
+            Ok(())
+        });
+        assert!(err.is_ok());
+    }
+
+    #[test]
+    fn bucket_nested() {
+        let db = mock_db().build().unwrap();
+        let err = db.update(|tx| {
+            let mut bt = tx.create_bucket(b"widgets").unwrap();
+            let _ = bt.create_bucket(b"foo").unwrap();
+            let err = bt.put(b"bar", b"0000".to_vec());
+            assert!(err.is_ok());
+            Ok(())
+        });
+        assert!(err.is_ok());
+
+        let err = db.update(|tx| {
+            let mut bucket = tx.bucket_mut(b"widgets").unwrap();
+            bucket.put(b"bar", b"xxxx".to_vec()).unwrap();
+            Ok(())
+        });
+
+        assert!(err.is_ok());
     }
 }
