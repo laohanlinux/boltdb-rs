@@ -95,7 +95,7 @@ impl Node {
     /// Attempts to combine the node with sibling nodes if the node fill
     /// size is below a threshold or if there are not enough keys.
     /// The node will be reclaimed to free-list with freelist.free() after merge by it's sibling
-    pub(crate) fn rebalance(&self) {
+    pub(crate) fn rebalance(&self, dirty: &mut Vec<PgId>) {
         // check rebalance
         {
             if !self.0.unbalanced.load(Ordering::Acquire) {
@@ -142,12 +142,7 @@ impl Node {
                     }
 
                     *child.0.parent.borrow_mut() = WeakNode::new();
-                    self.bucket_mut()
-                        .unwrap()
-                        .nodes
-                        .borrow_mut()
-                        .remove(&child.0.pgid.borrow());
-                    child.free();
+                    dirty.push(child.pg_id());
                 }
 
                 return;
@@ -155,16 +150,14 @@ impl Node {
         }
         // If node has no keys then just remove it.
         if self.num_children() == 0 {
-            self.0.recycled.store(true, Ordering::Relaxed);
+            dirty.push(self.pg_id());
             let key = self.0.key.borrow().clone();
             info!("zero children node, key: {}", String::from_utf8_lossy(&key));
             let pgid = *self.0.pgid.borrow();
             let mut parent = self.parent().unwrap();
             parent.del(&key);
             parent.remove_child(self);
-            // self.bucket_mut().unwrap().nodes.borrow_mut().remove(&pgid);
-            self.free();
-            parent.rebalance();
+            parent.rebalance(dirty);
             return;
         }
 
@@ -209,12 +202,7 @@ impl Node {
                 parent.remove_child(&target);
             }
 
-            self.bucket_mut()
-                .unwrap()
-                .nodes
-                .borrow_mut()
-                .remove(&target.pg_id());
-            target.free();
+            dirty.push(target.pg_id());
         } else {
             for pgid in target.0.inodes.borrow().iter().map(|i| i.pg_id) {
                 if let Some(child) = self.bucket_mut().unwrap().nodes.borrow_mut().get_mut(&pgid) {
@@ -235,14 +223,9 @@ impl Node {
                 parent.del(&self.0.key.borrow());
                 parent.remove_child(self);
             }
-            self.bucket_mut()
-                .unwrap()
-                .nodes
-                .borrow_mut()
-                .remove(&self.pg_id());
-            self.free();
+            dirty.push(self.pg_id());
         }
-        self.parent().unwrap().rebalance();
+        self.parent().unwrap().rebalance(dirty);
     }
 
     fn parent(&self) -> Option<Node> {
@@ -943,6 +926,7 @@ impl Inodes {
 mod tests {
     use crate::page::PageFlag;
     use std::sync::atomic::Ordering;
+    use std::sync::{RwLock, RwLockReadGuard};
     use std::{
         mem::size_of,
         slice::{from_raw_parts, from_raw_parts_mut},
@@ -1177,7 +1161,19 @@ mod tests {
             .expect("TODO: panic message");
         }
         let parent = n.split(4096).unwrap().unwrap();
-
         assert_eq!(parent.0.children.borrow().len(), 19);
+    }
+
+    #[test]
+    fn rlock() {
+        fn do_stuff<'a>(_: RwLockReadGuard<'_, &'a i32>, _: &'a i32) {
+            let j = 5;
+            let lock = RwLock::new(&j);
+            {
+                let i = 6;
+                do_stuff(lock.read().unwrap(), &i);
+            }
+            drop(lock)
+        }
     }
 }

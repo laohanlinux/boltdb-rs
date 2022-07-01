@@ -380,18 +380,16 @@ impl Bucket {
             self.nodes.borrow().len(),
             self.buckets.borrow().len()
         );
-        let mut dirty = vec![];
+        let mut dirty = Vec::with_capacity(self.nodes.borrow().len());
         for node in self.nodes.borrow().values() {
-            node.rebalance();
-            if node.0.recycled.load(Ordering::Acquire) {
-                dirty.push(node.pg_id());
+            node.rebalance(&mut dirty);
+        }
+        for pgid in dirty {
+            if let Some(mut entry) = self.nodes.borrow_mut().remove(&pgid) {
+                entry.free();
             }
         }
-        for pg_id in dirty {
-            self.nodes.borrow_mut().remove(&pg_id);
-        }
 
-        // self.nodes.borrow_mut().iter_mut().for_each(|node| )
         for child in self.buckets.borrow_mut().values_mut() {
             child.rebalance();
         }
