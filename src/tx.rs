@@ -722,13 +722,10 @@ impl TX {
         }
 
         // check bucket
-        if let Some(bucket) = self.0.root.try_read() {
-            self.check_bucket(&bucket, &mut reachable, &freed, &ch);
-        } else {
-            warn!("must free bucket lock");
-            return;
+        {
+            let bu = self.0.root.read();
+            self.check_bucket(&bu, &mut reachable, &freed, &ch);
         }
-
         // check page from 0 to high watermask
         // every page must be found at freed or reachable
         for i in 0..self.0.meta.try_read().unwrap().pg_id {
