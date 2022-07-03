@@ -420,6 +420,33 @@ impl DB {
         }
     }
 
+    /// Calls fn as part of a batch. it behaves similar to Update,
+    /// except:
+    ///
+    /// 1. concurrent batch calls can be combined into a single 
+    /// transaction.
+    ///
+    /// 2. the function passed to batch may be called multiple times.
+    /// regardless of whethe it returns error or not.
+    ///
+    /// This means that `batch` function side effects must be idempotent and 
+    /// tabe permanent effect only after a successful return is seen in caller.
+    ///
+    /// The maximum batch size and delay can be adjusted with DBBuilder.batch_size
+    /// and DBBuilder.batch_delay, respectively.
+    ///
+    /// batch is only useful when where are multiple threads calling it.
+    /// While callling it multiple times from single thread just blocks
+    /// thread for each single batch call
+    pub fn batch(&self, handler: impl FnMut(&mut TX) -> Result<()>) {
+        let weak_db = WeakDB::from(self);
+
+        let err_recv = {
+            let mut batch = self.0.batch.lock();
+            if batch.is_none() || batch.as_ref().unwrap().closed() {}
+        };
+    }
+
     pub(crate) fn sync(&self) -> Result<()> {
         self.0
             .file
@@ -977,8 +1004,31 @@ impl Batch {
         let mut bc = batch.clone();
         spawn(move || {
             sleep(delay);
+            bc.trigger();
         });
-        bc
+        batch
+    }
+
+    pub(super) fn closed(&self) -> bool {self.0.ran.load(Ordering::Acquire)}
+
+    pub(crate) fn push(&mut self, call: Call) -> Result<()> {
+        if self.0.ran.load(Ordering::Acquire) {
+            return Err(Unexpected("batch already run"));
+        }
+
+        let calls_len = {
+            let mut calls = self.0.calls.try_lock_for(Duration::from_secs(10)).unwrap();
+            calls.push(call);
+            call.len()
+        };
+
+        if self.0.calls_len != 0 && calls_len >= self.0.calls_len {
+            let mut bc =  self.clone();
+            thread::spawn(move || {
+                bc.trigger();
+            });
+        };
+        Ok(())
     }
 
     /// trigger runs the batch if it has not already been run.
