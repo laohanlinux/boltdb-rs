@@ -1,5 +1,7 @@
 use crate::bucket::TopBucket;
-use crate::error::Error::{DBOpFailed, DatabaseGone, DatabaseOnlyRead, Unexpected, Unexpected2};
+use crate::error::Error::{
+    DBOpFailed, DatabaseGone, DatabaseOnlyRead, TrySolo, Unexpected, Unexpected2,
+};
 use crate::error::Result;
 use crate::error::{is_valid_error, Error};
 use crate::free_list::FreeList;
@@ -10,7 +12,7 @@ use crate::TxId;
 use bitflags::bitflags;
 use fnv::FnvHasher;
 use fs2::FileExt;
-use log::{debug, info};
+use log::{debug, error, info};
 use parking_lot::lock_api::{RawMutex, RawRwLock};
 use parking_lot::MappedRwLockReadGuard;
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
@@ -22,7 +24,9 @@ use std::path::{Path, PathBuf};
 use std::slice::from_raw_parts;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::mpsc::{Sender, SyncSender};
+use std::sync::{mpsc, Arc, Weak};
+use std::thread;
 use std::thread::{sleep, spawn};
 use std::time::Duration;
 
@@ -371,6 +375,104 @@ impl DB {
         Ok(())
     }
 
+    /// Calls fn as part of a batch. It behaves similar to Update,
+    /// except:
+    ///
+    /// 1. concurrent batch calls can be combined into a single
+    /// transaction.
+    ///
+    /// 2. the function passed to batch may be called multiple times,
+    /// regardless of whether it returns error or not.
+    ///
+    /// This means that Batch function side effects must be idempotent and
+    /// take permanent effect only after a successful return is seen in
+    /// caller.
+    ///
+    /// The maximum batch size and delay can be adjusted with DBBuilder.batch_size
+    /// and DBBuilder.batch_delay, respectively.
+    ///
+    /// Batch is only useful when there are multiple threads calling it.
+    /// While calling it multiple times from single thread just blocks
+    /// thread for each single batch call
+    pub fn batch(&mut self, handler: Box<dyn Fn(&mut TX) -> Result<()>>) -> Result<()> {
+        let weak_db = WeakDB::from(self);
+        let handler = Arc::new(handler);
+        let handler_clone = handler.clone();
+        let err_recv = {
+            let mut batch = self.0.batch.lock();
+            if batch.is_none() || batch.as_ref().unwrap().closed() {
+                *batch = Some(Batch::new(
+                    weak_db,
+                    self.0.max_batch_size,
+                    self.0.max_batch_delay,
+                ));
+            }
+
+            let batch = batch.as_mut().unwrap();
+            let (err_sender, err_recv) = mpsc::sync_channel(1);
+            batch.push(Call::new(handler_clone, err_sender));
+            err_recv
+        };
+
+        if let Err(err) = err_recv.recv().unwrap() {
+            error!("failed to execute batch handler, err: {:?}", err);
+            return self.update(|tx| handler(tx));
+        }
+
+        Ok(())
+    }
+
+    pub fn stats(&self) -> Stats {
+        self.0.stats.read().clone()
+    }
+
+    pub fn page_size(&self) -> usize {
+        self.0.page_size
+    }
+
+    pub fn info(&self) -> Info {
+        let ptr = self.0.mmap.read().as_ref()[0] as *const u8;
+        Info {
+            data: ptr,
+            page_size: self.0.page_size as i64,
+        }
+    }
+
+    /// Retrieves page from mmap
+    pub fn page(&self, id: PgId) -> MappedRwLockReadGuard<Page> {
+        let page_size = self.0.page_size;
+        let pos = id as usize * page_size as usize;
+        let mmap = self.0.mmap.read_recursive();
+        RwLockReadGuard::map(mmap, |mmap| Page::from_slice(&mmap.as_ref()[pos..]))
+    }
+
+    /// Retrieves the current meta page reference
+    pub fn meta(&self) -> Meta {
+        // We have to return the meta with the highest txid which doesn't fail
+        // validation. Otherwise, we can cause errors when in fact the database is
+        // in a consistent state. Meta0 is the one with highest txid
+        let (page_0, page_1) = (self.page(0), self.page(1));
+        let (mut meta_0, mut meta_1) = (page_0.meta(), page_1.meta());
+        if meta_1.tx_id > meta_0.tx_id {
+            std::mem::swap(&mut meta_0, &mut meta_1);
+        }
+
+        // Use higher meta page if valid. Otherwise fallback to previous, if valid
+        if meta_0.validate().is_ok() {
+            return meta_0.clone();
+        }
+        if meta_1.validate().is_ok() {
+            return meta_1.clone();
+        }
+
+        debug!("meta_0: {:?}, meta_1: {:?}", meta_0, meta_1);
+        // This should never be reached, because both meta1 and meta0 were validated
+        // on mmap() and we do fsync() on every write.
+        panic!("invalid meta pages")
+    }
+}
+
+impl<'a> DB {
     pub(crate) fn remove_tx(&self, tx: &TX) -> Result<TX> {
         if tx.writable() {
             let (free_list_n, free_list_pending_n, free_list_alloc) = {
@@ -428,57 +530,6 @@ impl DB {
             .map_err(|_e| DBOpFailed(_e.to_string()))
     }
 
-    pub fn stats(&self) -> Stats {
-        self.0.stats.read().clone()
-    }
-
-    pub fn page_size(&self) -> usize {
-        self.0.page_size
-    }
-
-    pub fn info(&self) -> Info {
-        let ptr = self.0.mmap.read().as_ref()[0] as *const u8;
-        Info {
-            data: ptr,
-            page_size: self.0.page_size as i64,
-        }
-    }
-
-    /// Retrieves page from mmap
-    pub fn page(&self, id: PgId) -> MappedRwLockReadGuard<Page> {
-        let page_size = self.0.page_size;
-        let pos = id as usize * page_size as usize;
-        let mmap = self.0.mmap.read_recursive();
-        RwLockReadGuard::map(mmap, |mmap| Page::from_slice(&mmap.as_ref()[pos..]))
-    }
-
-    /// Retrieves the current meta page reference
-    pub fn meta(&self) -> Meta {
-        // We have to return the meta with the highest txid which doesn't fail
-        // validation. Otherwise, we can cause errors when in fact the database is
-        // in a consistent state. Meta0 is the one with highest txid
-        let (page_0, page_1) = (self.page(0), self.page(1));
-        let (mut meta_0, mut meta_1) = (page_0.meta(), page_1.meta());
-        if meta_1.tx_id > meta_0.tx_id {
-            std::mem::swap(&mut meta_0, &mut meta_1);
-        }
-
-        // Use higher meta page if valid. Otherwise fallback to previous, if valid
-        if meta_0.validate().is_ok() {
-            return meta_0.clone();
-        }
-        if meta_1.validate().is_ok() {
-            return meta_1.clone();
-        }
-
-        debug!("meta_0: {:?}, meta_1: {:?}", meta_0, meta_1);
-        // This should never be reached, because both meta1 and meta0 were validated
-        // on mmap() and we do fsync() on every write.
-        panic!("invalid meta pages")
-    }
-}
-
-impl<'a> DB {
     fn page_in_buffer<'b>(&'a self, buf: &'b mut [u8], id: PgId) -> &'b mut Page {
         let page_size = self.0.page_size as usize;
         let pos = id as usize * page_size;
@@ -819,11 +870,15 @@ impl Meta {
     // writes the meta onto a page
     pub fn write(&mut self, p: &mut Page) -> Result<()> {
         if self.root.root >= self.pg_id {
-            panic!("root bucket pgid({}) above high water mark ({})", self.root.root, self.pg_id);
+            panic!(
+                "root bucket pgid({}) above high water mark ({})",
+                self.root.root, self.pg_id
+            );
         } else if self.free_list >= self.pg_id {
             panic!(
                 "freelist pgid({}) above high water mark ({})",
-                self.free_list, self.pg_id);
+                self.free_list, self.pg_id
+            );
         }
         // Page id is either going to be 0 or 1 which we can determine by the transaction ID.
         p.id = self.tx_id % 2;
@@ -954,7 +1009,7 @@ impl AddAssign for TxStats {
 
 struct BatchInner {
     db: WeakDB,
-    calls_len: usize,
+    max_batch_size: usize,
     ran: AtomicBool,
     pub(super) calls: Mutex<Vec<Call>>,
 }
@@ -967,18 +1022,43 @@ unsafe impl Send for Batch {}
 unsafe impl Sync for Batch {}
 
 impl Batch {
-    pub(super) fn new(db: WeakDB, calls_len: usize, delay: Duration) -> Self {
+    pub(super) fn new(db: WeakDB, max_batch_size: usize, delay: Duration) -> Self {
         let batch = Batch(Arc::new(BatchInner {
             db,
-            calls_len,
+            max_batch_size,
             ran: AtomicBool::new(false),
             calls: Mutex::new(Vec::new()),
         }));
         let mut bc = batch.clone();
         spawn(move || {
             sleep(delay);
+            bc.trigger();
         });
-        bc
+        batch
+    }
+
+    pub(super) fn closed(&self) -> bool {
+        self.0.ran.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn push(&mut self, call: Call) -> Result<()> {
+        if self.0.ran.load(Ordering::Acquire) {
+            return Err(Unexpected("batch already run"));
+        }
+
+        let calls_len = {
+            let mut calls = self.0.calls.try_lock_for(Duration::from_secs(10)).unwrap();
+            calls.push(call);
+            calls.len()
+        };
+
+        // wake up batch, it's ready to run
+        if self.0.max_batch_size != 0 && calls_len >= self.0.max_batch_size {
+            let mut bc = self.clone();
+            spawn(move || bc.trigger());
+        }
+
+        Ok(())
     }
 
     /// trigger runs the batch if it has not already been run.
@@ -990,10 +1070,52 @@ impl Batch {
 
     /// run performs the transactions in the batch and communicates results.
     /// back to DB.Batch
-    fn run(&mut self) {}
+    fn run(&mut self) {
+        let db = self.0.db.upgrade().unwrap();
+        db.0.batch.lock().take();
+
+        let mut calls = self.0.calls.try_lock().unwrap();
+        while !calls.is_empty() {
+            let mut last_call_id = 0;
+            if let Err(err) = db.update(|tx| {
+                for (index, call) in calls.iter().enumerate() {
+                    last_call_id = index;
+                    (call.h)(tx)?;
+                }
+
+                Ok(())
+            }) {
+                let failed_call = calls.remove(last_call_id);
+                failed_call
+                    .err
+                    .send(Err(TrySolo(format!("{:?}", err))))
+                    .unwrap();
+                continue;
+            }
+
+            {
+                for call in &*calls {
+                    call.err.send(Ok(())).unwrap();
+                }
+                break;
+            }
+        }
+    }
 }
 
-pub(super) struct Call {}
+pub(super) struct Call {
+    h: Arc<Box<dyn Fn(&mut TX) -> Result<()>>>,
+    err: SyncSender<Result<()>>,
+}
+
+impl Call {
+    pub(super) fn new(
+        h: Arc<Box<dyn Fn(&mut TX) -> Result<()>>>,
+        err: SyncSender<Result<()>>,
+    ) -> Self {
+        Self { h, err }
+    }
+}
 
 pub struct Info {
     /// pointer to data

@@ -89,6 +89,11 @@ pub enum Error {
     // on the data file after the timeout passed to Open()
     #[error("timeout")]
     Timeout,
+    // TrySolo is a special sentinel error value used for signaling that a
+    // transaction function should be re-run. It should never be seen by
+    // callers.
+    #[error("batch function returned an error and should be re-run solo, err: {0}")]
+    TrySolo(String),
 }
 
 impl From<io::Error> for Error {
