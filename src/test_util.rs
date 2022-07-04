@@ -55,7 +55,6 @@ pub(crate) fn mock_db2(str: String) -> DBBuilder {
         .set_check_mode(CheckMode::PARANOID)
 }
 
-#[cfg(test)]
 pub(crate) fn temp_file() -> PathBuf {
     temp_dir().join(format!("{}.boltdb.db", rand::random::<u64>()))
 }
@@ -138,7 +137,7 @@ fn open() {
     assert_eq!(db.meta().root.root, 3);
 }
 
-#[cfg(feature="local")]
+#[cfg(feature = "local")]
 #[test]
 fn open_existing() {
     mock_log();
@@ -188,7 +187,7 @@ fn panic_while_update() {
     .unwrap();
 }
 
-#[cfg(feature="local")]
+#[cfg(feature = "local")]
 #[test]
 fn batch() {
     let db = mock_db()

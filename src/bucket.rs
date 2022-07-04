@@ -1033,6 +1033,63 @@ mod tests {
         db.must_check();
 
         // Cause a split.
-        // TODO
+        let err = db.update(|tx| {
+            let mut bucket = tx.bucket_mut(b"widgets").unwrap();
+            for i in 0..10000 {
+                let err = bucket.put(
+                    format!("{}", i).as_bytes(),
+                    format!("{}", i).as_bytes().to_vec(),
+                );
+                assert!(err.is_ok());
+            }
+            Ok(())
+        });
+        assert!(err.is_ok());
+        db.must_check();
+
+        // isnert into widgets/foo/baz.
+        let err = db.update(|tx| {
+            let mut bucket = tx.bucket_mut(b"widgets").unwrap();
+            bucket
+                .bucket_mut(b"foo")
+                .unwrap()
+                .put(b"baz", b"yyyy".to_vec())
+                .unwrap();
+            Ok(())
+        });
+        db.must_check();
+
+        // verify
+        let err = db.view(|tx| {
+            let bucket = tx.bucket(b"widgets").unwrap();
+            let value = bucket.bucket(b"foo").unwrap().get(b"baz").unwrap();
+            assert_eq!(value, b"yyyy".to_vec());
+            let value = bucket.get(b"bar").unwrap();
+            assert_eq!(value, b"xxxx".to_vec());
+            for i in 0..10000 {
+              let got = bucket.get(format!("{}", i).as_bytes()).unwrap();
+              assert_eq!(format!("{}",i).as_bytes().to_vec(), got);
+            }
+            Ok(())
+        });
+        assert!(err.is_ok());
+    }
+
+    #[test]
+    fn delete_bucket_nest() {
+        let db  = mock_db().build().unwrap();
+        let err = db.update(|tx| {
+            {
+                let mut widgets = tx.create_bucket(b"widgets").unwrap();
+                let mut foo = widgets.create_bucket(b"foo").unwrap();
+                let mut bar = foo.create_bucket(b"bar").unwrap();
+                bar.put(b"baz", b"bat".to_vec()).unwrap();
+            }
+            {
+                tx.bucket_mut(b"widgets").unwrap().delete_bucket(b"foo").unwrap();
+            }
+            Ok(())
+        });
+        assert!(err.is_ok());
     }
 }
