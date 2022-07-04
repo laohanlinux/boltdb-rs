@@ -1142,6 +1142,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature="local")]
     #[test]
     fn check_corrupted() {
         mock_log();

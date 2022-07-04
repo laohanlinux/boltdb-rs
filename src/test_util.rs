@@ -138,6 +138,7 @@ fn open() {
     assert_eq!(db.meta().root.root, 3);
 }
 
+#[cfg(feature="local")]
 #[test]
 fn open_existing() {
     mock_log();
@@ -187,6 +188,7 @@ fn panic_while_update() {
     .unwrap();
 }
 
+#[cfg(feature="local")]
 #[test]
 fn batch() {
     let db = mock_db()
