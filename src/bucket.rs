@@ -978,37 +978,38 @@ mod tests {
         .unwrap();
     }
 
-    //#[test]
-    //fn bucket_delete_freelist_overflow() {
-    //    use std::io::Write;
-    //    let db = mock_db().build().unwrap();
-    //    let mut k = [0u8; 16].to_vec();
-    //    for i in 0..10000 {
-    //        let ok = db.update(|tx| {
-    //            let mut bucket = tx.create_bucket_if_not_exists(b"0").unwrap();
-    //            for j in 0..1000 {
-    //                k.write_u64::<BigEndian>(i).unwrap();
-    //                k.write_u64::<BigEndian>(j).unwrap();
-    //                let err = bucket.put(&k, vec![]);
-    //                assert!(err.is_ok());
-    //                k.clear();
-    //            }
-    //            Ok(())
-    //        });
-    //        assert!(ok.is_ok());
-    //    }
-    //
-    //    let err = db.update(|tx| {
-    //        let mut bucket = tx.bucket_mut(b"0").unwrap();
-    //        let mut c = bucket.cursor().unwrap();
-    //        for k in c.next() {
-    //            let err = c.delete();
-    //            assert!(err.is_ok());
-    //        }
-    //        Ok(())
-    //    });
-    //    assert!(err.is_ok());
-    //}
+    #[test]
+    #[cfg(feature = "t_overflow")]
+    fn bucket_delete_freelist_overflow() {
+        use std::io::Write;
+        let db = mock_db().build().unwrap();
+        let mut k = [0u8; 16].to_vec();
+        for i in 0..10000 {
+            let ok = db.update(|tx| {
+                let mut bucket = tx.create_bucket_if_not_exists(b"0").unwrap();
+                for j in 0..1000 {
+                    k.write_u64::<BigEndian>(i).unwrap();
+                    k.write_u64::<BigEndian>(j).unwrap();
+                    let err = bucket.put(&k, vec![]);
+                    k.clear();
+                    assert!(err.is_ok());
+                }
+                Ok(())
+            });
+            assert!(ok.is_ok());
+        }
+
+        let err = db.update(|tx| {
+            let mut bucket = tx.bucket_mut(b"0").unwrap();
+            let mut c = bucket.cursor().unwrap();
+            for k in c.next() {
+                let err = c.delete();
+                assert!(err.is_ok());
+            }
+            Ok(())
+        });
+        assert!(err.is_ok());
+    }
 
     #[test]
     fn bucket_nested() {
