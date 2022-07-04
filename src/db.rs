@@ -21,6 +21,7 @@ use std::hash::Hasher;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::ops::AddAssign;
 use std::path::{Path, PathBuf};
+use std::process::exit;
 use std::slice::from_raw_parts;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,6 +30,7 @@ use std::sync::{mpsc, Arc, Weak};
 use std::thread;
 use std::thread::{sleep, spawn};
 use std::time::Duration;
+use crate::test_util::temp_file;
 
 /// The largest step that can be token when remapping the mman.
 pub const MAX_MMAP_STEP: u64 = 1 << 30; //1GB
@@ -394,7 +396,7 @@ impl DB {
     /// Batch is only useful when there are multiple threads calling it.
     /// While calling it multiple times from single thread just blocks
     /// thread for each single batch call
-    pub fn batch(&mut self, handler: Box<dyn Fn(&mut TX) -> Result<()>>) -> Result<()> {
+    pub fn batch(&self, handler: Box<dyn Fn(&mut TX) -> Result<()>>) -> Result<()> {
         let weak_db = WeakDB::from(self);
         let handler = Arc::new(handler);
         let handler_clone = handler.clone();
@@ -473,6 +475,38 @@ impl DB {
 }
 
 impl<'a> DB {
+    pub(crate) fn must_check(&self) {
+       let err = self.update(|tx| {
+            let mut errs = vec![];
+            while let Ok(err) = tx.check().recv() {
+                errs.push(err);
+                if errs.len() > 10 {
+                    break
+                }
+            }
+            if !errs.is_empty() {
+                let path = temp_file();
+                let mut mode = OpenOptions::new();
+                mode.write(true);
+                if let Err(err) = tx.copy_to(path.to_str().unwrap(), mode) {
+                    panic!(err);
+                }
+
+                info!("consistency check failed ({} errors)", errs.len());
+                for _ in errs {
+                    info!("");
+                    info!("db save to:");
+                    exit(-1);
+                }
+            }
+            Ok(())
+        });
+
+        if err.is_err() {
+            panic!(err);
+        }
+    }
+
     pub(crate) fn remove_tx(&self, tx: &TX) -> Result<TX> {
         if tx.writable() {
             let (free_list_n, free_list_pending_n, free_list_alloc) = {

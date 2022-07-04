@@ -772,7 +772,7 @@ mod tests {
 
     #[test]
     fn create() {
-        let mut db = mock_db().build().unwrap();
+        let db = mock_db().build().unwrap();
         let mut tx = db.begin_rw_tx().unwrap();
         assert!(tx.bucket(b"foo").is_err());
         let mut bucket = tx.create_bucket(b"foo").unwrap();
@@ -790,7 +790,7 @@ mod tests {
     #[test]
     fn create_nested_bucket() {
         let path = {
-            let mut db = mock_db().set_auto_remove(false).build().unwrap();
+            let db = mock_db().set_auto_remove(false).build().unwrap();
             let mut tx = db.begin_rw_tx().unwrap();
             assert!(tx.bucket(b"foo").is_err());
 
@@ -1022,13 +1022,17 @@ mod tests {
             Ok(())
         });
         assert!(err.is_ok());
+        db.must_check();
 
         let err = db.update(|tx| {
             let mut bucket = tx.bucket_mut(b"widgets").unwrap();
             bucket.put(b"bar", b"xxxx".to_vec()).unwrap();
             Ok(())
         });
-
         assert!(err.is_ok());
+        db.must_check();
+
+        // Cause a split.
+        // TODO
     }
 }
