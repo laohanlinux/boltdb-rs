@@ -243,7 +243,7 @@ impl Bucket {
             return Err(Error::TxReadOnly);
         }
         if key.is_empty() {
-            return Err(Error::EmptyKey);
+            return Err(Error::KeyRequired);
         }
         if key.len() > MAX_KEY_SIZE {
             return Err(Error::KeyTooLarge);
@@ -1244,9 +1244,39 @@ mod tests {
                 }
                 Ok(())
             });
-            assert_eq!(format!("{:?}", err.unwrap_err()), format!("{:?}", Unexpected("marker")));
+            assert_eq!(err, Err(Unexpected("marker")));
             assert_eq!(index, 2);
             Ok(())
         }).unwrap();
+    }
+
+    #[test]
+    fn bucket_for_each_closed(){
+        let db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        tx.create_bucket(b"widgets").unwrap();
+        tx.rollback().unwrap();
+        let err = tx.bucket(b"widgets").unwrap().for_each(|key, value| { Ok(())});
+        assert_eq!(Err(crate::Error::TxClosed), err);
+    }
+
+    #[test]
+    fn bucket_put_empty_key() {
+        let db = mock_db().build().unwrap();
+        let err = db.update(|tx| {
+            let mut bucket = tx.create_bucket(b"widgets").unwrap();
+            bucket.put(b"", b"bar".to_vec())
+        });
+        assert_eq!(Err(crate::Error::KeyRequired), err);
+    }
+    
+    #[test]
+    fn bucket_put_key_too_large() {
+        let db = mock_db().build().unwrap();
+        let err = db.update(|tx| {
+            let mut bucket = tx.create_bucket(b"widgets").unwrap();
+            bucket.put(&[0u8; 32769], b"bar".to_vec())
+        });
+        assert_eq!(Err(crate::Error::KeyTooLarge), err);
     }
 }

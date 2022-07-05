@@ -24,6 +24,7 @@ pub mod tx;
 pub use bucket::Bucket;
 pub use db::DB;
 pub use tx::{TxId, TxStats, TX};
+pub use error::Error;
 
 #[allow(dead_code)]
 #[inline]
