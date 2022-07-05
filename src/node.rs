@@ -6,7 +6,7 @@ use crate::page::{
     PAGE_HEADER_SIZE,
 };
 use crate::Bucket;
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use memoffset::ptr::copy_nonoverlapping;
 use std::borrow::{Borrow, BorrowMut};
 use std::cell::{Cell, Ref, RefCell, RefMut};

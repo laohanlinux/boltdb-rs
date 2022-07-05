@@ -197,7 +197,7 @@ impl Bucket {
             }
             Ok(())
         })
-        .unwrap();
+            .unwrap();
         names
     }
 
@@ -529,8 +529,8 @@ impl Bucket {
     /// Iterates over every page (or node) in a bucket.
     /// This also includes inline pages.
     pub(crate) fn for_each_page_node<F>(&self, mut handler: F)
-    where
-        F: FnMut(Either<&Page, &Node>, isize),
+        where
+            F: FnMut(Either<&Page, &Node>, isize),
     {
         // If we have an inline page then just use that.
         if let Some(ref page) = self.page {
@@ -542,8 +542,8 @@ impl Bucket {
 
     // Pre-Order Traversal
     fn __for_each_page_node<F>(&self, pgid: PgId, depth: isize, handler: &mut F)
-    where
-        F: FnMut(Either<&Page, &Node>, isize),
+        where
+            F: FnMut(Either<&Page, &Node>, isize),
     {
         let item = self.page_node(pgid).unwrap();
         handler(item.upgrade(), depth);
@@ -752,6 +752,7 @@ impl Bucket {
         if !self.tx()?.writable() {
             return Err(Error::TxReadOnly);
         }
+        // load root node
         if self.root_node.is_none() {
             let pgid = self.root();
             self.node(pgid, WeakNode::new());
@@ -764,7 +765,7 @@ impl Bucket {
 #[cfg(test)]
 mod tests {
     use crate::error::Error;
-    use crate::error::Error::IncompatibleValue;
+    use crate::error::Error::{IncompatibleValue, Unexpected};
     use crate::test_util::{mock_db, mock_log};
     use byteordered::byteorder::{BigEndian, WriteBytesExt};
     use log::{error, info};
@@ -876,7 +877,7 @@ mod tests {
             assert_eq!(value, Vec::from("bar"));
             Ok(())
         })
-        .unwrap();
+            .unwrap();
     }
 
     #[test]
@@ -942,7 +943,7 @@ mod tests {
             assert!(ok.is_none());
             Ok(())
         })
-        .unwrap();
+            .unwrap();
     }
 
     #[test]
@@ -956,7 +957,7 @@ mod tests {
             }
             Ok(())
         })
-        .unwrap();
+            .unwrap();
 
         db.update(|tx| {
             let mut bucket = tx.bucket_mut(b"widgets").unwrap();
@@ -965,7 +966,7 @@ mod tests {
             }
             Ok(())
         })
-        .unwrap();
+            .unwrap();
 
         db.view(|tx| {
             let bucket = tx.bucket(b"widgets").unwrap();
@@ -975,7 +976,7 @@ mod tests {
             }
             Ok(())
         })
-        .unwrap();
+            .unwrap();
     }
 
     #[test]
@@ -1067,8 +1068,8 @@ mod tests {
             let value = bucket.get(b"bar").unwrap();
             assert_eq!(value, b"xxxx".to_vec());
             for i in 0..10000 {
-              let got = bucket.get(format!("{}", i).as_bytes()).unwrap();
-              assert_eq!(format!("{}",i).as_bytes().to_vec(), got);
+                let got = bucket.get(format!("{}", i).as_bytes()).unwrap();
+                assert_eq!(format!("{}", i).as_bytes().to_vec(), got);
             }
             Ok(())
         });
@@ -1077,19 +1078,175 @@ mod tests {
 
     #[test]
     fn delete_bucket_nest() {
-        let db  = mock_db().build().unwrap();
+        let db = mock_db().build().unwrap();
         let err = db.update(|tx| {
             {
                 let mut widgets = tx.create_bucket(b"widgets").unwrap();
-                let mut foo = widgets.create_bucket(b"foo").unwrap();
-                let mut bar = foo.create_bucket(b"bar").unwrap();
+                let foo = widgets.create_bucket(b"foo").unwrap();
+                let bar = foo.create_bucket(b"bar").unwrap();
                 bar.put(b"baz", b"bat".to_vec()).unwrap();
-            }
-            {
-                tx.bucket_mut(b"widgets").unwrap().delete_bucket(b"foo").unwrap();
             }
             Ok(())
         });
         assert!(err.is_ok());
+
+        let err = db.update(|tx| {
+            {
+                let widgets = tx.bucket(b"widgets").unwrap();
+                let foo = widgets.bucket(b"foo").unwrap();
+                let bar = foo.bucket(b"bar").unwrap();
+                bar.get(b"baz").unwrap();
+            }
+
+            tx.delete_bucket(b"widgets").unwrap();
+            Ok(())
+        });
+        assert!(err.is_ok());
+
+        let err = db.view(|tx| {
+            let err = tx.bucket(b"widgets");
+            assert!(err.is_err());
+            Ok(())
+        });
+        assert!(err.is_ok());
+    }
+
+    #[test]
+    fn bucket_sequence() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            let mut bkt = tx.create_bucket(b"0").unwrap();
+            assert_eq!(bkt.sequence(), 0);
+            bkt.set_sequence(1000).unwrap();
+            assert_eq!(bkt.sequence(), 1000);
+            Ok(())
+        }).unwrap();
+
+        db.view(|tx| {
+            let seq = tx.bucket(b"0").unwrap().sequence();
+            assert_eq!(seq, 1000);
+
+            Ok(())
+        }).unwrap()
+    }
+
+
+    #[test]
+    fn bucket_next_sequence() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            {
+                let widgets = tx.create_bucket(b"widgets").unwrap();
+            }
+
+            {
+                let woojits = tx.create_bucket(b"woojits").unwrap();
+            }
+
+            {
+                let sequence = tx.bucket_mut(b"widgets").unwrap().next_sequence().unwrap();
+                assert_eq!(sequence, 1);
+            }
+            {
+                let sequence = tx.bucket_mut(b"widgets").unwrap().next_sequence().unwrap();
+                assert_eq!(sequence, 2);
+            }
+            {
+                let sequence = tx.bucket_mut(b"woojits").unwrap().next_sequence().unwrap();
+                assert_eq!(sequence, 1);
+            }
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn bucket_next_sequence_persist() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            tx.create_bucket(b"widgets").unwrap();
+            Ok(())
+        }).unwrap();
+        db.update(|tx| {
+            let _ = tx.bucket_mut(b"widgets").unwrap().next_sequence().unwrap();
+            Ok(())
+        }).unwrap();
+
+        db.update(|tx| {
+            let seq = tx.bucket_mut(b"widgets").unwrap().next_sequence().unwrap();
+            assert_eq!(seq, 2);
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn bucket_next_sequence_readonly() {
+        // nothind can do
+    }
+
+
+    #[test]
+    fn bucket_next_sequence_closed() {
+        let db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        {
+            tx.create_bucket(b"widgets").unwrap();
+        }
+
+        tx.rollback().unwrap();
+        // let err = tx.bucket_mut(b"widgets").unwrap().next_sequence();
+        // assert!(err.is_err());
+    }
+
+    #[test]
+    fn bucket_for_each() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            let mut bucket = tx.create_bucket(b"widgets").unwrap();
+            bucket.put(b"foo", b"0000".to_vec()).unwrap();
+            bucket.put(b"baz", b"0001".to_vec()).unwrap();
+            bucket.put(b"bar", b"0002".to_vec()).unwrap();
+
+            let mut index = 0;
+            bucket.for_each(|key, value| {
+                if index == 0 {
+                    assert_eq!(key, b"bar");
+                    assert_eq!(value.unwrap(), b"0002");
+                } else if index == 1 {
+                    assert_eq!(key, b"baz");
+                    assert_eq!(value.unwrap(), b"0001");
+                } else {
+                    assert_eq!(key, b"foo");
+                    assert_eq!(value.unwrap(), b"0000");
+                }
+                index += 1;
+                Ok(())
+            }).unwrap();
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn bucket_for_each_short_circuit() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            {
+                let mut bucket = tx.create_bucket(b"widgets").unwrap();
+                bucket.put(b"bar", b"0000".to_vec()).unwrap();
+                bucket.put(b"baz", b"0000".to_vec()).unwrap();
+                bucket.put(b"foo", b"0000".to_vec()).unwrap();
+            }
+            let mut index = 0;
+            let bucket = tx.bucket(b"widgets").unwrap();
+            let err = bucket.for_each(|key, value| {
+                index += 1;
+                if key == b"baz" {
+                    return Err(Unexpected("marker"));
+                }
+                Ok(())
+            });
+            assert_eq!(format!("{:?}", err.unwrap_err()), format!("{:?}", Unexpected("marker")));
+            assert_eq!(index, 2);
+            Ok(())
+        }).unwrap();
     }
 }

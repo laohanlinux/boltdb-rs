@@ -1,6 +1,6 @@
 use crate::cursor::Cursor;
 use crate::db::{CheckMode, Meta, WeakDB, DB};
-use crate::error::Error::Unexpected;
+use crate::error::Error::{TxClosed, Unexpected};
 use crate::page::{OwnedPage, PageInfo, PgId};
 use crate::page::{Page, PageFlag};
 use crate::{error::Error, error::Result, Bucket};
@@ -103,11 +103,20 @@ impl TX {
     /// The cursor is only valid as long as the transaction is open.
     /// Do not use a cursor after the transaction is closed.
     pub fn cursor(&mut self) -> Cursor<RwLockWriteGuard<Bucket>> {
+        if !self.opened() {
+            panic!("transaction has already closed");
+        }
         self.0.stats.lock().cursor_count += 1;
         Cursor::new(self.0.root.write())
     }
 
     pub fn bucket_mut(&mut self, key: &[u8]) -> Result<MappedRwLockWriteGuard<Bucket>> {
+        if !self.0.writeable {
+            return Err(Error::TxReadOnly);
+        }
+        if !self.opened() {
+            return Err(Error::TxClosed);
+        }
         let bucket = self
             .0
             .root
@@ -119,6 +128,9 @@ impl TX {
 
     /// returns bucket keys for db
     pub fn buckets(&self) -> Vec<Vec<u8>> {
+        if !self.opened() {
+            panic!("transaction has already closed");
+        }
         self.0.root.read().buckets()
     }
 
@@ -128,6 +140,9 @@ impl TX {
     pub fn create_bucket(&mut self, key: &[u8]) -> Result<MappedRwLockWriteGuard<Bucket>> {
         if !self.0.writeable {
             return Err(Error::TxReadOnly);
+        }
+        if !self.opened() {
+            return Err(Error::TxClosed);
         }
         let bucket = self.0.root.try_write().ok_or("can't create bucket")?;
         RwLockWriteGuard::try_map(bucket, |b| b.create_bucket(key).ok())
@@ -144,6 +159,9 @@ impl TX {
         if !self.writable() {
             return Err(Error::TxReadOnly);
         }
+        if !self.opened() {
+            return Err(Error::TxClosed);
+        }
         let bucket = self.0.root.try_write().ok_or("Can't acquire bucket")?;
 
         RwLockWriteGuard::try_map(bucket, |b| b.create_bucket_if_not_exists(key).ok())
@@ -155,6 +173,9 @@ impl TX {
     pub fn delete_bucket(&mut self, key: &[u8]) -> Result<()> {
         if !self.writable() {
             return Err(Error::TxReadOnly);
+        }
+        if !self.opened() {
+            return Err(Error::TxClosed);
         }
         self.0.root.try_write().unwrap().delete_bucket(key)
     }
@@ -168,6 +189,9 @@ impl TX {
         &self,
         mut handler: impl FnMut(&[u8], Option<&Bucket>) -> Result<()>,
     ) -> Result<()> {
+        if !self.opened() {
+            return Err(Error::TxClosed);
+        }
         let root = self.0.root.try_write().unwrap();
         root.for_each(|key, _v| handler(key, root.bucket(key)))
     }
@@ -175,6 +199,12 @@ impl TX {
     /// Writes the entries database to a writer.
     /// If err == nil then exactly tx.Size() bytes will be written into the writer.
     pub fn write_to<W: Write>(&self, mut w: W) -> Result<i64> {
+        if !self.0.writeable {
+            return Err(Error::TxReadOnly);
+        }
+        if !self.opened() {
+            return Err(Error::TxClosed);
+        }
         let db = self.db()?;
         let page_size = db.page_size();
         let mut file =
@@ -224,11 +254,7 @@ impl TX {
     /// Closes the transaction and ignores all previous updates. Read-Only
     /// transactions must be rolled back and not committed
     pub fn rollback(&self) -> Result<()> {
-        if self.0.managed.load(Ordering::Acquire) {
-            return Err(Error::TxClosed);
-        }
-        // self.__rollback()?;
-        let db = self.db()?;
+        let db = self.db().map_err(|_| TxClosed)?;
         if self.writable() {
             let txid = self.id();
             let mut free_list = db.0.free_list.write();
@@ -237,6 +263,7 @@ impl TX {
             let free_list_page = db.page(free_list_id);
             free_list.reload(&free_list_page);
         }
+        self.take_db();
         Ok(())
     }
 }
@@ -284,6 +311,10 @@ impl TX {
             .unwrap()
             .upgrade()
             .ok_or(Error::DatabaseGone)
+    }
+
+    pub(crate) fn take_db(&self) {
+        *self.0.db.write() = WeakDB::new();
     }
 
     // return current transaction id
@@ -562,7 +593,7 @@ impl TX {
             }
             Ok(())
         })
-        .unwrap();
+            .unwrap();
     }
 
     /// Returns a contiguous block of memory starting at a given page.
@@ -745,16 +776,7 @@ impl Drop for TX {
         if count > 2 {
             return;
         }
-        // let trace_id = SystemTime::now()
-        //     .duration_since(UNIX_EPOCH)
-        //     .unwrap()
-        //     .as_nanos();
-        // warn!(
-        //     "tx count reference has to {}, trace-id: {}",
-        //     count, trace_id
-        // );
         if let Ok(_db) = self.db() {
-            // warn!("has db, trace-id: {}", trace_id);
             if self.0.writeable {
                 self.commit().unwrap();
             } else {
@@ -1064,7 +1086,7 @@ mod tests {
             assert_eq!(bucket.get(b"thomas").expect("no thomas"), b"jefferson");
             Ok(())
         })
-        .unwrap();
+            .unwrap();
     }
 
     #[test]
@@ -1108,7 +1130,7 @@ mod tests {
             bucket_names.push(b.to_vec());
             Ok(())
         })
-        .unwrap();
+            .unwrap();
         assert_eq!(bucket_names.len(), 2);
         assert!(bucket_names.contains(&b"bucket".to_vec()));
         assert!(bucket_names.contains(&b"another bucket".to_vec()));
@@ -1142,7 +1164,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature="local")]
+    #[cfg(feature = "local")]
     #[test]
     fn check_corrupted() {
         mock_log();
@@ -1155,79 +1177,4 @@ mod tests {
 
     #[test]
     fn test_tx_commit_err_tx_closed() {}
-
-    // #[test]
-    // fn test_tx_rollback_err_tx_closed() {}
-    //
-    // #[test]
-    // fn test_tx_commit_err_tx_not_writable() {}
-    //
-    // #[test]
-    // fn test_tx_cursor() {}
-    //
-    // #[test]
-    // fn test_tx_create_bucket_err_tx_not_writable() {}
-    //
-    // #[test]
-    // fn test_tx_create_bucket_err_tx_closed() {}
-    //
-    // #[test]
-    // fn test_tx_bucket() {}
-    //
-    // #[test]
-    // fn test_get_not_found() {}
-    //
-    // #[test]
-    // fn test_tx_create_bucket() {}
-    //
-    // #[test]
-    // fn test_create_bucket_if_not_exists() {}
-    //
-    // #[test]
-    // fn test_tx_create_bucket_if_not_exists_err_bucket_name_required() {}
-    //
-    // #[test]
-    // fn test_tx_create_bucket_err_bucket_exists() {}
-    //
-    // #[test]
-    // fn test_tx_create_bucket_err_bucket_name_required() {}
-    //
-    // #[test]
-    // fn test_tx_delete_bucket() {}
-    //
-    // #[test]
-    // fn test_tx_delete_bucket_err_tx_closed() {}
-    //
-    // #[test]
-    // fn test_tx_delete_bucket_read_only() {}
-    //
-    // #[test]
-    // fn test_tx_delete_bucket_not_found() {}
-    //
-    // #[test]
-    // fn test_tx_foreach_no_error() {}
-    //
-    // #[test]
-    // fn test_tx_foreach_with_error() {}
-    //
-    // #[test]
-    // fn test_tx_on_commit() {}
-    //
-    // #[test]
-    // fn test_tx_on_commit_rollback() {}
-    //
-    // #[test]
-    // fn test_tx_copy_file() {}
-    //
-    // #[test]
-    // fn test_tx_copy_file_error_meta() {}
-    //
-    // #[test]
-    // fn test_tx_copy_file_error_normal() {}
-    //
-    // #[test]
-    // fn example_tx_rollback() {}
-    //
-    // #[test]
-    // fn example_tx_copy_file() {}
 }
