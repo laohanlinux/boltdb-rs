@@ -25,9 +25,8 @@ use std::process::exit;
 use std::slice::from_raw_parts;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Sender, SyncSender};
+use std::sync::mpsc::SyncSender;
 use std::sync::{mpsc, Arc, Weak};
-use std::thread;
 use std::thread::{sleep, spawn};
 use std::time::Duration;
 use crate::test_util::temp_file;
@@ -412,7 +411,7 @@ impl DB {
 
             let batch = batch.as_mut().unwrap();
             let (err_sender, err_recv) = mpsc::sync_channel(1);
-            batch.push(Call::new(handler_clone, err_sender));
+            batch.push(Call::new(handler_clone, err_sender))?;
             err_recv
         };
 
@@ -424,7 +423,12 @@ impl DB {
         Ok(())
     }
 
+    /// Returns stats on a bucket.
     pub fn stats(&self) -> Stats {
+        let mut substats = BucketStats::default(); 
+        let mut s = BucketStats::default(); 
+        let mut page_size = self.page_size();
+        s.bucket_n += 1;
         self.0.stats.read().clone()
     }
 
@@ -950,18 +954,18 @@ impl Meta {
 pub struct Stats {
     // FreeList stats.
     // total number of free pages on the freelist.
-    pending_page_n: usize,
+    pub pending_page_n: usize,
     // total number of pending pages on the freelist.
-    free_alloc: usize,
+    pub free_alloc: usize,
     // total bytes allocated in free pages.
-    free_list_inuse: u64,
+    pub free_list_inuse: u64,
     // total bytes used by the freelist.
-    free_page_n: usize,
+    pub free_page_n: usize,
     // Transaction stats
     // total number of started read transactions.
-    tx_n: u64,
+    pub tx_n: u64,
     // number of currently open read transactions.
-    open_tx_n: usize,
+    pub open_tx_n: usize,
 }
 
 /// Transaction statistics

@@ -1,5 +1,5 @@
 use crate::cursor::{Cursor, PageNode};
-use crate::db::{Stats, DB};
+use crate::db::{Stats, DB, BucketStats};
 use crate::error::{Error, Result};
 use crate::node::{Node, NodeBuilder, WeakNode};
 use crate::page::{ElementSize, OwnedPage, Page, PgId, BUCKET_LEAF_FLAG, PAGE_HEADER_SIZE};
@@ -11,6 +11,7 @@ use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::intrinsics::copy_nonoverlapping;
+use std::ops::AddAssign;
 use std::sync::atomic::Ordering;
 use std::sync::Weak;
 
@@ -155,7 +156,7 @@ impl Bucket {
         let mut c = self.cursor()?;
         {
             let item = c.seek(key)?;
-            if item.key.map(|v| &*v).unwrap() != key {
+            if item.key.unwrap() != key {
                 return Err(Error::BucketNotFound);
             }
             if !item.is_bucket() {
@@ -305,12 +306,80 @@ impl Bucket {
 
     /// Returns stats on a bucket.
     /// todo
-    pub fn stats(&self) -> Stats {
-        let mut stats = Stats::default();
+    pub fn stats(&self) -> BucketStats {
+        let mut s = BucketStats::default();
         let mut sub_stats = Stats::default();
         let page_size = self.tx().unwrap().db().unwrap().page_size();
-        stats
+        s.bucket_n += 1;
+        if self.root() == 0 {
+            s.inline_bucket_n += 1;
+        }
+        let handler = Box::new(|page: &Page, depth: usize| {
+            if page.is_leaf() {
+              s.key_n += page.count as isize;
+              // used totals the used bytes for the page.
+            }
+        } );
+        self.for_each_page(handler); 
+        s
     }
+}
+
+#[derive(Default)]
+pub struct BucketStats{
+    /// page count Stats
+    /// number of logical branch pages.
+    branch_page_n: isize, 
+    // number of physical branch overflow page.
+    branch_over_flow_n: isize,
+    // number of logical leaf pages.
+    leaf_page_n: isize,
+    // number of physical leaf overflow pages.
+    
+
+    // Tree statistics.
+    // number of keys/value pairs
+    key_n: isize,
+    // number of levels in B+tree
+    depth: isize,
+
+    // Page size utilization.
+    // bytes allocated for physical branch pages.
+    branch_alloc: isize,
+    // bytes actually used for physical branch data.
+    branch_inuse: isize,
+    // bytes allocated for physical leaf pages.
+    leaf_alloc: isize,
+    // bytes actually used for physical leaf data.
+    leaf_inuse: isize,
+   
+    // Bucket statistics.
+    // total number of buckets including the top bucket.
+    bucket_n: isize, 
+    // total number of inlined buckets.
+    inline_bucket_n: isize,
+    // bytes used for inlined buckets (also accounted for in LeafInuse)
+    inline_bucket_inuse: isize,
+}
+
+impl  AddAssign for BucketStats {
+   fn add_assign(&mut self, rhs: Self) {
+       self.branch_page_n += rhs.branch_page_n;
+       self.branch_over_flow_n += rhs.branch_over_flow_n;
+       self.leaf_page_n += rhs.leaf_page_n;
+       
+       self.key_n += rhs.key_n;
+       self.depth += rhs.depth;
+
+       self.branch_alloc += rhs.branch_alloc;
+       self.branch_inuse += rhs.branch_inuse;
+       self.leaf_alloc += rhs.leaf_alloc;
+       self.leaf_inuse += rhs.leaf_inuse;
+
+       self.bucket_n += rhs.bucket_n;
+       self.inline_bucket_n += rhs.inline_bucket_n;
+       self.inline_bucket_inuse += rhs.inline_bucket_inuse;
+   }
 }
 
 impl Bucket {
@@ -769,7 +838,9 @@ mod tests {
     use crate::test_util::{mock_db, mock_log};
     use byteordered::byteorder::{BigEndian, WriteBytesExt};
     use log::{error, info};
+    use std::borrow::Borrow;
     use std::io::repeat;
+    use std::iter::FromIterator;
 
     #[test]
     fn create() {
@@ -1278,5 +1349,35 @@ mod tests {
             bucket.put(&[0u8; 32769], b"bar".to_vec())
         });
         assert_eq!(Err(crate::Error::KeyTooLarge), err);
+    }
+
+    #[test]
+    fn bucket_put_value_too_large() {
+        let db = mock_db().build().unwrap();
+        // 
+    }
+
+    #[test]
+    fn bucket_stats() {
+        let db = mock_db().build().unwrap();
+
+        let big_key = b"readlly-big-value".to_vec();
+        for i in 0..500 {
+            db.update(|tx| {
+                let mut bucket = tx.create_bucket_if_not_exists(b"woojits").unwrap();
+                bucket.put(format!("{:03}", i).as_bytes(), format!("{}",i).as_bytes().to_vec()).unwrap();
+                Ok(())
+            }).unwrap();
+        }
+        db.update(|tx| {
+            tx.bucket_mut(b"woojits").unwrap().put(&big_key, Vec::from_iter([0].repeat(10000))).unwrap();
+            Ok(())
+        }).unwrap();
+       
+        db.view(|tx| {
+            let stats = tx.bucket(b"woojits").unwrap().stats();
+            //assert_eq!(1, stats.borrow().branch_page_element)
+            Ok(())
+        }).unwrap();
     }
 }
