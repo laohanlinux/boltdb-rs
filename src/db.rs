@@ -425,10 +425,6 @@ impl DB {
 
     /// Returns stats on a bucket.
     pub fn stats(&self) -> Stats {
-        let mut substats = BucketStats::default(); 
-        let mut s = BucketStats::default(); 
-        let mut page_size = self.page_size();
-        s.bucket_n += 1;
         self.0.stats.read().clone()
     }
 

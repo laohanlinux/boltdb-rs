@@ -1,5 +1,5 @@
 use crate::cursor::{Cursor, PageNode};
-use crate::db::{Stats, DB, BucketStats};
+use crate::db::{Stats, DB};
 use crate::error::{Error, Result};
 use crate::node::{Node, NodeBuilder, WeakNode};
 use crate::page::{ElementSize, OwnedPage, Page, PgId, BUCKET_LEAF_FLAG, PAGE_HEADER_SIZE};
@@ -308,7 +308,7 @@ impl Bucket {
     /// todo
     pub fn stats(&self) -> BucketStats {
         let mut s = BucketStats::default();
-        let mut sub_stats = Stats::default();
+        let mut sub_stats = BucketStats::default();
         let page_size = self.tx().unwrap().db().unwrap().page_size();
         s.bucket_n += 1;
         if self.root() == 0 {
@@ -318,9 +318,54 @@ impl Bucket {
             if page.is_leaf() {
               s.key_n += page.count as isize;
               // used totals the used bytes for the page.
+              let used = page.byte_size();
+              if self.root() == 0 {
+                  // For inlined bucket just update the line stats.
+                  s.inline_bucket_inuse += used as isize;
+              } else {
+                  // For non-inlined bucket update all the leaf stats.
+                  s.leaf_page_n += 1;
+                  s.leaf_inuse += used as isize;
+                  s.leaf_over_flow_n += page.over_flow as isize;
+ 
+                  // Collect stats from sub-buckets.
+                  // Do that by iterating over all element headers
+                  // looking for the ones which the BUCKET_LEAF_FLAG
+                  for i in 0..page.count as usize {
+                      let e = &page.leaf_page_elements()[i];
+                      if e.is_bucket_flag() {
+                          // For any bucket element, open the element value
+                          // and recursively call stats on the contained bucket.
+                          sub_stats += self.open_bucket(e.value().to_vec()).stats();
+                      }
+                  }
+              }
+            }else if page.is_branch() {
+                s.branch_page_n += 1;
+                let last_element = page.branch_page_elements().last().unwrap();
+
+                // used totals the used bytes for the page
+                // Add header and all element headers.
+                s.branch_inuse += page.byte_size() as isize;
+                s.branch_over_flow_n += page.over_flow as isize;
             }
-        } );
-        self.for_each_page(handler); 
+
+
+            // Keep track of maximum page depth
+            if depth + 1 > s.depth as usize {
+                s.depth = depth as isize + 1;
+            }
+        });
+        self.for_each_page(handler);
+
+        // Alloc stats can be computed from page counts and page_size.
+        s.branch_alloc  = (s.branch_page_n + s.branch_over_flow_n ) * page_size as isize;
+        s.leaf_alloc  = (s.leaf_page_n + s.leaf_over_flow_n) * page_size as isize;
+
+        // Add the max depth of sub-buckets to get total nested depth.
+        s.depth += sub_stats.depth;
+        // Add the stats for all sub-buckets
+        s += sub_stats;
         s
     }
 }
@@ -335,7 +380,7 @@ pub struct BucketStats{
     // number of logical leaf pages.
     leaf_page_n: isize,
     // number of physical leaf overflow pages.
-    
+    leaf_over_flow_n: isize, 
 
     // Tree statistics.
     // number of keys/value pairs
@@ -362,7 +407,7 @@ pub struct BucketStats{
     inline_bucket_inuse: isize,
 }
 
-impl  AddAssign for BucketStats {
+impl AddAssign for BucketStats {
    fn add_assign(&mut self, rhs: Self) {
        self.branch_page_n += rhs.branch_page_n;
        self.branch_over_flow_n += rhs.branch_over_flow_n;
