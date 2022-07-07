@@ -1227,4 +1227,243 @@ mod tests {
         });
         assert!(err.is_ok());
     }
+    #[test]
+    fn bucket_sequence() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            let mut bkt = tx.create_bucket(b"0").unwrap();
+            assert_eq!(bkt.sequence(), 0);
+            bkt.set_sequence(1000).unwrap();
+            assert_eq!(bkt.sequence(), 1000);
+            Ok(())
+        })
+        .unwrap();
+
+        db.view(|tx| {
+            let seq = tx.bucket(b"0").unwrap().sequence();
+            assert_eq!(seq, 1000);
+
+            Ok(())
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn bucket_next_sequence() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            {
+                let widgets = tx.create_bucket(b"widgets").unwrap();
+            }
+
+            {
+                let woojits = tx.create_bucket(b"woojits").unwrap();
+            }
+
+            {
+                let sequence = tx.bucket_mut(b"widgets").unwrap().next_sequence().unwrap();
+                assert_eq!(sequence, 1);
+            }
+            {
+                let sequence = tx.bucket_mut(b"widgets").unwrap().next_sequence().unwrap();
+                assert_eq!(sequence, 2);
+            }
+            {
+                let sequence = tx.bucket_mut(b"woojits").unwrap().next_sequence().unwrap();
+                assert_eq!(sequence, 1);
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn bucket_next_sequence_persist() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            tx.create_bucket(b"widgets").unwrap();
+            Ok(())
+        })
+        .unwrap();
+        db.update(|tx| {
+            let _ = tx.bucket_mut(b"widgets").unwrap().next_sequence().unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        db.update(|tx| {
+            let seq = tx.bucket_mut(b"widgets").unwrap().next_sequence().unwrap();
+            assert_eq!(seq, 2);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn bucket_next_sequence_readonly() {
+        // nothind can do
+    }
+
+    #[test]
+    fn bucket_next_sequence_closed() {
+        let db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        {
+            tx.create_bucket(b"widgets").unwrap();
+        }
+
+        tx.rollback().unwrap();
+        // let err = tx.bucket_mut(b"widgets").unwrap().next_sequence();
+        // assert!(err.is_err());
+    }
+
+    #[test]
+    fn bucket_for_each() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            let mut bucket = tx.create_bucket(b"widgets").unwrap();
+            bucket.put(b"foo", b"0000".to_vec()).unwrap();
+            bucket.put(b"baz", b"0001".to_vec()).unwrap();
+            bucket.put(b"bar", b"0002".to_vec()).unwrap();
+
+            let mut index = 0;
+            bucket
+                .for_each(|key, value| {
+                    if index == 0 {
+                        assert_eq!(key, b"bar");
+                        assert_eq!(value.unwrap(), b"0002");
+                    } else if index == 1 {
+                        assert_eq!(key, b"baz");
+                        assert_eq!(value.unwrap(), b"0001");
+                    } else {
+                        assert_eq!(key, b"foo");
+                        assert_eq!(value.unwrap(), b"0000");
+                    }
+                    index += 1;
+                    Ok(())
+                })
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn bucket_for_each_short_circuit() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            {
+                let mut bucket = tx.create_bucket(b"widgets").unwrap();
+                bucket.put(b"bar", b"0000".to_vec()).unwrap();
+                bucket.put(b"baz", b"0000".to_vec()).unwrap();
+                bucket.put(b"foo", b"0000".to_vec()).unwrap();
+            }
+            let mut index = 0;
+            let bucket = tx.bucket(b"widgets").unwrap();
+            let err = bucket.for_each(|key, value| {
+                index += 1;
+                if key == b"baz" {
+                    return Err(Unexpected("marker"));
+                }
+                Ok(())
+            });
+            assert_eq!(err, Err(Unexpected("marker")));
+            assert_eq!(index, 2);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn bucket_for_each_closed() {
+        let db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        tx.create_bucket(b"widgets").unwrap();
+        tx.rollback().unwrap();
+        let err = tx.bucket(b"widgets").unwrap().for_each(|key, value| Ok(()));
+        assert_eq!(Err(crate::Error::TxClosed), err);
+    }
+
+    #[test]
+    fn bucket_put_empty_key() {
+        let db = mock_db().build().unwrap();
+        let err = db.update(|tx| {
+            let mut bucket = tx.create_bucket(b"widgets").unwrap();
+            bucket.put(b"", b"bar".to_vec())
+        });
+        assert_eq!(Err(crate::Error::KeyRequired), err);
+    }
+
+    #[test]
+    fn bucket_put_key_too_large() {
+        let db = mock_db().build().unwrap();
+        let err = db.update(|tx| {
+            let mut bucket = tx.create_bucket(b"widgets").unwrap();
+            bucket.put(&[0u8; 32769], b"bar".to_vec())
+        });
+        assert_eq!(Err(crate::Error::KeyTooLarge), err);
+    }
+
+    #[test]
+    fn bucket_put_value_too_large() {
+        let db = mock_db().build().unwrap();
+        //
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn bucket_stats() {
+        let db = mock_db().build().unwrap();
+
+        let big_key = b"readlly-big-value".to_vec();
+        for i in 0..500 {
+            db.update(|tx| {
+                let mut bucket = tx.create_bucket_if_not_exists(b"woojits").unwrap();
+                bucket
+                    .put(format!("{:03}", i).as_bytes(), [i as u8].to_vec())
+                    .unwrap();
+                Ok(())
+            })
+            .unwrap();
+        }
+        db.update(|tx| {
+            tx.bucket_mut(b"woojits")
+                .unwrap()
+                .put(&big_key, [42].repeat(10000).to_vec())
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        db.view(|tx| {
+            let stats = tx.bucket(b"woojits").unwrap().stats();
+            info!("stats {:?}", stats);
+            assert_eq!(stats.branch_page_n, 1);
+            assert_eq!(stats.branch_over_flow_n, 0);
+            // 16K
+            assert_eq!(stats.leaf_page_n, 2);
+            assert_eq!(stats.leaf_over_flow_n, 0);
+            assert_eq!(stats.branch_alloc, 16384);
+            assert_eq!(stats.leaf_alloc, 32768);
+
+            // branch page header
+            let mut branch_in_use = 16;
+            branch_in_use += 2 * 16; // branch element
+            branch_in_use += 2 * 3; // branch keys (6 3-byte keys)
+            assert_eq!(stats.branch_inuse, branch_in_use);
+
+            let mut leaf_inuse = 2 * 16; // leaf header
+            leaf_inuse += 501 * 16; // leaf elements
+            leaf_inuse += 500 * 3 + big_key.len(); // leaf keys
+            leaf_inuse += 1 * 10 + 2 * 90 + 3 * 400 + 10000; // leaf value
+            assert_eq!(stats.key_n, 501);
+            assert_eq!(stats.depth, 2);
+            assert_eq!(stats.bucket_n, 1);
+            assert_eq!(stats.inline_bucket_n, 0);
+            assert_eq!(stats.inline_bucket_inuse, 0);
+
+            Ok(())
+        })
+        .unwrap();
+    }
 }
