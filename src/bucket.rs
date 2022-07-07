@@ -1466,4 +1466,30 @@ mod tests {
         })
         .unwrap();
     }
+
+    #[test]
+    fn bucket_stats_random_fill() {
+        use rand::prelude::*;
+        if page_size::get() != 4096 {
+            return;
+        }
+
+        let db = mock_db().build().unwrap();
+        info!("start ...");
+        // Add a set of values in random order. It will be the same random
+        // order so we can maintain consistency between test runs.
+        let mut rand = rand::thread_rng();
+        let mut rands = (0..1000).collect::<Vec<u32>>();
+        rands.shuffle(&mut rand);
+        for i in rands.iter() {
+            db.update(|tx| {
+                let mut bucket = tx.create_bucket_if_not_exists(b"widgets").unwrap();
+                bucket.fill_percent = 0.9;
+                let mut step = (0..100).collect::<Vec<u32>>();
+                step.shuffle(&mut rand);
+                Ok(())
+            })
+            .unwrap();
+        }
+    }
 }
