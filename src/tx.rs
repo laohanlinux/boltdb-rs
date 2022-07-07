@@ -18,7 +18,7 @@ use std::io::Seek;
 use std::io::SeekFrom;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
+use std::ops::{AddAssign, Deref, DerefMut, Sub, SubAssign};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Weak};
 use std::thread::spawn;
@@ -593,7 +593,7 @@ impl TX {
             }
             Ok(())
         })
-            .unwrap();
+        .unwrap();
     }
 
     /// Returns a contiguous block of memory starting at a given page.
@@ -609,6 +609,7 @@ impl TX {
         {
             let mut stats = self.0.stats.lock();
             stats.page_count += 1;
+            info!("allocate count++");
             stats.page_alloc += count as usize * self.db()?.page_size();
         }
 
@@ -824,6 +825,40 @@ pub struct TxStats {
     pub(crate) write: usize,
     // total time spent writing to disk
     pub(crate) write_time: Duration,
+}
+
+impl AddAssign for TxStats {
+    fn add_assign(&mut self, rhs: Self) {
+        self.page_count += rhs.page_count;
+        self.page_alloc += rhs.page_alloc;
+        self.cursor_count += rhs.cursor_count;
+        self.node_count += rhs.node_count;
+        self.node_deref += rhs.node_deref;
+        self.rebalance += rhs.rebalance;
+        self.rebalance_time += rhs.rebalance_time;
+        self.split += rhs.split;
+        self.spill += rhs.spill;
+        self.spill_time += rhs.spill_time;
+        self.write += rhs.write;
+        self.write_time += rhs.write_time;
+    }
+}
+
+impl SubAssign for TxStats {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.page_count -= rhs.page_count;
+        self.page_alloc -= rhs.page_alloc;
+        self.cursor_count -= rhs.cursor_count;
+        self.node_count -= rhs.node_count;
+        self.node_deref -= rhs.node_deref;
+        self.rebalance -= rhs.rebalance;
+        self.rebalance_time -= rhs.rebalance_time;
+        self.split -= rhs.split;
+        self.spill -= rhs.spill;
+        self.spill_time -= rhs.spill_time;
+        self.write -= rhs.write;
+        self.write_time -= rhs.write_time;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1086,7 +1121,7 @@ mod tests {
             assert_eq!(bucket.get(b"thomas").expect("no thomas"), b"jefferson");
             Ok(())
         })
-            .unwrap();
+        .unwrap();
     }
 
     #[test]
@@ -1130,7 +1165,7 @@ mod tests {
             bucket_names.push(b.to_vec());
             Ok(())
         })
-            .unwrap();
+        .unwrap();
         assert_eq!(bucket_names.len(), 2);
         assert!(bucket_names.contains(&b"bucket".to_vec()));
         assert!(bucket_names.contains(&b"another bucket".to_vec()));

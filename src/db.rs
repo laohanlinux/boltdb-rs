@@ -9,7 +9,7 @@ use crate::page::{OwnedPage, Page, PageFlag, MIN_KEYS_PER_PAGE};
 use crate::page::{PgId, META_PAGE_SIZE};
 use crate::test_util::temp_file;
 use crate::tx::{RWTxGuard, TxBuilder, TxGuard, TX};
-use crate::TxId;
+use crate::{TxId, TxStats};
 use bitflags::bitflags;
 use fnv::FnvHasher;
 use fs2::FileExt;
@@ -21,7 +21,7 @@ use std::fmt::{Display, Formatter};
 use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
-use std::ops::AddAssign;
+use std::ops::{AddAssign, Deref};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::slice::from_raw_parts;
@@ -162,7 +162,6 @@ impl DB {
             }
             page.meta().page_size as usize
         };
-        info!("page size is {}", page_size);
         // initialize the database if it doesn't exist.
         if let Err(err) = file.allocate(page_size as u64 * 4) {
             if !is_valid_error(&err) {
@@ -282,9 +281,9 @@ impl DB {
     ///
     /// Transaction should not be dependent on one another.
     ///
-    /// If a long running read transaction (for example, a snapshot transaction) is
+    /// If a long-running read transaction (for example, a snapshot transaction) is
     /// needed, you might want to set DBBuilder.init_mmap_size to a large enough value
-    /// to avoid potential blocking of write transasction.
+    /// to avoid potential blocking of write transaction.
     pub fn begin_rw_tx(&self) -> Result<RWTxGuard> {
         if self.read_only() {
             return Err(DatabaseOnlyRead);
@@ -547,6 +546,7 @@ impl<'a> DB {
             stats.free_page_n = free_list_n;
             stats.pending_page_n = free_list_pending_n;
             stats.free_alloc = free_list_alloc;
+            stats.tx_stats += tx.stats().clone();
             Ok(tx)
         } else {
             let mut txs = self.0.txs.try_write_for(Duration::from_secs(10)).unwrap();
@@ -561,6 +561,7 @@ impl<'a> DB {
 
             let mut stats = self.0.stats.write();
             stats.open_tx_n = txs.len();
+            stats.tx_stats += tx.stats().clone();
             Ok(tx)
         }
     }
@@ -971,83 +972,8 @@ pub struct Stats {
     pub tx_n: u64,
     // number of currently open read transactions.
     pub open_tx_n: usize,
-}
-
-/// Transaction statistics
-#[derive(Clone, Debug, Default)]
-pub struct TxStats {
-    // Page statistics
-    /// number of page allocations
-    pub page_count: usize,
-    /// total bytes allocated
-    pub page_alloc: usize,
-
-    // Cursor statistics
-    /// number of cursor created
-    pub cursor_count: usize,
-
-    // Node statistics
-    /// number of node allocations
-    pub node_count: usize,
-    /// number of node dereferences.
-    pub node_deref: usize,
-
-    // Rebalance statistics
-    /// number of node rebalances
-    pub rebalance: usize,
-    /// total time spent rebalancing
-    pub rebalance_time: Duration,
-
-    // Split/Spill statistics
-    /// number of nodes split
-    pub split: usize,
-    /// number of nodes spilled
-    pub spill: usize,
-    /// total time spent spilling
-    pub spill_time: Duration,
-
-    // Write statistics
-    /// number of writes performed
-    pub write: usize,
-    /// total time spent write to disk
-    pub write_time: Duration,
-}
-
-impl TxStats {
-    /// returns diff stats
-    pub fn sub(&self, other: &TxStats) -> TxStats {
-        TxStats {
-            page_count: self.page_count - other.page_count,
-            page_alloc: self.page_alloc - other.page_alloc,
-            cursor_count: self.cursor_count - other.cursor_count,
-            node_count: self.node_count - other.node_count,
-            node_deref: self.node_deref - other.node_deref,
-            rebalance: self.rebalance - other.rebalance,
-            rebalance_time: self.rebalance_time - other.rebalance_time,
-            split: self.split - other.split,
-            spill: self.spill - other.spill,
-            spill_time: self.spill_time - other.spill_time,
-            write: self.write - other.write,
-            write_time: self.write_time - other.write_time,
-        }
-    }
-}
-
-impl AddAssign for TxStats {
-    fn add_assign(&mut self, rhs: Self) {
-        self.page_count += rhs.page_count;
-        self.page_alloc += rhs.page_alloc;
-        self.cursor_count += rhs.cursor_count;
-        self.node_count += rhs.node_count;
-        self.node_deref += rhs.node_deref;
-        self.rebalance += rhs.rebalance;
-        self.rebalance_time += rhs.rebalance_time;
-        self.split += rhs.split;
-        self.spill += rhs.spill;
-        self.spill_time += rhs.spill_time;
-        self.write += rhs.write;
-        self.write_time += rhs.write_time;
-    }
+    // global, ongoing stats.
+    tx_stats: TxStats,
 }
 
 struct BatchInner {
@@ -1279,6 +1205,20 @@ pub struct Options {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_util::mock_db;
+
     #[test]
-    fn it_works() {}
+    fn db_stats() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            tx.create_bucket(b"widgets").unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        let stats = db.stats();
+        assert_eq!(stats.tx_stats.page_count, 2);
+        assert_eq!(stats.free_page_n, 0);
+        assert_eq!(stats.pending_page_n, 2);
+    }
 }
