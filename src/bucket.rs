@@ -1410,7 +1410,7 @@ mod tests {
         //
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn bucket_stats() {
         let db = mock_db().build().unwrap();
@@ -1440,40 +1440,22 @@ mod tests {
             info!("stats {:?}", stats);
             assert_eq!(stats.branch_page_n, 1);
             assert_eq!(stats.branch_over_flow_n, 0);
-            if tx.db()?.page_size() == 16384 {
-                // 16K
-                assert_eq!(stats.leaf_page_n, 2);
-                assert_eq!(stats.leaf_over_flow_n, 0);
-                assert_eq!(stats.branch_alloc, 16384);
-                assert_eq!(stats.leaf_alloc, 32768);
+            // 16K
+            assert_eq!(stats.leaf_page_n, 2);
+            assert_eq!(stats.leaf_over_flow_n, 0);
+            assert_eq!(stats.branch_alloc, 16384);
+            assert_eq!(stats.leaf_alloc, 32768);
 
-                // branch page header
-                let mut branch_in_use = 16;
-                branch_in_use += 2 * 16; // branch element
-                branch_in_use += 2 * 3; // branch keys (6 3-byte keys)
-                assert_eq!(stats.branch_inuse, branch_in_use);
+            // branch page header
+            let mut branch_in_use = 16;
+            branch_in_use += 2 * 16; // branch element
+            branch_in_use += 2 * 3; // branch keys (6 3-byte keys)
+            assert_eq!(stats.branch_inuse, branch_in_use);
 
-                let mut leaf_inuse = 2 * 16; // leaf header
-                leaf_inuse += 501 * 16; // leaf elements
-                leaf_inuse += 500 * 3 + big_key.len(); // leaf keys
-                leaf_inuse += 1 * 10 + 2 * 90 + 3 * 400 + 10000; // leaf value
-            } else if tx.db()?.page_size() == 4096 {
-                // 4K
-                assert_eq!(stats.leaf_page_n, 7);
-                assert_eq!(stats.leaf_over_flow_n, 2);
-                assert_eq!(stats.branch_alloc, 4096);
-                assert_eq!(stats.leaf_alloc, 36864);
-                // branch page header
-                let mut branch_in_use = 16;
-                branch_in_use += 7 * 16; // branch element
-                branch_in_use += 7 * 3; // branch keys (6 3-byte keys)
-                assert_eq!(stats.branch_inuse, branch_in_use);
-
-                let mut leaf_inuse = 2 * 16; // leaf header
-                leaf_inuse += 501 * 16; // leaf elements
-                leaf_inuse += 500 * 3 + big_key.len(); // leaf keys
-                leaf_inuse += 1 * 10 + 2 * 90 + 3 * 400 + 10000; // leaf value
-            }
+            let mut leaf_inuse = 2 * 16; // leaf header
+            leaf_inuse += 501 * 16; // leaf elements
+            leaf_inuse += 500 * 3 + big_key.len(); // leaf keys
+            leaf_inuse += 1 * 10 + 2 * 90 + 3 * 400 + 10000; // leaf value
             assert_eq!(stats.key_n, 501);
             assert_eq!(stats.depth, 2);
             assert_eq!(stats.bucket_n, 1);
