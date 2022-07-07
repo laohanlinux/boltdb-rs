@@ -11,6 +11,7 @@ use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::intrinsics::copy_nonoverlapping;
+use std::ops::AddAssign;
 use std::sync::atomic::Ordering;
 use std::sync::Weak;
 
@@ -24,7 +25,7 @@ pub(crate) const MAX_FILL_PERCENT: f64 = 1.0;
 
 /// DefaultFillPercent is the percent that split pages are filled.
 /// This value can be changed by setting Bucket.FillPercent.
-const DEFAULT_FILL_PERCENT: f64 = 0.5;
+pub(crate) const DEFAULT_FILL_PERCENT: f64 = 0.5;
 
 /// subbucket represents the on-file representation of a bucket.
 /// This is stored as the "value" of a bucket key. If the bucket is small enough,
@@ -155,7 +156,7 @@ impl Bucket {
         let mut c = self.cursor()?;
         {
             let item = c.seek(key)?;
-            if item.key.map(|v| &*v).unwrap() != key {
+            if item.key.unwrap() != key {
                 return Err(Error::BucketNotFound);
             }
             if !item.is_bucket() {
@@ -243,7 +244,7 @@ impl Bucket {
             return Err(Error::TxReadOnly);
         }
         if key.is_empty() {
-            return Err(Error::EmptyKey);
+            return Err(Error::KeyRequired);
         }
         if key.len() > MAX_KEY_SIZE {
             return Err(Error::KeyTooLarge);
@@ -305,11 +306,123 @@ impl Bucket {
 
     /// Returns stats on a bucket.
     /// todo
-    pub fn stats(&self) -> Stats {
-        let mut stats = Stats::default();
-        let mut sub_stats = Stats::default();
+    pub fn stats(&self) -> BucketStats {
+        let mut s = BucketStats::default();
+        let mut sub_stats = BucketStats::default();
         let page_size = self.tx().unwrap().db().unwrap().page_size();
-        stats
+        s.bucket_n += 1;
+        if self.root() == 0 {
+            s.inline_bucket_n += 1;
+        }
+        let handler = Box::new(|page: &Page, depth: usize| {
+            if page.is_leaf() {
+                s.key_n += page.count as isize;
+                // used totals the used bytes for the page.
+                let used = page.byte_size();
+                if self.root() == 0 {
+                    // For inlined bucket just update the line stats.
+                    s.inline_bucket_inuse += used as isize;
+                } else {
+                    // For non-inlined bucket update all the leaf stats.
+                    s.leaf_page_n += 1;
+                    s.leaf_inuse += used as isize;
+                    s.leaf_over_flow_n += page.over_flow as isize;
+
+                    // Collect stats from sub-buckets.
+                    // Do that by iterating over all element headers
+                    // looking for the ones which the BUCKET_LEAF_FLAG
+                    for i in 0..page.count as usize {
+                        let e = &page.leaf_page_elements()[i];
+                        if e.is_bucket_flag() {
+                            // For any bucket element, open the element value
+                            // and recursively call stats on the contained bucket.
+                            sub_stats += self.open_bucket(e.value().to_vec()).stats();
+                        }
+                    }
+                }
+            } else if page.is_branch() {
+                s.branch_page_n += 1;
+                let last_element = page.branch_page_elements().last().unwrap();
+
+                // used totals the used bytes for the page
+                // Add header and all element headers.
+                s.branch_inuse += page.byte_size() as isize;
+                s.branch_over_flow_n += page.over_flow as isize;
+            }
+
+            // Keep track of maximum page depth
+            if depth + 1 > s.depth as usize {
+                s.depth = depth as isize + 1;
+            }
+        });
+        self.for_each_page(handler);
+
+        // Alloc stats can be computed from page counts and page_size.
+        s.branch_alloc = (s.branch_page_n + s.branch_over_flow_n) * page_size as isize;
+        s.leaf_alloc = (s.leaf_page_n + s.leaf_over_flow_n) * page_size as isize;
+
+        // Add the max depth of sub-buckets to get total nested depth.
+        s.depth += sub_stats.depth;
+        // Add the stats for all sub-buckets
+        s += sub_stats;
+        s
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct BucketStats {
+    /// page count Stats
+    /// number of logical branch pages.
+    branch_page_n: isize,
+    // number of physical branch overflow page.
+    branch_over_flow_n: isize,
+    // number of logical leaf pages.
+    leaf_page_n: isize,
+    // number of physical leaf overflow pages.
+    leaf_over_flow_n: isize,
+
+    // Tree statistics.
+    // number of keys/value pairs
+    key_n: isize,
+    // number of levels in B+tree
+    depth: isize,
+
+    // Page size utilization.
+    // bytes allocated for physical branch pages.
+    branch_alloc: isize,
+    // bytes actually used for physical branch data.
+    branch_inuse: isize,
+    // bytes allocated for physical leaf pages.
+    leaf_alloc: isize,
+    // bytes actually used for physical leaf data.
+    leaf_inuse: isize,
+
+    // Bucket statistics.
+    // total number of buckets including the top bucket.
+    bucket_n: isize,
+    // total number of inlined buckets.
+    inline_bucket_n: isize,
+    // bytes used for inlined buckets (also accounted for in LeafInuse)
+    inline_bucket_inuse: isize,
+}
+
+impl AddAssign for BucketStats {
+    fn add_assign(&mut self, rhs: Self) {
+        self.branch_page_n += rhs.branch_page_n;
+        self.branch_over_flow_n += rhs.branch_over_flow_n;
+        self.leaf_page_n += rhs.leaf_page_n;
+
+        self.key_n += rhs.key_n;
+        self.depth += rhs.depth;
+
+        self.branch_alloc += rhs.branch_alloc;
+        self.branch_inuse += rhs.branch_inuse;
+        self.leaf_alloc += rhs.leaf_alloc;
+        self.leaf_inuse += rhs.leaf_inuse;
+
+        self.bucket_n += rhs.bucket_n;
+        self.inline_bucket_n += rhs.inline_bucket_n;
+        self.inline_bucket_inuse += rhs.inline_bucket_inuse;
     }
 }
 
@@ -752,6 +865,7 @@ impl Bucket {
         if !self.tx()?.writable() {
             return Err(Error::TxReadOnly);
         }
+        // load root node
         if self.root_node.is_none() {
             let pgid = self.root();
             self.node(pgid, WeakNode::new());
@@ -764,15 +878,18 @@ impl Bucket {
 #[cfg(test)]
 mod tests {
     use crate::error::Error;
-    use crate::error::Error::IncompatibleValue;
+    use crate::error::Error::{IncompatibleValue, Unexpected};
     use crate::test_util::{mock_db, mock_log};
     use byteordered::byteorder::{BigEndian, WriteBytesExt};
+    use log::kv::ToKey;
     use log::{error, info};
+    use std::borrow::Borrow;
     use std::io::repeat;
+    use std::iter::FromIterator;
 
     #[test]
     fn create() {
-        let mut db = mock_db().build().unwrap();
+        let db = mock_db().build().unwrap();
         let mut tx = db.begin_rw_tx().unwrap();
         assert!(tx.bucket(b"foo").is_err());
         let mut bucket = tx.create_bucket(b"foo").unwrap();
@@ -790,7 +907,7 @@ mod tests {
     #[test]
     fn create_nested_bucket() {
         let path = {
-            let mut db = mock_db().set_auto_remove(false).build().unwrap();
+            let db = mock_db().set_auto_remove(false).build().unwrap();
             let mut tx = db.begin_rw_tx().unwrap();
             assert!(tx.bucket(b"foo").is_err());
 
@@ -1022,13 +1139,331 @@ mod tests {
             Ok(())
         });
         assert!(err.is_ok());
+        db.must_check();
 
         let err = db.update(|tx| {
             let mut bucket = tx.bucket_mut(b"widgets").unwrap();
             bucket.put(b"bar", b"xxxx".to_vec()).unwrap();
             Ok(())
         });
-
         assert!(err.is_ok());
+        db.must_check();
+
+        // Cause a split.
+        let err = db.update(|tx| {
+            let mut bucket = tx.bucket_mut(b"widgets").unwrap();
+            for i in 0..10000 {
+                let err = bucket.put(
+                    format!("{}", i).as_bytes(),
+                    format!("{}", i).as_bytes().to_vec(),
+                );
+                assert!(err.is_ok());
+            }
+            Ok(())
+        });
+        assert!(err.is_ok());
+        db.must_check();
+
+        // isnert into widgets/foo/baz.
+        let err = db.update(|tx| {
+            let mut bucket = tx.bucket_mut(b"widgets").unwrap();
+            bucket
+                .bucket_mut(b"foo")
+                .unwrap()
+                .put(b"baz", b"yyyy".to_vec())
+                .unwrap();
+            Ok(())
+        });
+        db.must_check();
+
+        // verify
+        let err = db.view(|tx| {
+            let bucket = tx.bucket(b"widgets").unwrap();
+            let value = bucket.bucket(b"foo").unwrap().get(b"baz").unwrap();
+            assert_eq!(value, b"yyyy".to_vec());
+            let value = bucket.get(b"bar").unwrap();
+            assert_eq!(value, b"xxxx".to_vec());
+            for i in 0..10000 {
+                let got = bucket.get(format!("{}", i).as_bytes()).unwrap();
+                assert_eq!(format!("{}", i).as_bytes().to_vec(), got);
+            }
+            Ok(())
+        });
+        assert!(err.is_ok());
+    }
+
+    #[test]
+    fn delete_bucket_nest() {
+        let db = mock_db().build().unwrap();
+        let err = db.update(|tx| {
+            {
+                let mut widgets = tx.create_bucket(b"widgets").unwrap();
+                let foo = widgets.create_bucket(b"foo").unwrap();
+                let bar = foo.create_bucket(b"bar").unwrap();
+                bar.put(b"baz", b"bat".to_vec()).unwrap();
+            }
+            Ok(())
+        });
+        assert!(err.is_ok());
+
+        let err = db.update(|tx| {
+            {
+                let widgets = tx.bucket(b"widgets").unwrap();
+                let foo = widgets.bucket(b"foo").unwrap();
+                let bar = foo.bucket(b"bar").unwrap();
+                bar.get(b"baz").unwrap();
+            }
+
+            tx.delete_bucket(b"widgets").unwrap();
+            Ok(())
+        });
+        assert!(err.is_ok());
+
+        let err = db.view(|tx| {
+            let err = tx.bucket(b"widgets");
+            assert!(err.is_err());
+            Ok(())
+        });
+        assert!(err.is_ok());
+    }
+
+    #[test]
+    fn bucket_sequence() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            let mut bkt = tx.create_bucket(b"0").unwrap();
+            assert_eq!(bkt.sequence(), 0);
+            bkt.set_sequence(1000).unwrap();
+            assert_eq!(bkt.sequence(), 1000);
+            Ok(())
+        })
+        .unwrap();
+
+        db.view(|tx| {
+            let seq = tx.bucket(b"0").unwrap().sequence();
+            assert_eq!(seq, 1000);
+
+            Ok(())
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn bucket_next_sequence() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            {
+                let widgets = tx.create_bucket(b"widgets").unwrap();
+            }
+
+            {
+                let woojits = tx.create_bucket(b"woojits").unwrap();
+            }
+
+            {
+                let sequence = tx.bucket_mut(b"widgets").unwrap().next_sequence().unwrap();
+                assert_eq!(sequence, 1);
+            }
+            {
+                let sequence = tx.bucket_mut(b"widgets").unwrap().next_sequence().unwrap();
+                assert_eq!(sequence, 2);
+            }
+            {
+                let sequence = tx.bucket_mut(b"woojits").unwrap().next_sequence().unwrap();
+                assert_eq!(sequence, 1);
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn bucket_next_sequence_persist() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            tx.create_bucket(b"widgets").unwrap();
+            Ok(())
+        })
+        .unwrap();
+        db.update(|tx| {
+            let _ = tx.bucket_mut(b"widgets").unwrap().next_sequence().unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        db.update(|tx| {
+            let seq = tx.bucket_mut(b"widgets").unwrap().next_sequence().unwrap();
+            assert_eq!(seq, 2);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn bucket_next_sequence_readonly() {
+        // nothind can do
+    }
+
+    #[test]
+    fn bucket_next_sequence_closed() {
+        let db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        {
+            tx.create_bucket(b"widgets").unwrap();
+        }
+
+        tx.rollback().unwrap();
+        // let err = tx.bucket_mut(b"widgets").unwrap().next_sequence();
+        // assert!(err.is_err());
+    }
+
+    #[test]
+    fn bucket_for_each() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            let mut bucket = tx.create_bucket(b"widgets").unwrap();
+            bucket.put(b"foo", b"0000".to_vec()).unwrap();
+            bucket.put(b"baz", b"0001".to_vec()).unwrap();
+            bucket.put(b"bar", b"0002".to_vec()).unwrap();
+
+            let mut index = 0;
+            bucket
+                .for_each(|key, value| {
+                    if index == 0 {
+                        assert_eq!(key, b"bar");
+                        assert_eq!(value.unwrap(), b"0002");
+                    } else if index == 1 {
+                        assert_eq!(key, b"baz");
+                        assert_eq!(value.unwrap(), b"0001");
+                    } else {
+                        assert_eq!(key, b"foo");
+                        assert_eq!(value.unwrap(), b"0000");
+                    }
+                    index += 1;
+                    Ok(())
+                })
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn bucket_for_each_short_circuit() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            {
+                let mut bucket = tx.create_bucket(b"widgets").unwrap();
+                bucket.put(b"bar", b"0000".to_vec()).unwrap();
+                bucket.put(b"baz", b"0000".to_vec()).unwrap();
+                bucket.put(b"foo", b"0000".to_vec()).unwrap();
+            }
+            let mut index = 0;
+            let bucket = tx.bucket(b"widgets").unwrap();
+            let err = bucket.for_each(|key, value| {
+                index += 1;
+                if key == b"baz" {
+                    return Err(Unexpected("marker"));
+                }
+                Ok(())
+            });
+            assert_eq!(err, Err(Unexpected("marker")));
+            assert_eq!(index, 2);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn bucket_for_each_closed() {
+        let db = mock_db().build().unwrap();
+        let mut tx = db.begin_rw_tx().unwrap();
+        tx.create_bucket(b"widgets").unwrap();
+        tx.rollback().unwrap();
+        let err = tx.bucket(b"widgets").unwrap().for_each(|key, value| Ok(()));
+        assert_eq!(Err(crate::Error::TxClosed), err);
+    }
+
+    #[test]
+    fn bucket_put_empty_key() {
+        let db = mock_db().build().unwrap();
+        let err = db.update(|tx| {
+            let mut bucket = tx.create_bucket(b"widgets").unwrap();
+            bucket.put(b"", b"bar".to_vec())
+        });
+        assert_eq!(Err(crate::Error::KeyRequired), err);
+    }
+
+    #[test]
+    fn bucket_put_key_too_large() {
+        let db = mock_db().build().unwrap();
+        let err = db.update(|tx| {
+            let mut bucket = tx.create_bucket(b"widgets").unwrap();
+            bucket.put(&[0u8; 32769], b"bar".to_vec())
+        });
+        assert_eq!(Err(crate::Error::KeyTooLarge), err);
+    }
+
+    #[test]
+    fn bucket_put_value_too_large() {
+        let db = mock_db().build().unwrap();
+        //
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn bucket_stats() {
+        let db = mock_db().build().unwrap();
+
+        let big_key = b"readlly-big-value".to_vec();
+        for i in 0..500 {
+            db.update(|tx| {
+                let mut bucket = tx.create_bucket_if_not_exists(b"woojits").unwrap();
+                bucket
+                    .put(format!("{:03}", i).as_bytes(), [i as u8].to_vec())
+                    .unwrap();
+                Ok(())
+            })
+            .unwrap();
+        }
+        db.update(|tx| {
+            tx.bucket_mut(b"woojits")
+                .unwrap()
+                .put(&big_key, [42].repeat(10000).to_vec())
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        db.view(|tx| {
+            let stats = tx.bucket(b"woojits").unwrap().stats();
+            info!("stats {:?}", stats);
+            assert_eq!(stats.branch_page_n, 1);
+            assert_eq!(stats.branch_over_flow_n, 0);
+            // 16K
+            assert_eq!(stats.leaf_page_n, 2);
+            assert_eq!(stats.leaf_over_flow_n, 0);
+            assert_eq!(stats.branch_alloc, 16384);
+            assert_eq!(stats.leaf_alloc, 32768);
+
+            // branch page header
+            let mut branch_in_use = 16;
+            branch_in_use += 2 * 16; // branch element
+            branch_in_use += 2 * 3; // branch keys (6 3-byte keys)
+            assert_eq!(stats.branch_inuse, branch_in_use);
+
+            let mut leaf_inuse = 2 * 16; // leaf header
+            leaf_inuse += 501 * 16; // leaf elements
+            leaf_inuse += 500 * 3 + big_key.len(); // leaf keys
+            leaf_inuse += 1 * 10 + 2 * 90 + 3 * 400 + 10000; // leaf value
+            assert_eq!(stats.key_n, 501);
+            assert_eq!(stats.depth, 2);
+            assert_eq!(stats.bucket_n, 1);
+            assert_eq!(stats.inline_bucket_n, 0);
+            assert_eq!(stats.inline_bucket_inuse, 0);
+
+            Ok(())
+        })
+        .unwrap();
     }
 }

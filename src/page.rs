@@ -52,9 +52,9 @@ pub(crate) const BUCKET_LEAF_FLAG: u32 = 0x01;
 
 pub type PgId = u64;
 
-// Page Header
-// |PgId(u64)|flags(u16)|count(u16)|over_flow
-// So, Page Size = count + over_flow*sizeof(Page)
+/// Page Header
+/// |PgId(u64)|flags(u16)|count(u16)|over_flow
+/// So, Page Size = count + over_flow*sizeof(Page)
 #[derive(Debug, Serialize, Deserialize)]
 #[repr(C)]
 pub struct Page {
@@ -262,7 +262,7 @@ impl Page {
 
     // The size of page, including header and elements.
     #[inline]
-    fn byte_size(&self) -> usize {
+    pub(crate) fn byte_size(&self) -> usize {
         let mut size = PAGE_HEADER_SIZE;
         match self.flags {
             PageFlag::Branch => {
@@ -367,6 +367,7 @@ pub(crate) struct LeafPageElement {
 }
 
 impl LeafPageElement {
+    #[inline]
     pub(crate) fn key(&self) -> &[u8] {
         must_align(self);
         unsafe {
@@ -376,6 +377,12 @@ impl LeafPageElement {
         }
     }
 
+    #[inline]
+    pub(crate) fn is_bucket_flag(&self) -> bool {
+        (self.flags & BUCKET_LEAF_FLAG) != 0 
+    }
+
+    #[inline]
     pub(crate) fn value(&self) -> &[u8] {
         must_align(self);
         unsafe {

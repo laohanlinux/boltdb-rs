@@ -1,14 +1,15 @@
-use crate::bucket::TopBucket;
+use crate::bucket::{TopBucket, DEFAULT_FILL_PERCENT, MAX_FILL_PERCENT, MIN_FILL_PERCENT};
 use crate::error::Error::{
     DBOpFailed, DatabaseGone, DatabaseOnlyRead, TrySolo, Unexpected, Unexpected2,
 };
 use crate::error::Result;
 use crate::error::{is_valid_error, Error};
 use crate::free_list::FreeList;
-use crate::page::{OwnedPage, Page, PageFlag};
+use crate::page::{OwnedPage, Page, PageFlag, MIN_KEYS_PER_PAGE};
 use crate::page::{PgId, META_PAGE_SIZE};
+use crate::test_util::temp_file;
 use crate::tx::{RWTxGuard, TxBuilder, TxGuard, TX};
-use crate::TxId;
+use crate::{TxId, TxStats};
 use bitflags::bitflags;
 use fnv::FnvHasher;
 use fs2::FileExt;
@@ -16,17 +17,18 @@ use log::{debug, error, info};
 use parking_lot::lock_api::{RawMutex, RawRwLock};
 use parking_lot::MappedRwLockReadGuard;
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
+use std::fmt::{Display, Formatter};
 use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
-use std::ops::AddAssign;
+use std::ops::{AddAssign, Deref};
 use std::path::{Path, PathBuf};
+use std::process::exit;
 use std::slice::from_raw_parts;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Sender, SyncSender};
+use std::sync::mpsc::SyncSender;
 use std::sync::{mpsc, Arc, Weak};
-use std::thread;
 use std::thread::{sleep, spawn};
 use std::time::Duration;
 
@@ -95,6 +97,13 @@ pub(crate) struct DBInner {
     read_only: bool,
 }
 
+impl Display for DBInner {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("config detail: check_mode:{}, no_sync:{}, no_grow_sync:{}, max_batch_size:{}, max_batch_delay:{:?}, auto_remove: {:?}, allow_size:{}, page_size:{}, read_only:{}, MIN_KEYS_PER_PAGE:{}, MIN_FILL_PERCENT:{}, MAX_FILL_PERCENT:{}, DEFAULT_FILL_PERCENT:{}",
+                                 self.check_mode.bits(), self.no_sync, self.no_grow_sync, self.max_batch_size, self.max_batch_delay, self.auto_remove, self.alloc_size, self.page_size, self.read_only, MIN_KEYS_PER_PAGE, MIN_FILL_PERCENT, MAX_FILL_PERCENT, DEFAULT_FILL_PERCENT))
+    }
+}
+
 #[derive(Clone)]
 pub struct DB(pub(crate) Arc<DBInner>);
 
@@ -153,7 +162,6 @@ impl DB {
             }
             page.meta().page_size as usize
         };
-        info!("page size is {}", page_size);
         // initialize the database if it doesn't exist.
         if let Err(err) = file.allocate(page_size as u64 * 4) {
             if !is_valid_error(&err) {
@@ -172,7 +180,7 @@ impl DB {
         };
         let mut db: DB = DB(Arc::new(DBInner {
             check_mode: opt.check_mode,
-            no_sync: false,
+            no_sync: opt.no_sync,
             no_grow_sync: opt.no_grow_sync,
             max_batch_size: opt.max_batch_size,
             max_batch_delay: opt.max_batch_delay,
@@ -206,6 +214,7 @@ impl DB {
             let freelist_page = db.page(free_list_id);
             db.0.free_list.try_write().unwrap().read(&freelist_page);
         }
+        info!("database config: {}", db.0);
         Ok(db)
     }
 
@@ -272,9 +281,9 @@ impl DB {
     ///
     /// Transaction should not be dependent on one another.
     ///
-    /// If a long running read transaction (for example, a snapshot transaction) is
+    /// If a long-running read transaction (for example, a snapshot transaction) is
     /// needed, you might want to set DBBuilder.init_mmap_size to a large enough value
-    /// to avoid potential blocking of write transasction.
+    /// to avoid potential blocking of write transaction.
     pub fn begin_rw_tx(&self) -> Result<RWTxGuard> {
         if self.read_only() {
             return Err(DatabaseOnlyRead);
@@ -394,7 +403,7 @@ impl DB {
     /// Batch is only useful when there are multiple threads calling it.
     /// While calling it multiple times from single thread just blocks
     /// thread for each single batch call
-    pub fn batch(&mut self, handler: Box<dyn Fn(&mut TX) -> Result<()>>) -> Result<()> {
+    pub fn batch(&self, handler: Box<dyn Fn(&mut TX) -> Result<()>>) -> Result<()> {
         let weak_db = WeakDB::from(self);
         let handler = Arc::new(handler);
         let handler_clone = handler.clone();
@@ -410,7 +419,7 @@ impl DB {
 
             let batch = batch.as_mut().unwrap();
             let (err_sender, err_recv) = mpsc::sync_channel(1);
-            batch.push(Call::new(handler_clone, err_sender));
+            batch.push(Call::new(handler_clone, err_sender))?;
             err_recv
         };
 
@@ -422,6 +431,7 @@ impl DB {
         Ok(())
     }
 
+    /// Returns stats on a bucket.
     pub fn stats(&self) -> Stats {
         self.0.stats.read().clone()
     }
@@ -473,6 +483,38 @@ impl DB {
 }
 
 impl<'a> DB {
+    pub(crate) fn must_check(&self) {
+        let err = self.update(|tx| {
+            let mut errs = vec![];
+            while let Ok(err) = tx.check().recv() {
+                errs.push(err);
+                if errs.len() > 10 {
+                    break;
+                }
+            }
+            if !errs.is_empty() {
+                let path = temp_file();
+                let mut mode = OpenOptions::new();
+                mode.write(true);
+                if let Err(err) = tx.copy_to(path.to_str().unwrap(), mode) {
+                    panic!(err);
+                }
+
+                info!("consistency check failed ({} errors)", errs.len());
+                for _ in errs {
+                    info!("");
+                    info!("db save to:");
+                    exit(-1);
+                }
+            }
+            Ok(())
+        });
+
+        if err.is_err() {
+            panic!(err);
+        }
+    }
+
     pub(crate) fn remove_tx(&self, tx: &TX) -> Result<TX> {
         if tx.writable() {
             let (free_list_n, free_list_pending_n, free_list_alloc) = {
@@ -504,6 +546,7 @@ impl<'a> DB {
             stats.free_page_n = free_list_n;
             stats.pending_page_n = free_list_pending_n;
             stats.free_alloc = free_list_alloc;
+            stats.tx_stats += tx.stats().clone();
             Ok(tx)
         } else {
             let mut txs = self.0.txs.try_write_for(Duration::from_secs(10)).unwrap();
@@ -518,6 +561,7 @@ impl<'a> DB {
 
             let mut stats = self.0.stats.write();
             stats.open_tx_n = txs.len();
+            stats.tx_stats += tx.stats().clone();
             Ok(tx)
         }
     }
@@ -916,95 +960,20 @@ impl Meta {
 pub struct Stats {
     // FreeList stats.
     // total number of free pages on the freelist.
-    pending_page_n: usize,
+    pub pending_page_n: usize,
     // total number of pending pages on the freelist.
-    free_alloc: usize,
+    pub free_alloc: usize,
     // total bytes allocated in free pages.
-    free_list_inuse: u64,
+    pub free_list_inuse: u64,
     // total bytes used by the freelist.
-    free_page_n: usize,
+    pub free_page_n: usize,
     // Transaction stats
     // total number of started read transactions.
-    tx_n: u64,
+    pub tx_n: u64,
     // number of currently open read transactions.
-    open_tx_n: usize,
-}
-
-/// Transaction statistics
-#[derive(Clone, Debug, Default)]
-pub struct TxStats {
-    // Page statistics
-    /// number of page allocations
-    pub page_count: usize,
-    /// total bytes allocated
-    pub page_alloc: usize,
-
-    // Cursor statistics
-    /// number of cursor created
-    pub cursor_count: usize,
-
-    // Node statistics
-    /// number of node allocations
-    pub node_count: usize,
-    /// number of node dereferences.
-    pub node_deref: usize,
-
-    // Rebalance statistics
-    /// number of node rebalances
-    pub rebalance: usize,
-    /// total time spent rebalancing
-    pub rebalance_time: Duration,
-
-    // Split/Spill statistics
-    /// number of nodes split
-    pub split: usize,
-    /// number of nodes spilled
-    pub spill: usize,
-    /// total time spent spilling
-    pub spill_time: Duration,
-
-    // Write statistics
-    /// number of writes performed
-    pub write: usize,
-    /// total time spent write to disk
-    pub write_time: Duration,
-}
-
-impl TxStats {
-    /// returns diff stats
-    pub fn sub(&self, other: &TxStats) -> TxStats {
-        TxStats {
-            page_count: self.page_count - other.page_count,
-            page_alloc: self.page_alloc - other.page_alloc,
-            cursor_count: self.cursor_count - other.cursor_count,
-            node_count: self.node_count - other.node_count,
-            node_deref: self.node_deref - other.node_deref,
-            rebalance: self.rebalance - other.rebalance,
-            rebalance_time: self.rebalance_time - other.rebalance_time,
-            split: self.split - other.split,
-            spill: self.spill - other.spill,
-            spill_time: self.spill_time - other.spill_time,
-            write: self.write - other.write,
-            write_time: self.write_time - other.write_time,
-        }
-    }
-}
-
-impl AddAssign for TxStats {
-    fn add_assign(&mut self, rhs: Self) {
-        self.page_count += rhs.page_count;
-        self.page_alloc += rhs.page_alloc;
-        self.cursor_count += rhs.cursor_count;
-        self.node_count += rhs.node_count;
-        self.node_deref += rhs.node_deref;
-        self.rebalance += rhs.rebalance;
-        self.rebalance_time += rhs.rebalance_time;
-        self.split += rhs.split;
-        self.spill += rhs.spill;
-        self.spill_time += rhs.spill_time;
-        self.write += rhs.write;
-        self.write_time += rhs.write_time;
-    }
+    pub open_tx_n: usize,
+    // global, ongoing stats.
+    tx_stats: TxStats,
 }
 
 struct BatchInner {
@@ -1125,6 +1094,7 @@ pub struct Info {
 
 pub struct DBBuilder {
     path: PathBuf,
+    no_sync: bool,
     no_grow_sync: bool,
     read_only: bool,
     initial_mmap_size: usize,
@@ -1138,6 +1108,7 @@ impl DBBuilder {
     pub fn new<P: AsRef<Path>>(path: P) -> Self {
         Self {
             path: path.as_ref().to_owned(),
+            no_sync: false,
             no_grow_sync: false,
             read_only: false,
             initial_mmap_size: 0,
@@ -1150,6 +1121,11 @@ impl DBBuilder {
 
     pub fn set_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.path = path.as_ref().to_owned();
+        self
+    }
+
+    pub fn set_no_syn(mut self, no_sync: bool) -> Self {
+        self.no_sync = no_sync;
         self
     }
 
@@ -1202,6 +1178,7 @@ impl DBBuilder {
 
     pub fn build(self) -> Result<DB> {
         let opt = Options {
+            no_sync: self.no_sync,
             no_grow_sync: self.no_grow_sync,
             read_only: self.read_only,
             initial_mmap_size: self.initial_mmap_size,
@@ -1214,7 +1191,9 @@ impl DBBuilder {
     }
 }
 
+#[derive(Debug)]
 pub struct Options {
+    no_sync: bool,
     no_grow_sync: bool,
     read_only: bool,
     initial_mmap_size: usize,
@@ -1226,6 +1205,20 @@ pub struct Options {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_util::mock_db;
+
     #[test]
-    fn it_works() {}
+    fn db_stats() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            tx.create_bucket(b"widgets").unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        let stats = db.stats();
+        assert_eq!(stats.tx_stats.page_count, 2);
+        assert_eq!(stats.free_page_n, 0);
+        assert_eq!(stats.pending_page_n, 2);
+    }
 }

@@ -1,5 +1,6 @@
 use std::io;
 use std::io::ErrorKind::Uncategorized;
+use std::ops::Not;
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq)]
@@ -8,8 +9,8 @@ pub enum Error {
     Config(String),
     #[error("IO error: {0}")]
     Io(String),
-    #[error("Empty key")]
-    EmptyKey,
+    #[error("key required")]
+    KeyRequired,
     #[error("Key too large")]
     KeyTooLarge,
     #[error("Value too large")]

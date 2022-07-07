@@ -3,4 +3,7 @@
 
 `boltdb-rs` is a storage option for [:dog: `eraft-rs`](https://github.com/laohanlinux/eraft-rs)
 
-Thanks for https://github.com/Reeywhaar/nut
+Thanks for 
+
+- https://github.com/boltdb/bolt
+- https://github.com/Reeywhaar/nut

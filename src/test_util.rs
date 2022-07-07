@@ -31,7 +31,7 @@ pub(crate) fn mock_db() -> DBBuilder {
     DBBuilder::new(temp_file())
         .set_auto_remove(true)
         .set_read_only(false)
-        .set_check_mode(CheckMode::PARANOID)
+        .set_check_mode(CheckMode::NO)
 }
 
 #[cfg(test)]
@@ -55,7 +55,6 @@ pub(crate) fn mock_db2(str: String) -> DBBuilder {
         .set_check_mode(CheckMode::PARANOID)
 }
 
-#[cfg(test)]
 pub(crate) fn temp_file() -> PathBuf {
     temp_dir().join(format!("{}.boltdb.db", rand::random::<u64>()))
 }
@@ -99,7 +98,7 @@ pub(crate) fn mock_log() {
     }
 
     let env = Env::default()
-        .filter_or("MY_LOG_LEVEL", "error")
+        .filter_or("MY_LOG_LEVEL", "info")
         .write_style_or("MY_LOG_STYLE", "always");
     let _ = env_logger::Builder::from_env(env)
         .format(|buf, record| {
@@ -138,7 +137,7 @@ fn open() {
     assert_eq!(db.meta().root.root, 3);
 }
 
-#[cfg(feature="local")]
+#[cfg(feature = "local")]
 #[test]
 fn open_existing() {
     mock_log();
@@ -188,7 +187,7 @@ fn panic_while_update() {
     .unwrap();
 }
 
-#[cfg(feature="local")]
+#[cfg(feature = "local")]
 #[test]
 fn batch() {
     let db = mock_db()
