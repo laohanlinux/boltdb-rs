@@ -31,7 +31,7 @@ pub(crate) fn mock_db() -> DBBuilder {
     DBBuilder::new(temp_file())
         .set_auto_remove(true)
         .set_read_only(false)
-        .set_check_mode(CheckMode::PARANOID)
+        .set_check_mode(CheckMode::NO)
 }
 
 #[cfg(test)]
@@ -98,7 +98,7 @@ pub(crate) fn mock_log() {
     }
 
     let env = Env::default()
-        .filter_or("MY_LOG_LEVEL", "error")
+        .filter_or("MY_LOG_LEVEL", "info")
         .write_style_or("MY_LOG_STYLE", "always");
     let _ = env_logger::Builder::from_env(env)
         .format(|buf, record| {

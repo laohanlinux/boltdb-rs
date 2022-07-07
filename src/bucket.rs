@@ -25,7 +25,7 @@ pub(crate) const MAX_FILL_PERCENT: f64 = 1.0;
 
 /// DefaultFillPercent is the percent that split pages are filled.
 /// This value can be changed by setting Bucket.FillPercent.
-const DEFAULT_FILL_PERCENT: f64 = 0.5;
+pub(crate) const DEFAULT_FILL_PERCENT: f64 = 0.5;
 
 /// subbucket represents the on-file representation of a bucket.
 /// This is stored as the "value" of a bucket key. If the bucket is small enough,
@@ -198,7 +198,7 @@ impl Bucket {
             }
             Ok(())
         })
-            .unwrap();
+        .unwrap();
         names
     }
 
@@ -316,31 +316,31 @@ impl Bucket {
         }
         let handler = Box::new(|page: &Page, depth: usize| {
             if page.is_leaf() {
-              s.key_n += page.count as isize;
-              // used totals the used bytes for the page.
-              let used = page.byte_size();
-              if self.root() == 0 {
-                  // For inlined bucket just update the line stats.
-                  s.inline_bucket_inuse += used as isize;
-              } else {
-                  // For non-inlined bucket update all the leaf stats.
-                  s.leaf_page_n += 1;
-                  s.leaf_inuse += used as isize;
-                  s.leaf_over_flow_n += page.over_flow as isize;
- 
-                  // Collect stats from sub-buckets.
-                  // Do that by iterating over all element headers
-                  // looking for the ones which the BUCKET_LEAF_FLAG
-                  for i in 0..page.count as usize {
-                      let e = &page.leaf_page_elements()[i];
-                      if e.is_bucket_flag() {
-                          // For any bucket element, open the element value
-                          // and recursively call stats on the contained bucket.
-                          sub_stats += self.open_bucket(e.value().to_vec()).stats();
-                      }
-                  }
-              }
-            }else if page.is_branch() {
+                s.key_n += page.count as isize;
+                // used totals the used bytes for the page.
+                let used = page.byte_size();
+                if self.root() == 0 {
+                    // For inlined bucket just update the line stats.
+                    s.inline_bucket_inuse += used as isize;
+                } else {
+                    // For non-inlined bucket update all the leaf stats.
+                    s.leaf_page_n += 1;
+                    s.leaf_inuse += used as isize;
+                    s.leaf_over_flow_n += page.over_flow as isize;
+
+                    // Collect stats from sub-buckets.
+                    // Do that by iterating over all element headers
+                    // looking for the ones which the BUCKET_LEAF_FLAG
+                    for i in 0..page.count as usize {
+                        let e = &page.leaf_page_elements()[i];
+                        if e.is_bucket_flag() {
+                            // For any bucket element, open the element value
+                            // and recursively call stats on the contained bucket.
+                            sub_stats += self.open_bucket(e.value().to_vec()).stats();
+                        }
+                    }
+                }
+            } else if page.is_branch() {
                 s.branch_page_n += 1;
                 let last_element = page.branch_page_elements().last().unwrap();
 
@@ -350,7 +350,6 @@ impl Bucket {
                 s.branch_over_flow_n += page.over_flow as isize;
             }
 
-
             // Keep track of maximum page depth
             if depth + 1 > s.depth as usize {
                 s.depth = depth as isize + 1;
@@ -359,8 +358,8 @@ impl Bucket {
         self.for_each_page(handler);
 
         // Alloc stats can be computed from page counts and page_size.
-        s.branch_alloc  = (s.branch_page_n + s.branch_over_flow_n ) * page_size as isize;
-        s.leaf_alloc  = (s.leaf_page_n + s.leaf_over_flow_n) * page_size as isize;
+        s.branch_alloc = (s.branch_page_n + s.branch_over_flow_n) * page_size as isize;
+        s.leaf_alloc = (s.leaf_page_n + s.leaf_over_flow_n) * page_size as isize;
 
         // Add the max depth of sub-buckets to get total nested depth.
         s.depth += sub_stats.depth;
@@ -370,17 +369,17 @@ impl Bucket {
     }
 }
 
-#[derive(Default)]
-pub struct BucketStats{
+#[derive(Default, Debug)]
+pub struct BucketStats {
     /// page count Stats
     /// number of logical branch pages.
-    branch_page_n: isize, 
+    branch_page_n: isize,
     // number of physical branch overflow page.
     branch_over_flow_n: isize,
     // number of logical leaf pages.
     leaf_page_n: isize,
     // number of physical leaf overflow pages.
-    leaf_over_flow_n: isize, 
+    leaf_over_flow_n: isize,
 
     // Tree statistics.
     // number of keys/value pairs
@@ -397,10 +396,10 @@ pub struct BucketStats{
     leaf_alloc: isize,
     // bytes actually used for physical leaf data.
     leaf_inuse: isize,
-   
+
     // Bucket statistics.
     // total number of buckets including the top bucket.
-    bucket_n: isize, 
+    bucket_n: isize,
     // total number of inlined buckets.
     inline_bucket_n: isize,
     // bytes used for inlined buckets (also accounted for in LeafInuse)
@@ -408,23 +407,23 @@ pub struct BucketStats{
 }
 
 impl AddAssign for BucketStats {
-   fn add_assign(&mut self, rhs: Self) {
-       self.branch_page_n += rhs.branch_page_n;
-       self.branch_over_flow_n += rhs.branch_over_flow_n;
-       self.leaf_page_n += rhs.leaf_page_n;
-       
-       self.key_n += rhs.key_n;
-       self.depth += rhs.depth;
+    fn add_assign(&mut self, rhs: Self) {
+        self.branch_page_n += rhs.branch_page_n;
+        self.branch_over_flow_n += rhs.branch_over_flow_n;
+        self.leaf_page_n += rhs.leaf_page_n;
 
-       self.branch_alloc += rhs.branch_alloc;
-       self.branch_inuse += rhs.branch_inuse;
-       self.leaf_alloc += rhs.leaf_alloc;
-       self.leaf_inuse += rhs.leaf_inuse;
+        self.key_n += rhs.key_n;
+        self.depth += rhs.depth;
 
-       self.bucket_n += rhs.bucket_n;
-       self.inline_bucket_n += rhs.inline_bucket_n;
-       self.inline_bucket_inuse += rhs.inline_bucket_inuse;
-   }
+        self.branch_alloc += rhs.branch_alloc;
+        self.branch_inuse += rhs.branch_inuse;
+        self.leaf_alloc += rhs.leaf_alloc;
+        self.leaf_inuse += rhs.leaf_inuse;
+
+        self.bucket_n += rhs.bucket_n;
+        self.inline_bucket_n += rhs.inline_bucket_n;
+        self.inline_bucket_inuse += rhs.inline_bucket_inuse;
+    }
 }
 
 impl Bucket {
@@ -643,8 +642,8 @@ impl Bucket {
     /// Iterates over every page (or node) in a bucket.
     /// This also includes inline pages.
     pub(crate) fn for_each_page_node<F>(&self, mut handler: F)
-        where
-            F: FnMut(Either<&Page, &Node>, isize),
+    where
+        F: FnMut(Either<&Page, &Node>, isize),
     {
         // If we have an inline page then just use that.
         if let Some(ref page) = self.page {
@@ -656,8 +655,8 @@ impl Bucket {
 
     // Pre-Order Traversal
     fn __for_each_page_node<F>(&self, pgid: PgId, depth: isize, handler: &mut F)
-        where
-            F: FnMut(Either<&Page, &Node>, isize),
+    where
+        F: FnMut(Either<&Page, &Node>, isize),
     {
         let item = self.page_node(pgid).unwrap();
         handler(item.upgrade(), depth);
@@ -882,6 +881,7 @@ mod tests {
     use crate::error::Error::{IncompatibleValue, Unexpected};
     use crate::test_util::{mock_db, mock_log};
     use byteordered::byteorder::{BigEndian, WriteBytesExt};
+    use log::kv::ToKey;
     use log::{error, info};
     use std::borrow::Borrow;
     use std::io::repeat;
@@ -993,7 +993,7 @@ mod tests {
             assert_eq!(value, Vec::from("bar"));
             Ok(())
         })
-            .unwrap();
+        .unwrap();
     }
 
     #[test]
@@ -1059,7 +1059,7 @@ mod tests {
             assert!(ok.is_none());
             Ok(())
         })
-            .unwrap();
+        .unwrap();
     }
 
     #[test]
@@ -1073,7 +1073,7 @@ mod tests {
             }
             Ok(())
         })
-            .unwrap();
+        .unwrap();
 
         db.update(|tx| {
             let mut bucket = tx.bucket_mut(b"widgets").unwrap();
@@ -1082,7 +1082,7 @@ mod tests {
             }
             Ok(())
         })
-            .unwrap();
+        .unwrap();
 
         db.view(|tx| {
             let bucket = tx.bucket(b"widgets").unwrap();
@@ -1092,7 +1092,7 @@ mod tests {
             }
             Ok(())
         })
-            .unwrap();
+        .unwrap();
     }
 
     #[test]
@@ -1236,16 +1236,17 @@ mod tests {
             bkt.set_sequence(1000).unwrap();
             assert_eq!(bkt.sequence(), 1000);
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         db.view(|tx| {
             let seq = tx.bucket(b"0").unwrap().sequence();
             assert_eq!(seq, 1000);
 
             Ok(())
-        }).unwrap()
+        })
+        .unwrap()
     }
-
 
     #[test]
     fn bucket_next_sequence() {
@@ -1272,7 +1273,8 @@ mod tests {
                 assert_eq!(sequence, 1);
             }
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
     }
 
     #[test]
@@ -1281,24 +1283,26 @@ mod tests {
         db.update(|tx| {
             tx.create_bucket(b"widgets").unwrap();
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
         db.update(|tx| {
             let _ = tx.bucket_mut(b"widgets").unwrap().next_sequence().unwrap();
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         db.update(|tx| {
             let seq = tx.bucket_mut(b"widgets").unwrap().next_sequence().unwrap();
             assert_eq!(seq, 2);
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
     }
 
     #[test]
     fn bucket_next_sequence_readonly() {
         // nothind can do
     }
-
 
     #[test]
     fn bucket_next_sequence_closed() {
@@ -1323,22 +1327,25 @@ mod tests {
             bucket.put(b"bar", b"0002".to_vec()).unwrap();
 
             let mut index = 0;
-            bucket.for_each(|key, value| {
-                if index == 0 {
-                    assert_eq!(key, b"bar");
-                    assert_eq!(value.unwrap(), b"0002");
-                } else if index == 1 {
-                    assert_eq!(key, b"baz");
-                    assert_eq!(value.unwrap(), b"0001");
-                } else {
-                    assert_eq!(key, b"foo");
-                    assert_eq!(value.unwrap(), b"0000");
-                }
-                index += 1;
-                Ok(())
-            }).unwrap();
+            bucket
+                .for_each(|key, value| {
+                    if index == 0 {
+                        assert_eq!(key, b"bar");
+                        assert_eq!(value.unwrap(), b"0002");
+                    } else if index == 1 {
+                        assert_eq!(key, b"baz");
+                        assert_eq!(value.unwrap(), b"0001");
+                    } else {
+                        assert_eq!(key, b"foo");
+                        assert_eq!(value.unwrap(), b"0000");
+                    }
+                    index += 1;
+                    Ok(())
+                })
+                .unwrap();
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
     }
 
     #[test]
@@ -1363,16 +1370,17 @@ mod tests {
             assert_eq!(err, Err(Unexpected("marker")));
             assert_eq!(index, 2);
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
     }
 
     #[test]
-    fn bucket_for_each_closed(){
+    fn bucket_for_each_closed() {
         let db = mock_db().build().unwrap();
         let mut tx = db.begin_rw_tx().unwrap();
         tx.create_bucket(b"widgets").unwrap();
         tx.rollback().unwrap();
-        let err = tx.bucket(b"widgets").unwrap().for_each(|key, value| { Ok(())});
+        let err = tx.bucket(b"widgets").unwrap().for_each(|key, value| Ok(()));
         assert_eq!(Err(crate::Error::TxClosed), err);
     }
 
@@ -1385,7 +1393,7 @@ mod tests {
         });
         assert_eq!(Err(crate::Error::KeyRequired), err);
     }
-    
+
     #[test]
     fn bucket_put_key_too_large() {
         let db = mock_db().build().unwrap();
@@ -1399,7 +1407,7 @@ mod tests {
     #[test]
     fn bucket_put_value_too_large() {
         let db = mock_db().build().unwrap();
-        // 
+        //
     }
 
     #[test]
@@ -1410,19 +1418,48 @@ mod tests {
         for i in 0..500 {
             db.update(|tx| {
                 let mut bucket = tx.create_bucket_if_not_exists(b"woojits").unwrap();
-                bucket.put(format!("{:03}", i).as_bytes(), format!("{}",i).as_bytes().to_vec()).unwrap();
+                bucket
+                    .put(format!("{:03}", i).as_bytes(), [i as u8].to_vec())
+                    .unwrap();
                 Ok(())
-            }).unwrap();
+            })
+            .unwrap();
         }
         db.update(|tx| {
-            tx.bucket_mut(b"woojits").unwrap().put(&big_key, Vec::from_iter([0].repeat(10000))).unwrap();
+            tx.bucket_mut(b"woojits")
+                .unwrap()
+                .put(&big_key, [42].repeat(10000).to_vec())
+                .unwrap();
             Ok(())
-        }).unwrap();
-       
+        })
+        .unwrap();
+
         db.view(|tx| {
             let stats = tx.bucket(b"woojits").unwrap().stats();
-            //assert_eq!(1, stats.borrow().branch_page_element)
+            info!("stats {:?}", stats);
+            assert_eq!(stats.branch_page_n, 1);
+            assert_eq!(stats.branch_over_flow_n, 0);
+            if tx.db()?.page_size() == 16384 {
+                // 16K
+                assert_eq!(stats.leaf_page_n, 2);
+                assert_eq!(stats.leaf_over_flow_n, 0);
+                assert_eq!(stats.branch_alloc, 16384);
+                assert_eq!(stats.leaf_alloc, 32768);
+            } else if tx.db()?.page_size() == 4096 {
+                // 4K
+                assert_eq!(stats.leaf_page_n, 7);
+                assert_eq!(stats.leaf_over_flow_n, 2);
+                assert_eq!(stats.branch_alloc, 4096);
+                assert_eq!(stats.leaf_alloc, 36864);
+            }
+            assert_eq!(stats.key_n, 501);
+            assert_eq!(stats.depth, 2);
+            assert_eq!(stats.bucket_n, 1);
+            assert_eq!(stats.inline_bucket_n, 0);
+            assert_eq!(stats.inline_bucket_inuse, 0);
+
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
     }
 }

@@ -973,22 +973,22 @@ mod tests {
 
     #[test]
     fn commit_some() {
-        let mut db = crate::test_util::mock_db2("c_s".to_owned())
-            .build()
-            .unwrap();
-        let mut tx = db.begin_rw_tx().unwrap();
-        {
-            let mut bucket = tx.create_bucket(b"bucket").unwrap();
-            bucket.put(b"key", b"value".to_vec()).unwrap();
-        }
-        tx.commit().unwrap();
+        // let mut db = crate::test_util::mock_db2("c_s".to_owned())
+        //     .build()
+        //     .unwrap();
+        // let mut tx = db.begin_rw_tx().unwrap();
+        // {
+        //     let mut bucket = tx.create_bucket(b"bucket").unwrap();
+        //     bucket.put(b"key", b"value".to_vec()).unwrap();
+        // }
+        // tx.commit().unwrap();
     }
 
     #[test]
     fn commit_multiple() {
         let n_commits = 1;
         let n_values = 50000;
-        let mut db = crate::test_util::mock_db2("tt.db".to_owned())
+        let mut db = crate::test_util::mock_db()
             .set_check_mode(CheckMode::NO)
             .build()
             .unwrap();

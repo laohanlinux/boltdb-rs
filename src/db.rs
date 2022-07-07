@@ -1,12 +1,13 @@
-use crate::bucket::TopBucket;
+use crate::bucket::{TopBucket, DEFAULT_FILL_PERCENT, MAX_FILL_PERCENT, MIN_FILL_PERCENT};
 use crate::error::Error::{
     DBOpFailed, DatabaseGone, DatabaseOnlyRead, TrySolo, Unexpected, Unexpected2,
 };
 use crate::error::Result;
 use crate::error::{is_valid_error, Error};
 use crate::free_list::FreeList;
-use crate::page::{OwnedPage, Page, PageFlag};
+use crate::page::{OwnedPage, Page, PageFlag, MIN_KEYS_PER_PAGE};
 use crate::page::{PgId, META_PAGE_SIZE};
+use crate::test_util::temp_file;
 use crate::tx::{RWTxGuard, TxBuilder, TxGuard, TX};
 use crate::TxId;
 use bitflags::bitflags;
@@ -16,6 +17,7 @@ use log::{debug, error, info};
 use parking_lot::lock_api::{RawMutex, RawRwLock};
 use parking_lot::MappedRwLockReadGuard;
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
+use std::fmt::{Display, Formatter};
 use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
@@ -29,7 +31,6 @@ use std::sync::mpsc::SyncSender;
 use std::sync::{mpsc, Arc, Weak};
 use std::thread::{sleep, spawn};
 use std::time::Duration;
-use crate::test_util::temp_file;
 
 /// The largest step that can be token when remapping the mman.
 pub const MAX_MMAP_STEP: u64 = 1 << 30; //1GB
@@ -94,6 +95,13 @@ pub(crate) struct DBInner {
     pub(crate) batch: Mutex<Option<Batch>>,
     pub(crate) page_pool: Mutex<Vec<OwnedPage>>,
     read_only: bool,
+}
+
+impl Display for DBInner {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("config detail: check_mode:{}, no_sync:{}, no_grow_sync:{}, max_batch_size:{}, max_batch_delay:{:?}, auto_remove: {:?}, allow_size:{}, page_size:{}, read_only:{}, MIN_KEYS_PER_PAGE:{}, MIN_FILL_PERCENT:{}, MAX_FILL_PERCENT:{}, DEFAULT_FILL_PERCENT:{}",
+                                 self.check_mode.bits(), self.no_sync, self.no_grow_sync, self.max_batch_size, self.max_batch_delay, self.auto_remove, self.alloc_size, self.page_size, self.read_only, MIN_KEYS_PER_PAGE, MIN_FILL_PERCENT, MAX_FILL_PERCENT, DEFAULT_FILL_PERCENT))
+    }
 }
 
 #[derive(Clone)]
@@ -173,7 +181,7 @@ impl DB {
         };
         let mut db: DB = DB(Arc::new(DBInner {
             check_mode: opt.check_mode,
-            no_sync: false,
+            no_sync: opt.no_sync,
             no_grow_sync: opt.no_grow_sync,
             max_batch_size: opt.max_batch_size,
             max_batch_delay: opt.max_batch_delay,
@@ -207,6 +215,7 @@ impl DB {
             let freelist_page = db.page(free_list_id);
             db.0.free_list.try_write().unwrap().read(&freelist_page);
         }
+        info!("database config: {}", db.0);
         Ok(db)
     }
 
@@ -476,12 +485,12 @@ impl DB {
 
 impl<'a> DB {
     pub(crate) fn must_check(&self) {
-       let err = self.update(|tx| {
+        let err = self.update(|tx| {
             let mut errs = vec![];
             while let Ok(err) = tx.check().recv() {
                 errs.push(err);
                 if errs.len() > 10 {
-                    break
+                    break;
                 }
             }
             if !errs.is_empty() {
@@ -1159,6 +1168,7 @@ pub struct Info {
 
 pub struct DBBuilder {
     path: PathBuf,
+    no_sync: bool,
     no_grow_sync: bool,
     read_only: bool,
     initial_mmap_size: usize,
@@ -1172,6 +1182,7 @@ impl DBBuilder {
     pub fn new<P: AsRef<Path>>(path: P) -> Self {
         Self {
             path: path.as_ref().to_owned(),
+            no_sync: false,
             no_grow_sync: false,
             read_only: false,
             initial_mmap_size: 0,
@@ -1184,6 +1195,11 @@ impl DBBuilder {
 
     pub fn set_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.path = path.as_ref().to_owned();
+        self
+    }
+
+    pub fn set_no_syn(mut self, no_sync: bool) -> Self {
+        self.no_sync = no_sync;
         self
     }
 
@@ -1236,6 +1252,7 @@ impl DBBuilder {
 
     pub fn build(self) -> Result<DB> {
         let opt = Options {
+            no_sync: self.no_sync,
             no_grow_sync: self.no_grow_sync,
             read_only: self.read_only,
             initial_mmap_size: self.initial_mmap_size,
@@ -1248,7 +1265,9 @@ impl DBBuilder {
     }
 }
 
+#[derive(Debug)]
 pub struct Options {
+    no_sync: bool,
     no_grow_sync: bool,
     read_only: bool,
     initial_mmap_size: usize,
