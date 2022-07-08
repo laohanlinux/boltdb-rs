@@ -151,7 +151,6 @@ impl Node {
         if self.num_children() == 0 {
             dirty.push(self.pg_id());
             let key = self.0.key.borrow().clone();
-            info!("zero children node, key: {}", String::from_utf8_lossy(&key));
             let pgid = *self.0.pgid.borrow();
             let mut parent = self.parent().unwrap();
             parent.del(&key);

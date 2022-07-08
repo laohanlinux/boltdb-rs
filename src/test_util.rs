@@ -186,37 +186,3 @@ fn panic_while_update() {
     })
     .unwrap();
 }
-
-#[cfg(feature = "local")]
-#[test]
-fn batch() {
-    let db = mock_db()
-        .set_batch_delay(Duration::from_secs(2))
-        .set_batch_size(3)
-        .build()
-        .unwrap();
-
-    let mut handles = vec![];
-    for i in 0..10 {
-        let mut db = db.clone();
-        handles.push(spawn(move || {
-            db.batch(Box::new(move |tx| {
-                let _ = tx.create_bucket(format!("{}bubu", i).as_bytes()).unwrap();
-                Ok(())
-            }))
-            .unwrap()
-        }));
-    }
-
-    for h in handles {
-        h.join().unwrap();
-    }
-
-    db.view(|tx| {
-        for i in 0..10 {
-            let _ = tx.bucket(format!("{}bubu", i).as_bytes()).unwrap();
-        }
-        Ok(())
-    })
-    .unwrap();
-}

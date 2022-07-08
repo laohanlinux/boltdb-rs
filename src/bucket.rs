@@ -1467,29 +1467,45 @@ mod tests {
         .unwrap();
     }
 
+    fn rand_perm(n: isize) -> Vec<isize>{
+        use rand::prelude::*;
+        let mut rand = rand::thread_rng();
+        let mut rands = (0..n).collect::<Vec<isize>>();
+        rands.shuffle(&mut rand);
+        rands
+    }
+    
     #[test]
     fn bucket_stats_random_fill() {
-        use rand::prelude::*;
         if page_size::get() != 4096 {
+            info!("skip test"); 
             return;
         }
-
         let db = mock_db().build().unwrap();
         info!("start ...");
+        let mut count = 0;
         // Add a set of values in random order. It will be the same random
-        // order so we can maintain consistency between test runs.
-        let mut rand = rand::thread_rng();
-        let mut rands = (0..1000).collect::<Vec<u32>>();
-        rands.shuffle(&mut rand);
-        for i in rands.iter() {
+        // order, so we can maintain consistency between test runs.
+        for i in rand_perm(1000).iter() {
             db.update(|tx| {
                 let mut bucket = tx.create_bucket_if_not_exists(b"widgets").unwrap();
                 bucket.fill_percent = 0.9;
-                let mut step = (0..100).collect::<Vec<u32>>();
-                step.shuffle(&mut rand);
+                for j in rand_perm(100).iter() {
+                    let index = (j * 1000) + i;
+                    bucket.put(format!("{}000000000000000", index).as_bytes(), b"0000000000".to_vec()).unwrap();
+                    count +=1;
+                }
                 Ok(())
             })
             .unwrap();
         }
+
+        db.view(|tx| {
+            let stats = tx.bucket(b"woojits").unwrap().stats();
+            assert_eq!(stats.key_n, 100000);
+            Ok(())
+        }).unwrap();
     }
+
+    
 }

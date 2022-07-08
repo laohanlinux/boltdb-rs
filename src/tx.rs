@@ -597,7 +597,7 @@ impl TX {
     }
 
     /// Returns a contiguous block of memory starting at a given page.
-    /// New pages will stored at commit pharse.
+    /// New pages will be stored at commit phase.
     pub(crate) fn allocate(&mut self, count: u64) -> Result<*mut Page> {
         let mut db = self.db()?;
         let mut page = db.allocate(count, self)?;
@@ -609,7 +609,6 @@ impl TX {
         {
             let mut stats = self.0.stats.lock();
             stats.page_count += 1;
-            info!("allocate count++");
             stats.page_alloc += count as usize * self.db()?.page_size();
         }
 
