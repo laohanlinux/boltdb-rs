@@ -98,7 +98,7 @@ pub(crate) fn mock_log() {
     }
 
     let env = Env::default()
-        .filter_or("MY_LOG_LEVEL", "info")
+        .filter_or("MY_LOG_LEVEL", "error")
         .write_style_or("MY_LOG_STYLE", "always");
     let _ = env_logger::Builder::from_env(env)
         .format(|buf, record| {
@@ -182,40 +182,6 @@ fn panic_while_update() {
     db.view(|tx| {
         assert!(tx.bucket(b"exists").is_ok());
         assert!(tx.bucket(b"not exists").is_err());
-        Ok(())
-    })
-    .unwrap();
-}
-
-#[cfg(feature = "local")]
-#[test]
-fn batch() {
-    let db = mock_db()
-        .set_batch_delay(Duration::from_secs(2))
-        .set_batch_size(3)
-        .build()
-        .unwrap();
-
-    let mut handles = vec![];
-    for i in 0..10 {
-        let mut db = db.clone();
-        handles.push(spawn(move || {
-            db.batch(Box::new(move |tx| {
-                let _ = tx.create_bucket(format!("{}bubu", i).as_bytes()).unwrap();
-                Ok(())
-            }))
-            .unwrap()
-        }));
-    }
-
-    for h in handles {
-        h.join().unwrap();
-    }
-
-    db.view(|tx| {
-        for i in 0..10 {
-            let _ = tx.bucket(format!("{}bubu", i).as_bytes()).unwrap();
-        }
         Ok(())
     })
     .unwrap();

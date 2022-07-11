@@ -21,7 +21,6 @@ use std::fmt::{Display, Formatter};
 use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
-use std::ops::{AddAssign, Deref};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::slice::from_raw_parts;
@@ -297,6 +296,7 @@ impl DB {
         };
         let mut rw_tx = self.0.rw_tx.write();
 
+        // Free any pages associated with closed read-only transactions.
         let txs = self.0.txs.read();
         let minid = txs
             .iter()
@@ -511,7 +511,7 @@ impl<'a> DB {
         });
 
         if err.is_err() {
-            panic!(err);
+            panic!("{:?}", err);
         }
     }
 
@@ -539,7 +539,6 @@ impl<'a> DB {
             };
 
             unsafe {
-                // log::info!(is_ok = tx.db().is_ok(); "free db rw_lock, has db ref");
                 self.0.rw_lock.raw().unlock();
             }
             let mut stats = self.0.stats.write();
@@ -1206,6 +1205,8 @@ pub struct Options {
 #[cfg(test)]
 mod tests {
     use crate::test_util::mock_db;
+    use std::thread::spawn;
+    use std::time::Duration;
 
     #[test]
     fn db_stats() {
@@ -1217,8 +1218,42 @@ mod tests {
         .unwrap();
 
         let stats = db.stats();
+        // *Note*: no including init pages(0,1,2,3);
         assert_eq!(stats.tx_stats.page_count, 2);
         assert_eq!(stats.free_page_n, 0);
         assert_eq!(stats.pending_page_n, 2);
+    }
+
+    #[test]
+    fn batch() {
+        let db = mock_db()
+            .set_batch_delay(Duration::from_secs(2))
+            .set_batch_size(10)
+            .build()
+            .unwrap();
+
+        let mut handles = vec![];
+        for i in 0..10 {
+            let mut db = db.clone();
+            handles.push(spawn(move || {
+                db.batch(Box::new(move |tx| {
+                    let _ = tx.create_bucket(format!("{}bubu", i).as_bytes()).unwrap();
+                    Ok(())
+                }))
+                .unwrap()
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        db.view(|tx| {
+            for i in 0..10 {
+                let _ = tx.bucket(format!("{}bubu", i).as_bytes()).unwrap();
+            }
+            Ok(())
+        })
+        .unwrap();
     }
 }

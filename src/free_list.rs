@@ -31,7 +31,7 @@ impl FreeList {
             // The first element will be used to store the count. See free_list.write.
             n += 1;
         }
-        unsafe { PAGE_HEADER_SIZE + size_of::<PgId>() * n }
+        PAGE_HEADER_SIZE + size_of::<PgId>() * n
     }
 
     // Returns `count` of `pages` on the `freelist`
@@ -56,9 +56,9 @@ impl FreeList {
     pub fn get_pg_ids(&self) -> Vec<PgId> {
         let mut m = Vec::with_capacity(self.count());
         for list in self.pending.values() {
-            m.extend_from_slice(&list.as_slice());
+            m.extend_from_slice(list.as_slice());
         }
-        m.extend_from_slice(&self.ids.as_slice());
+        m.extend_from_slice(self.ids.as_slice());
         m.sort_unstable();
         m
     }
@@ -109,7 +109,6 @@ impl FreeList {
             assert!(!self.cache.contains(&id), "page {} already freed", id);
             // add to the free list and cache.
             ids.push(id);
-            debug!("free page: {}", id);
             self.cache.insert(id);
         }
     }
@@ -221,7 +220,7 @@ impl FreeList {
     // saved to disk since in the event of a program crash, all `pending ids` will become
     // free.
     pub(crate) fn reload(&mut self, page: &Page) {
-        // TODO: FIXME
+        self.read(page);
         // Build a cache of only pending pages.
         let page_cache = self
             .pending

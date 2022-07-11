@@ -379,7 +379,7 @@ impl LeafPageElement {
 
     #[inline]
     pub(crate) fn is_bucket_flag(&self) -> bool {
-        (self.flags & BUCKET_LEAF_FLAG) != 0 
+        (self.flags & BUCKET_LEAF_FLAG) != 0
     }
 
     #[inline]
@@ -398,7 +398,7 @@ impl LeafPageElement {
     }
 }
 
-// represents human readable information about a page.
+// represents human-readable information about a page.
 #[derive(Debug, Default)]
 pub struct PageInfo {
     pub id: u64,
