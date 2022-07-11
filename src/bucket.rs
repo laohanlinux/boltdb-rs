@@ -1503,9 +1503,74 @@ mod tests {
         db.view(|tx| {
             let stats = tx.bucket(b"woojits").unwrap().stats();
             assert_eq!(stats.key_n, 100000);
+            assert_eq!(stats.branch_page_n, 98, "unexpected branch_page_n: {}", stats.branch_page_n);
+            assert_eq!(stats.branch_over_flow_n, 0, "unexpected branch_over_flow_n: {}", stats.branch_over_flow_n);
+            assert_eq!(stats.branch_inuse, 130984, "unexpected branch_inuse: {}", stats.branch_inuse);
+            assert_eq!(stats.branch_alloc, 401408, "unexpected branch_alloc: {}", stats.branch_alloc);
+            assert_eq!(stats.leaf_alloc, 13975552, "unexpected leaf_alloc: {}", stats.leaf_alloc);
+            Ok(())
+        }).unwrap();
+    }
+    
+    #[test]
+    fn bucket_stats_small() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            // Add a bucket that fits on a single root leaf.
+            let mut bucket = tx.create_bucket(b"whozawhats").unwrap();
+            bucket.put(b"foo", b"bar".to_vec()).unwrap();
+            Ok(())
+        }).unwrap();
+        db.view(|tx| {
+            let bucket = tx.bucket(b"whozawhats").unwrap();
+            let stats = bucket.stats();
+            assert_eq!(stats.branch_page_n, 0, "unexpected branch_page_n: {}", stats.branch_page_n);
+            assert_eq!(stats.branch_over_flow_n, 0, "unexpected branch_over_flow_n: {}", stats.branch_over_flow_n);
+            assert_eq!(stats.leaf_page_n, 0, "unexpected leaf_page_n: {}", stats.leaf_page_n);
+            assert_eq!(stats.leaf_over_flow_n, 0, "unexpected leaf_over_flow_n: {}", stats.leaf_over_flow_n);
+            assert_eq!(stats.key_n, 1, "unexpected key_n: {}", stats.key_n);
+            assert_eq!(stats.depth, 1, "unexpected depth: {}", stats.depth);
+            assert_eq!(stats.branch_inuse, 0, "unexpected branch_inuse: {}", stats.branch_inuse);
+            assert_eq!(stats.leaf_inuse, 0, "unexpected leaf_inuse: {}", stats.leaf_inuse);
+            if page_size::get() == 4096 {
+                assert_eq!(stats.branch_alloc, 0, "unexpected branch_alloc: {}", stats.branch_alloc);
+                assert_eq!(stats.leaf_alloc, 0, "unexpected leaf_alloc: {}", stats.leaf_alloc);
+            }
+            assert_eq!(stats.bucket_n, 1, "unexpected bucket_n: {}", stats.bucket_n);
+            assert_eq!(stats.inline_bucket_n, 1, "unexpected inline_bucket_n:{}", stats.inline_bucket_n);
+            assert_eq!(stats.inline_bucket_inuse, 16 + 16+ 6, "unexpected inline_bucket_inuse: {}", stats.inline_bucket_inuse);
             Ok(())
         }).unwrap();
     }
 
-    
+    #[test]
+    fn bucket_stats_empty() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            tx.create_bucket(b"whozawhats").unwrap();
+            Ok(())
+        }).unwrap();
+
+        db.view(|tx| {
+            let bucket = tx.bucket(b"whozawhats").unwrap();
+            let stats = bucket.stats();
+            assert_eq!(stats.branch_page_n, 0);
+            assert_eq!(stats.branch_over_flow_n, 0);
+            assert_eq!(stats.leaf_page_n, 0);
+            assert_eq!(stats.leaf_over_flow_n, 0);
+            assert_eq!(stats.key_n, 0);
+            assert_eq!(stats.depth, 1);
+            assert_eq!(stats.branch_inuse, 0);
+            assert_eq!(stats.leaf_inuse, 0);
+
+            if page_size::get() == 4096 {
+                assert_eq!(stats.leaf_alloc, 0);
+                assert_eq!(stats.leaf_alloc, 0);
+            }
+            assert_eq!(stats.bucket_n, 1);
+            assert_eq!(stats.inline_bucket_n, 1);
+            assert_eq!(stats.inline_bucket_inuse, 16);
+            Ok(())
+        }).unwrap();
+    }
 }
