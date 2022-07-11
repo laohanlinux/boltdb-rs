@@ -890,7 +890,6 @@ mod tests {
     use std::borrow::Borrow;
     use std::io::repeat;
     use std::iter::FromIterator;
-    use std::os::macos::raw::stat;
     use std::time::SystemTime;
 
     #[test]
@@ -1719,7 +1718,7 @@ mod tests {
 
             assert_eq!(stats.bucket_n, 3);
             assert_eq!(stats.inline_bucket_n, 1);
-            assert_eq!(stats.inline_bucket_inuse, bar);
+            assert_eq!(stats.inline_bucket_inuse, baz);
 
             Ok(())
         })

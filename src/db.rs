@@ -511,7 +511,7 @@ impl<'a> DB {
         });
 
         if err.is_err() {
-            panic!(err);
+            panic!("{:?}", err);
         }
     }
 
