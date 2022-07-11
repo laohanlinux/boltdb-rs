@@ -319,6 +319,7 @@ impl Bucket {
                 s.key_n += page.count as isize;
                 // used totals the used bytes for the page.
                 let used = page.byte_size();
+                info!("{:?}, {}", page.id, used);
                 if self.root() == 0 {
                     // For inlined bucket just update the line stats.
                     s.inline_bucket_inuse += used as isize;
@@ -384,7 +385,7 @@ pub struct BucketStats {
     // Tree statistics.
     // number of keys/value pairs
     key_n: isize,
-    // number of levels in B+tree
+    // number of levels in B+tree(including inlineable page level)
     depth: isize,
 
     // Page size utilization.
@@ -413,7 +414,9 @@ impl AddAssign for BucketStats {
         self.leaf_page_n += rhs.leaf_page_n;
 
         self.key_n += rhs.key_n;
-        self.depth += rhs.depth;
+        if self.depth < rhs.depth {
+            self.depth = rhs.depth;
+        }
 
         self.branch_alloc += rhs.branch_alloc;
         self.branch_inuse += rhs.branch_inuse;
@@ -887,6 +890,8 @@ mod tests {
     use std::borrow::Borrow;
     use std::io::repeat;
     use std::iter::FromIterator;
+    use std::os::macos::raw::stat;
+    use std::time::SystemTime;
 
     #[test]
     fn create() {
@@ -1467,18 +1472,26 @@ mod tests {
         .unwrap();
     }
 
-    fn rand_perm(n: isize) -> Vec<isize>{
+    fn rand_perm(n: isize) -> Vec<isize> {
         use rand::prelude::*;
         let mut rand = rand::thread_rng();
         let mut rands = (0..n).collect::<Vec<isize>>();
         rands.shuffle(&mut rand);
         rands
     }
-    
+
+    fn rand_chars_perm(n: isize) -> Vec<String> {
+        use rand::prelude::*;
+        let mut rand = rand::thread_rng();
+        let mut rands = (0..n).collect::<Vec<isize>>();
+        rands.shuffle(&mut rand);
+        rands.iter().map(|v| format!("{}", v)).collect()
+    }
+
     #[test]
     fn bucket_stats_random_fill() {
         if page_size::get() != 4096 {
-            info!("skip test"); 
+            info!("skip test");
             return;
         }
         let db = mock_db().build().unwrap();
@@ -1492,8 +1505,13 @@ mod tests {
                 bucket.fill_percent = 0.9;
                 for j in rand_perm(100).iter() {
                     let index = (j * 1000) + i;
-                    bucket.put(format!("{}000000000000000", index).as_bytes(), b"0000000000".to_vec()).unwrap();
-                    count +=1;
+                    bucket
+                        .put(
+                            format!("{}000000000000000", index).as_bytes(),
+                            b"0000000000".to_vec(),
+                        )
+                        .unwrap();
+                    count += 1;
                 }
                 Ok(())
             })
@@ -1503,15 +1521,36 @@ mod tests {
         db.view(|tx| {
             let stats = tx.bucket(b"woojits").unwrap().stats();
             assert_eq!(stats.key_n, 100000);
-            assert_eq!(stats.branch_page_n, 98, "unexpected branch_page_n: {}", stats.branch_page_n);
-            assert_eq!(stats.branch_over_flow_n, 0, "unexpected branch_over_flow_n: {}", stats.branch_over_flow_n);
-            assert_eq!(stats.branch_inuse, 130984, "unexpected branch_inuse: {}", stats.branch_inuse);
-            assert_eq!(stats.branch_alloc, 401408, "unexpected branch_alloc: {}", stats.branch_alloc);
-            assert_eq!(stats.leaf_alloc, 13975552, "unexpected leaf_alloc: {}", stats.leaf_alloc);
+            assert_eq!(
+                stats.branch_page_n, 98,
+                "unexpected branch_page_n: {}",
+                stats.branch_page_n
+            );
+            assert_eq!(
+                stats.branch_over_flow_n, 0,
+                "unexpected branch_over_flow_n: {}",
+                stats.branch_over_flow_n
+            );
+            assert_eq!(
+                stats.branch_inuse, 130984,
+                "unexpected branch_inuse: {}",
+                stats.branch_inuse
+            );
+            assert_eq!(
+                stats.branch_alloc, 401408,
+                "unexpected branch_alloc: {}",
+                stats.branch_alloc
+            );
+            assert_eq!(
+                stats.leaf_alloc, 13975552,
+                "unexpected leaf_alloc: {}",
+                stats.leaf_alloc
+            );
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
     }
-    
+
     #[test]
     fn bucket_stats_small() {
         let db = mock_db().build().unwrap();
@@ -1520,27 +1559,70 @@ mod tests {
             let mut bucket = tx.create_bucket(b"whozawhats").unwrap();
             bucket.put(b"foo", b"bar".to_vec()).unwrap();
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
         db.view(|tx| {
             let bucket = tx.bucket(b"whozawhats").unwrap();
             let stats = bucket.stats();
-            assert_eq!(stats.branch_page_n, 0, "unexpected branch_page_n: {}", stats.branch_page_n);
-            assert_eq!(stats.branch_over_flow_n, 0, "unexpected branch_over_flow_n: {}", stats.branch_over_flow_n);
-            assert_eq!(stats.leaf_page_n, 0, "unexpected leaf_page_n: {}", stats.leaf_page_n);
-            assert_eq!(stats.leaf_over_flow_n, 0, "unexpected leaf_over_flow_n: {}", stats.leaf_over_flow_n);
+            assert_eq!(
+                stats.branch_page_n, 0,
+                "unexpected branch_page_n: {}",
+                stats.branch_page_n
+            );
+            assert_eq!(
+                stats.branch_over_flow_n, 0,
+                "unexpected branch_over_flow_n: {}",
+                stats.branch_over_flow_n
+            );
+            assert_eq!(
+                stats.leaf_page_n, 0,
+                "unexpected leaf_page_n: {}",
+                stats.leaf_page_n
+            );
+            assert_eq!(
+                stats.leaf_over_flow_n, 0,
+                "unexpected leaf_over_flow_n: {}",
+                stats.leaf_over_flow_n
+            );
             assert_eq!(stats.key_n, 1, "unexpected key_n: {}", stats.key_n);
             assert_eq!(stats.depth, 1, "unexpected depth: {}", stats.depth);
-            assert_eq!(stats.branch_inuse, 0, "unexpected branch_inuse: {}", stats.branch_inuse);
-            assert_eq!(stats.leaf_inuse, 0, "unexpected leaf_inuse: {}", stats.leaf_inuse);
+            assert_eq!(
+                stats.branch_inuse, 0,
+                "unexpected branch_inuse: {}",
+                stats.branch_inuse
+            );
+            assert_eq!(
+                stats.leaf_inuse, 0,
+                "unexpected leaf_inuse: {}",
+                stats.leaf_inuse
+            );
             if page_size::get() == 4096 {
-                assert_eq!(stats.branch_alloc, 0, "unexpected branch_alloc: {}", stats.branch_alloc);
-                assert_eq!(stats.leaf_alloc, 0, "unexpected leaf_alloc: {}", stats.leaf_alloc);
+                assert_eq!(
+                    stats.branch_alloc, 0,
+                    "unexpected branch_alloc: {}",
+                    stats.branch_alloc
+                );
+                assert_eq!(
+                    stats.leaf_alloc, 0,
+                    "unexpected leaf_alloc: {}",
+                    stats.leaf_alloc
+                );
             }
             assert_eq!(stats.bucket_n, 1, "unexpected bucket_n: {}", stats.bucket_n);
-            assert_eq!(stats.inline_bucket_n, 1, "unexpected inline_bucket_n:{}", stats.inline_bucket_n);
-            assert_eq!(stats.inline_bucket_inuse, 16 + 16+ 6, "unexpected inline_bucket_inuse: {}", stats.inline_bucket_inuse);
+            assert_eq!(
+                stats.inline_bucket_n, 1,
+                "unexpected inline_bucket_n:{}",
+                stats.inline_bucket_n
+            );
+            assert_eq!(
+                stats.inline_bucket_inuse,
+                16 + 16 + 6,
+                "unexpected inline_bucket_inuse: {}",
+                stats.inline_bucket_inuse
+            );
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
     }
 
     #[test]
@@ -1549,7 +1631,8 @@ mod tests {
         db.update(|tx| {
             tx.create_bucket(b"whozawhats").unwrap();
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         db.view(|tx| {
             let bucket = tx.bucket(b"whozawhats").unwrap();
@@ -1571,6 +1654,117 @@ mod tests {
             assert_eq!(stats.inline_bucket_n, 1);
             assert_eq!(stats.inline_bucket_inuse, 16);
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn bucket_stats_nested() {
+        let db = mock_db().build().unwrap();
+        db.update(|tx| {
+            let mut bucket = tx.create_bucket(b"foo").unwrap();
+            for i in 0..100 {
+                bucket
+                    .put(
+                        format!("{:02}", i).as_bytes(),
+                        format!("{:02}", i).as_bytes().to_vec(),
+                    )
+                    .unwrap();
+            }
+            let bar = bucket.create_bucket(b"bar").unwrap();
+            for i in 0..10 {
+                bar.put(&vec![i], vec![i]).unwrap();
+            }
+
+            let baz = bar.create_bucket(b"baz").unwrap();
+            for i in 0..10 {
+                baz.put(&vec![i], vec![i]).unwrap();
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        db.view(|tx| {
+            let bucket = tx.bucket(b"foo").unwrap();
+            let stats = bucket.stats();
+            info!("stats {:?}", stats);
+            assert_eq!(stats.branch_page_n, 0);
+            assert_eq!(stats.branch_over_flow_n, 0);
+            assert_eq!(stats.leaf_page_n, 2);
+            assert_eq!(stats.leaf_over_flow_n, 0);
+            assert_eq!(stats.key_n, 122);
+            assert_eq!(stats.depth, 3);
+            assert_eq!(stats.branch_inuse, 0);
+
+            let mut foo = 16; // foo (pghdr)
+            foo += 101 * 16; // foo leaf elements
+            foo += 100 * 2 + 100 * 2; // foo leaf key/values
+            foo += 3 + 16; // foo -> bar key/value
+
+            let mut bar = 16; // bar (pghdr)
+            bar += 11 * 16; // bar leaf elements
+            bar += 10 + 10; // bar leaf key/values
+            bar += 3 + 16; // bar -> baz key/value
+
+            let mut baz = 16; // baz (inline) (pghdr)
+            baz += 10 * 16; // baz leaf elements
+            baz += 10 + 10; // baz leaf key/values
+
+            assert_eq!(stats.leaf_inuse, foo + bar + baz);
+
+            if page_size::get() == 4096 {
+                assert_eq!(stats.branch_alloc, 0);
+                assert_eq!(stats.leaf_alloc, 8192);
+            }
+
+            assert_eq!(stats.bucket_n, 3);
+            assert_eq!(stats.inline_bucket_n, 1);
+            assert_eq!(stats.inline_bucket_inuse, bar);
+
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn bucket_stats_large() {
+        let db = mock_db().build().unwrap();
+        for i in 0..100 {
+            db.update(|tx| {
+                let mut bucket = tx.create_bucket_if_not_exists(b"widgets").unwrap();
+                for i in 0..1000 {
+                    bucket
+                        .put(
+                            format!("{}", i).as_bytes(),
+                            format!("{}", i).as_bytes().to_vec(),
+                        )
+                        .unwrap();
+                }
+                Ok(())
+            })
+            .unwrap();
+        }
+
+        db.view(|tx| {
+            let stats = tx.bucket(b"widgets").unwrap().stats();
+            if page_size::get() == 4096 {
+                assert_eq!(stats.branch_page_n, 13);
+                assert_eq!(stats.branch_over_flow_n, 13);
+                assert_eq!(stats.leaf_page_n, 1196);
+                assert_eq!(stats.leaf_over_flow_n, 0);
+                assert_eq!(stats.key_n, 100000);
+                assert_eq!(stats.depth, 3);
+                assert_eq!(stats.branch_inuse, 25257);
+                assert_eq!(stats.leaf_inuse, 2596916);
+                assert_eq!(stats.branch_alloc, 53248);
+                assert_eq!(stats.leaf_alloc, 4898816);
+            }
+
+            assert_eq!(stats.bucket_n, 1);
+            assert_eq!(stats.inline_bucket_n, 0);
+            assert_eq!(stats.inline_bucket_inuse, 0);
+            Ok(())
+        })
+        .unwrap();
     }
 }
