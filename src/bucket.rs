@@ -78,7 +78,7 @@ impl Bucket {
                 return Err(Error::TxClosed);
             }
             if !tx.writable() {
-                return Err(Error::TxReadOnly);
+                return Err(Error::TxNoWritable);
             }
             if key.is_empty() {
                 return Err(Error::BucketNameRequired);
@@ -146,10 +146,10 @@ impl Bucket {
                 return Err(Error::DatabaseNotOpen);
             }
             if !tx.writable() {
-                return Err(Error::DatabaseOnlyRead);
+                return Err(Error::TxNoWritable);
             }
             if key.is_empty() {
-                return Err(Error::NameRequired);
+                return Err(Error::KeyRequired);
             }
         }
 
@@ -241,7 +241,7 @@ impl Bucket {
             return Err(Error::TxClosed);
         }
         if !self.tx()?.writable() {
-            return Err(Error::TxReadOnly);
+            return Err(Error::TxNoWritable);
         }
         if key.is_empty() {
             return Err(Error::KeyRequired);
@@ -268,7 +268,7 @@ impl Bucket {
             return Err(Error::TxClosed);
         }
         if !self.tx()?.writable() {
-            return Err(Error::TxReadOnly);
+            return Err(Error::TxNoWritable);
         }
         let mut c = self.cursor()?;
         let item = c.seek(key)?;
@@ -444,7 +444,7 @@ impl Bucket {
 
     /// Returns the tx of the bucket.
     pub(crate) fn tx(&self) -> Result<TX> {
-        self.tx.upgrade().ok_or(Error::TxGone)
+        self.tx.upgrade().ok_or(Error::TxClosed)
     }
 
     /// Returns the root of the bucket.
@@ -854,7 +854,7 @@ impl Bucket {
 
     pub(crate) fn next_sequence(&mut self) -> Result<u64> {
         if !self.tx()?.writable() {
-            return Err(Error::TxReadOnly);
+            return Err(Error::TxNoWritable);
         }
         if self.root_node.is_none() {
             self.node(self.root(), WeakNode::new());
@@ -866,7 +866,7 @@ impl Bucket {
 
     pub(crate) fn set_sequence(&mut self, seq: u64) -> Result<()> {
         if !self.tx()?.writable() {
-            return Err(Error::TxReadOnly);
+            return Err(Error::TxNoWritable);
         }
         // load root node
         if self.root_node.is_none() {

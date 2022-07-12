@@ -112,7 +112,7 @@ impl TX {
 
     pub fn bucket_mut(&mut self, key: &[u8]) -> Result<MappedRwLockWriteGuard<Bucket>> {
         if !self.0.writeable {
-            return Err(Error::TxReadOnly);
+            return Err(Error::TxNoWritable);
         }
         if !self.opened() {
             return Err(Error::TxClosed);
@@ -139,7 +139,7 @@ impl TX {
     /// The bucket instance is only valid for the lifetime of the transaction.
     pub fn create_bucket(&mut self, key: &[u8]) -> Result<MappedRwLockWriteGuard<Bucket>> {
         if !self.0.writeable {
-            return Err(Error::TxReadOnly);
+            return Err(Error::TxNoWritable);
         }
         if !self.opened() {
             return Err(Error::TxClosed);
@@ -157,7 +157,7 @@ impl TX {
         key: &[u8],
     ) -> Result<MappedRwLockWriteGuard<Bucket>> {
         if !self.writable() {
-            return Err(Error::TxReadOnly);
+            return Err(Error::TxNoWritable);
         }
         if !self.opened() {
             return Err(Error::TxClosed);
@@ -172,7 +172,7 @@ impl TX {
     /// Returns an error if the bucket cannot be found or if the key represents a non-bucket value.
     pub fn delete_bucket(&mut self, key: &[u8]) -> Result<()> {
         if !self.writable() {
-            return Err(Error::TxReadOnly);
+            return Err(Error::TxNoWritable);
         }
         if !self.opened() {
             return Err(Error::TxClosed);
@@ -200,7 +200,7 @@ impl TX {
     /// If err == nil then exactly tx.Size() bytes will be written into the writer.
     pub fn write_to<W: Write>(&self, mut w: W) -> Result<i64> {
         if !self.0.writeable {
-            return Err(Error::TxReadOnly);
+            return Err(Error::TxNoWritable);
         }
         if !self.opened() {
             return Err(Error::TxClosed);
@@ -310,7 +310,7 @@ impl TX {
             .try_read()
             .unwrap()
             .upgrade()
-            .ok_or(Error::DatabaseGone)
+            .ok_or(Error::DatabaseNotOpen)
     }
 
     pub(crate) fn take_db(&self) {
@@ -359,7 +359,7 @@ impl TX {
         if self.0.managed.load(Ordering::Acquire) {
             return Err(Error::TxManaged);
         } else if !self.writable() {
-            return Err(Error::TxReadOnly);
+            return Err(Error::TxNoWritable);
         }
         let mut db = self.db()?;
         {
