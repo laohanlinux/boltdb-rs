@@ -112,7 +112,7 @@ impl TX {
 
     pub fn bucket_mut(&mut self, key: &[u8]) -> Result<MappedRwLockWriteGuard<Bucket>> {
         if !self.0.writeable {
-            return Err(Error::TxReadOnly);
+            return Err(Error::TxNoWritable);
         }
         if !self.opened() {
             return Err(Error::TxClosed);
@@ -139,7 +139,7 @@ impl TX {
     /// The bucket instance is only valid for the lifetime of the transaction.
     pub fn create_bucket(&mut self, key: &[u8]) -> Result<MappedRwLockWriteGuard<Bucket>> {
         if !self.0.writeable {
-            return Err(Error::TxReadOnly);
+            return Err(Error::TxNoWritable);
         }
         if !self.opened() {
             return Err(Error::TxClosed);
@@ -157,7 +157,7 @@ impl TX {
         key: &[u8],
     ) -> Result<MappedRwLockWriteGuard<Bucket>> {
         if !self.writable() {
-            return Err(Error::TxReadOnly);
+            return Err(Error::TxNoWritable);
         }
         if !self.opened() {
             return Err(Error::TxClosed);
@@ -172,7 +172,7 @@ impl TX {
     /// Returns an error if the bucket cannot be found or if the key represents a non-bucket value.
     pub fn delete_bucket(&mut self, key: &[u8]) -> Result<()> {
         if !self.writable() {
-            return Err(Error::TxReadOnly);
+            return Err(Error::TxNoWritable);
         }
         if !self.opened() {
             return Err(Error::TxClosed);
@@ -200,7 +200,7 @@ impl TX {
     /// If err == nil then exactly tx.Size() bytes will be written into the writer.
     pub fn write_to<W: Write>(&self, mut w: W) -> Result<i64> {
         if !self.0.writeable {
-            return Err(Error::TxReadOnly);
+            return Err(Error::TxNoWritable);
         }
         if !self.opened() {
             return Err(Error::TxClosed);
@@ -310,7 +310,7 @@ impl TX {
             .try_read()
             .unwrap()
             .upgrade()
-            .ok_or(Error::DatabaseGone)
+            .ok_or(Error::DatabaseNotOpen)
     }
 
     pub(crate) fn take_db(&self) {
@@ -359,7 +359,7 @@ impl TX {
         if self.0.managed.load(Ordering::Acquire) {
             return Err(Error::TxManaged);
         } else if !self.writable() {
-            return Err(Error::TxReadOnly);
+            return Err(Error::TxNoWritable);
         }
         let mut db = self.db()?;
         {
@@ -370,7 +370,7 @@ impl TX {
             }
             let mut stats = self.0.stats.lock();
             if stats.rebalance > 0 {
-                stats.rebalance_time += SystemTime::now()
+                stats.rebalanced_time += SystemTime::now()
                     .duration_since(start_time)
                     .map_err(|_| Unexpected("Cann't get system time"))?;
             }
@@ -790,40 +790,40 @@ impl Drop for TX {
 #[derive(Default, Debug, Clone)]
 pub struct TxStats {
     // Page statistics
-    // number of page allocations.
-    pub(crate) page_count: usize,
-    // total bytes allocated.
-    pub(crate) page_alloc: usize,
+    /// number of page allocations.
+    pub page_count: usize,
+    /// total bytes allocated.
+    pub page_alloc: usize,
 
     // Cursor statistics
-    // number of cursors created.
-    pub(crate) cursor_count: usize,
+    /// number of cursors created.
+    pub cursor_count: usize,
 
     // Node statistics
-    // number of node allocations
-    pub(crate) node_count: usize,
-    // number of node dereferences
-    pub(crate) node_deref: usize,
+    /// number of node allocations
+    pub node_count: usize,
+    /// number of node dereferences
+    pub node_deref: usize,
 
-    // Rebalance statistics
-    // number of node rebalances
-    pub(crate) rebalance: usize,
-    // total time spent rebalancing
-    pub(crate) rebalance_time: Duration,
+    // Rebalanced statistics
+    /// number of node rebalances
+    pub rebalance: usize,
+    /// total time spent rebalancing
+    pub rebalanced_time: Duration,
 
     // Split/Spill statistics
-    // number of nodes spilt
-    pub(crate) split: usize,
-    // number of nodes spill
-    pub(crate) spill: usize,
-    // total time spent spilling
-    pub(crate) spill_time: Duration,
+    /// number of nodes spilt
+    pub split: usize,
+    /// number of nodes spill
+    pub spill: usize,
+    /// total time spent spilling
+    pub spill_time: Duration,
 
     // Write statistics.
-    // number of writes performed
-    pub(crate) write: usize,
-    // total time spent writing to disk
-    pub(crate) write_time: Duration,
+    /// number of writes performed
+    pub write: usize,
+    /// total time spent writing to disk
+    pub write_time: Duration,
 }
 
 impl AddAssign for TxStats {
@@ -834,7 +834,7 @@ impl AddAssign for TxStats {
         self.node_count += rhs.node_count;
         self.node_deref += rhs.node_deref;
         self.rebalance += rhs.rebalance;
-        self.rebalance_time += rhs.rebalance_time;
+        self.rebalanced_time += rhs.rebalanced_time;
         self.split += rhs.split;
         self.spill += rhs.spill;
         self.spill_time += rhs.spill_time;
@@ -851,7 +851,7 @@ impl SubAssign for TxStats {
         self.node_count -= rhs.node_count;
         self.node_deref -= rhs.node_deref;
         self.rebalance -= rhs.rebalance;
-        self.rebalance_time -= rhs.rebalance_time;
+        self.rebalanced_time -= rhs.rebalanced_time;
         self.split -= rhs.split;
         self.spill -= rhs.spill;
         self.spill_time -= rhs.spill_time;

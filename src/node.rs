@@ -1,5 +1,4 @@
 use crate::bucket::{MAX_FILL_PERCENT, MIN_FILL_PERCENT};
-use crate::error::Error::BucketEmpty;
 use crate::error::{Error, Result};
 use crate::page::{
     BranchPageElement, ElementSize, LeafPageElement, Page, PageFlag, PgId, MIN_KEYS_PER_PAGE,
@@ -276,12 +275,7 @@ impl Node {
 
     // Returns the child node at a given index.
     pub(crate) fn child_at(&self, index: usize) -> Result<Node> {
-        if self.is_leaf() {
-            return Err(Error::InvalidNode(format!(
-                "invalid childAt {} on a leaf node",
-                index
-            )));
-        }
+        assert!(!self.is_leaf(), "invalid childAt {} on a leaf node", index);
         let pg_id = self.0.inodes.borrow()[index].pg_id;
         // todo: Why?
         Ok(self.bucket_mut().unwrap().node(pg_id, WeakNode::from(self)))
@@ -378,17 +372,15 @@ impl Node {
         flags: u32,
     ) -> Result<()> {
         let bucket = self.bucket().unwrap();
-        if pg_id >= bucket.tx().unwrap().meta_mut().pg_id {
-            return Err(Error::PutFailed(format!(
-                "pgid {:?} above high water mark {:?}",
-                pg_id,
-                bucket.tx().unwrap().meta_mut().pg_id
-            )));
-        } else if old_key.is_empty() {
-            return Err(Error::PutFailed("zero-length old key".to_string()));
-        } else if new_key.is_empty() {
-            return Err(Error::PutFailed("zero-length new key".to_string()));
-        }
+
+        assert!(
+            pg_id < bucket.tx().unwrap().meta_mut().pg_id,
+            "pgid {:?} above high water mark {:?}",
+            pg_id,
+            bucket.tx().unwrap().meta_mut().pg_id
+        );
+        assert!(!old_key.is_empty(), "zero-length old key");
+        assert!(!new_key.is_empty(), "zero-length new key");
 
         // Find insertion index.
         let mut inodes = self.0.inodes.borrow_mut();
@@ -716,7 +708,7 @@ impl Node {
         };
         // Determine the threshold before starting a new node.
         let fill_parent = clamp(
-            self.bucket().ok_or(BucketEmpty)?.fill_percent,
+            self.bucket().unwrap().fill_percent,
             MIN_FILL_PERCENT,
             MAX_FILL_PERCENT,
         );
@@ -739,12 +731,7 @@ impl Node {
             .collect::<Vec<_>>();
         // Only the first block has pgid of older(use old memory space), thew second block is set to 0
         *next.0.inodes.borrow_mut() = nodes;
-        self.bucket_mut()
-            .ok_or(BucketEmpty)?
-            .tx()
-            .unwrap()
-            .stats()
-            .split += 1;
+        self.bucket_mut().unwrap().tx().unwrap().stats().split += 1;
         Ok(Some(next))
     }
 

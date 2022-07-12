@@ -1,15 +1,14 @@
 use crate::bucket::{TopBucket, DEFAULT_FILL_PERCENT, MAX_FILL_PERCENT, MIN_FILL_PERCENT};
-use crate::error::Error::{
-    DBOpFailed, DatabaseGone, DatabaseOnlyRead, TrySolo, Unexpected, Unexpected2,
-};
+use crate::error::Error::{DatabaseNotOpen, DatabaseOnlyRead, TrySolo, Unexpected, Unexpected2};
 use crate::error::Result;
 use crate::error::{is_valid_error, Error};
 use crate::free_list::FreeList;
 use crate::page::{OwnedPage, Page, PageFlag, MIN_KEYS_PER_PAGE};
 use crate::page::{PgId, META_PAGE_SIZE};
 use crate::test_util::temp_file;
-use crate::tx::{RWTxGuard, TxBuilder, TxGuard, TX};
-use crate::{TxId, TxStats};
+use crate::tx::{RWTxGuard, TxBuilder, TxGuard, TxStats, TX};
+use crate::Error::Io;
+use crate::TxId;
 use bitflags::bitflags;
 use fnv::FnvHasher;
 use fs2::FileExt;
@@ -243,7 +242,7 @@ impl DB {
     /// to avoid potential blocking of write transaction.
     pub fn begin_tx(&self) -> Result<TxGuard> {
         if !self.opened() {
-            return Err(Error::DatabaseGone);
+            return Err(Error::DatabaseNotOpen);
         }
         unsafe {
             self.0.mmap.raw().lock_shared();
@@ -288,7 +287,7 @@ impl DB {
             return Err(DatabaseOnlyRead);
         };
         if !self.opened() {
-            return Err(DatabaseGone);
+            return Err(DatabaseNotOpen);
         };
 
         unsafe {
@@ -566,11 +565,7 @@ impl<'a> DB {
     }
 
     pub(crate) fn sync(&self) -> Result<()> {
-        self.0
-            .file
-            .write()
-            .flush()
-            .map_err(|_e| DBOpFailed(_e.to_string()))
+        self.0.file.write().flush().map_err(|_e| Io(_e.to_string()))
     }
 
     fn page_in_buffer<'b>(&'a self, buf: &'b mut [u8], id: PgId) -> &'b mut Page {
@@ -775,9 +770,6 @@ impl<'a> DB {
     }
 
     pub(crate) fn grow(&mut self, mut size: u64) -> Result<()> {
-        if self.0.read_only {
-            return Err(Error::DatabaseOnlyRead);
-        }
         let file = self.0.file.try_write().unwrap();
         if file.get_ref().metadata().unwrap().len() >= size as u64 {
             return Ok(());
@@ -905,7 +897,7 @@ impl Meta {
         } else if self.version != VERSION as u32 {
             return Err(Error::VersionMismatch);
         } else if self.check_sum != 0 && self.check_sum != self.sum64() {
-            return Err(Error::InvalidChecksum);
+            return Err(Error::Checksum);
         }
         Ok(())
     }
@@ -958,21 +950,21 @@ impl Meta {
 #[derive(Clone, Default)]
 pub struct Stats {
     // FreeList stats.
-    // total number of free pages on the freelist.
+    /// total number of free pages on the freelist.
     pub pending_page_n: usize,
-    // total number of pending pages on the freelist.
+    /// total number of pending pages on the freelist.
     pub free_alloc: usize,
-    // total bytes allocated in free pages.
+    /// total bytes allocated in free pages.
     pub free_list_inuse: u64,
-    // total bytes used by the freelist.
+    /// total bytes used by the freelist.
     pub free_page_n: usize,
     // Transaction stats
-    // total number of started read transactions.
+    /// total number of started read transactions.
     pub tx_n: u64,
-    // number of currently open read transactions.
+    /// number of currently open read transactions.
     pub open_tx_n: usize,
-    // global, ongoing stats.
-    tx_stats: TxStats,
+    /// global, ongoing stats.
+    pub tx_stats: TxStats,
 }
 
 struct BatchInner {

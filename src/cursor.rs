@@ -206,7 +206,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
         let stacklen = self.stack.borrow().len();
         for refi in &self.stack.borrow()[..stacklen - 1] {
             assert!(!n.is_leaf(), "expected branch");
-            let child = n.child_at(refi.index).map_err(|_| Error::TraverserFailed)?;
+            let child = n.child_at(refi.index).unwrap();
             n = child;
         }
 
@@ -493,7 +493,7 @@ impl<'a, B: Deref<Target = Bucket> + 'a> Cursor<'a, B> {
             return Err(Error::TxClosed);
         }
         if !self.bucket.tx()?.writable() {
-            return Err(Error::TxReadOnly);
+            return Err(Error::TxNoWritable);
         }
 
         let key = {
