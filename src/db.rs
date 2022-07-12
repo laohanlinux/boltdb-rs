@@ -6,9 +6,9 @@ use crate::free_list::FreeList;
 use crate::page::{OwnedPage, Page, PageFlag, MIN_KEYS_PER_PAGE};
 use crate::page::{PgId, META_PAGE_SIZE};
 use crate::test_util::temp_file;
-use crate::tx::{RWTxGuard, TxBuilder, TxGuard, TX};
+use crate::tx::{RWTxGuard, TxBuilder, TxGuard, TxStats, TX};
 use crate::Error::Io;
-use crate::{TxId, TxStats};
+use crate::TxId;
 use bitflags::bitflags;
 use fnv::FnvHasher;
 use fs2::FileExt;
@@ -950,21 +950,21 @@ impl Meta {
 #[derive(Clone, Default)]
 pub struct Stats {
     // FreeList stats.
-    // total number of free pages on the freelist.
+    /// total number of free pages on the freelist.
     pub pending_page_n: usize,
-    // total number of pending pages on the freelist.
+    /// total number of pending pages on the freelist.
     pub free_alloc: usize,
-    // total bytes allocated in free pages.
+    /// total bytes allocated in free pages.
     pub free_list_inuse: u64,
-    // total bytes used by the freelist.
+    /// total bytes used by the freelist.
     pub free_page_n: usize,
     // Transaction stats
-    // total number of started read transactions.
+    /// total number of started read transactions.
     pub tx_n: u64,
-    // number of currently open read transactions.
+    /// number of currently open read transactions.
     pub open_tx_n: usize,
-    // global, ongoing stats.
-    tx_stats: TxStats,
+    /// global, ongoing stats.
+    pub tx_stats: TxStats,
 }
 
 struct BatchInner {

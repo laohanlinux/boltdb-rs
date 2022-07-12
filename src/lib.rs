@@ -22,9 +22,11 @@ mod test_util;
 pub mod tx;
 
 pub use bucket::Bucket;
+pub use db::Stats;
 pub use db::DB;
-pub use tx::{TxId, TxStats, TX};
 pub use error::Error;
+pub use tx::TxStats;
+pub use tx::{TxId, TX};
 
 #[allow(dead_code)]
 #[inline]

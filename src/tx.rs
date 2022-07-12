@@ -370,7 +370,7 @@ impl TX {
             }
             let mut stats = self.0.stats.lock();
             if stats.rebalance > 0 {
-                stats.rebalance_time += SystemTime::now()
+                stats.rebalanced_time += SystemTime::now()
                     .duration_since(start_time)
                     .map_err(|_| Unexpected("Cann't get system time"))?;
             }
@@ -790,40 +790,40 @@ impl Drop for TX {
 #[derive(Default, Debug, Clone)]
 pub struct TxStats {
     // Page statistics
-    // number of page allocations.
-    pub(crate) page_count: usize,
-    // total bytes allocated.
-    pub(crate) page_alloc: usize,
+    /// number of page allocations.
+    pub page_count: usize,
+    /// total bytes allocated.
+    pub page_alloc: usize,
 
     // Cursor statistics
-    // number of cursors created.
-    pub(crate) cursor_count: usize,
+    /// number of cursors created.
+    pub cursor_count: usize,
 
     // Node statistics
-    // number of node allocations
-    pub(crate) node_count: usize,
-    // number of node dereferences
-    pub(crate) node_deref: usize,
+    /// number of node allocations
+    pub node_count: usize,
+    /// number of node dereferences
+    pub node_deref: usize,
 
-    // Rebalance statistics
-    // number of node rebalances
-    pub(crate) rebalance: usize,
-    // total time spent rebalancing
-    pub(crate) rebalance_time: Duration,
+    // Rebalanced statistics
+    /// number of node rebalances
+    pub rebalance: usize,
+    /// total time spent rebalancing
+    pub rebalanced_time: Duration,
 
     // Split/Spill statistics
-    // number of nodes spilt
-    pub(crate) split: usize,
-    // number of nodes spill
-    pub(crate) spill: usize,
-    // total time spent spilling
-    pub(crate) spill_time: Duration,
+    /// number of nodes spilt
+    pub split: usize,
+    /// number of nodes spill
+    pub spill: usize,
+    /// total time spent spilling
+    pub spill_time: Duration,
 
     // Write statistics.
-    // number of writes performed
-    pub(crate) write: usize,
-    // total time spent writing to disk
-    pub(crate) write_time: Duration,
+    /// number of writes performed
+    pub write: usize,
+    /// total time spent writing to disk
+    pub write_time: Duration,
 }
 
 impl AddAssign for TxStats {
@@ -834,7 +834,7 @@ impl AddAssign for TxStats {
         self.node_count += rhs.node_count;
         self.node_deref += rhs.node_deref;
         self.rebalance += rhs.rebalance;
-        self.rebalance_time += rhs.rebalance_time;
+        self.rebalanced_time += rhs.rebalanced_time;
         self.split += rhs.split;
         self.spill += rhs.spill;
         self.spill_time += rhs.spill_time;
@@ -851,7 +851,7 @@ impl SubAssign for TxStats {
         self.node_count -= rhs.node_count;
         self.node_deref -= rhs.node_deref;
         self.rebalance -= rhs.rebalance;
-        self.rebalance_time -= rhs.rebalance_time;
+        self.rebalanced_time -= rhs.rebalanced_time;
         self.split -= rhs.split;
         self.spill -= rhs.spill;
         self.spill_time -= rhs.spill_time;
