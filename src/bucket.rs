@@ -202,6 +202,16 @@ impl Bucket {
         names
     }
 
+    /// Creates a cursor associated with the bucket.
+    /// The cursor is only valid as long as the transaction is open.
+    /// Do not use a cursor after the transaction is closed.
+    pub fn cursor(&self) -> Result<Cursor<&Bucket>> {
+        // update transaction statistics.
+        self.tx()?.0.stats.lock().cursor_count += 1;
+        // allocate and return a cursor.
+        Ok(Cursor::new(self))
+    }
+
     pub fn clear(&mut self) {
         self.buckets.borrow_mut().clear();
         self.nodes.borrow_mut().clear();
@@ -450,16 +460,6 @@ impl Bucket {
     /// Returns the root of the bucket.
     pub(crate) fn root(&self) -> PgId {
         self.local_bucket.root
-    }
-
-    /// Creates a cursor associated with the bucket.
-    /// The cursor is only valid as long as the transaction is open.
-    /// Do not use a cursor after the transaction is closed.
-    pub(crate) fn cursor(&self) -> Result<Cursor<&Bucket>> {
-        // update transaction statistics.
-        self.tx()?.0.stats.lock().cursor_count += 1;
-        // allocate and return a cursor.
-        Ok(Cursor::new(self))
     }
 
     /// Returns whether the bucket is writable.

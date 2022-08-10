@@ -323,7 +323,7 @@ impl DB {
         })
     }
 
-    /// shorthand for db.begin_rw_tx with addditional guagrantee for panic safery
+    /// shorthand for db.begin_rw_tx with additional guarantee for panic safer
     pub fn update<'b>(&self, mut handler: impl FnMut(&mut TX) -> Result<()> + 'b) -> Result<()> {
         use std::panic::{catch_unwind, AssertUnwindSafe};
         let mut tx = scopeguard::guard(self.begin_rw_tx()?, |tx| {

@@ -292,6 +292,8 @@ impl TX {
         {
             let pages = self.0.pages.try_read().unwrap();
             if let Some(p) = pages.get(&id) {
+                // *FIXME* I don't think execute here code.
+                panic!("it should be not happened");
                 return Ok(&**p);
             }
         }
@@ -385,7 +387,7 @@ impl TX {
             }
             self.0.stats.try_lock().unwrap().spill_time = SystemTime::now()
                 .duration_since(start_time)
-                .map_err(|_| Unexpected("Cann't get system time"))?;
+                .map_err(|_| Unexpected("Can't get system time"))?;
         }
 
         // Free the old root bucket.
@@ -424,7 +426,6 @@ impl TX {
             self.0.meta.try_write().unwrap().free_list = page.id;
 
             // If the high watermark has moved up then attempt to grow the database.
-            // TODO: Why?
             if self.pgid() > tx_pgid as u64 {
                 if let Err(e) = db.grow((tx_pgid + 1) * page_size as u64) {
                     info!("set a higher watermark");
